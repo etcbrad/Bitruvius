@@ -1,0 +1,232 @@
+## Project: Reusable Cutout Rig System + View Presets + DragonBones Export (BITRUVIUS)
+
+### Summary
+Build a reusable “custom cutout” rigging layer on top of the existing BITRUVIUS skeleton editor so you can:
+- Rig quickly with **bone-attached cutouts** (images + procedural colors/shapes).
+- Save **multiple view presets** (front/side/back/3/4) as poses + depth/layering overrides on a **single underlying rig**.
+- Export both (a) an **internal Rig Preset** you can reuse across characters and (b) a **DragonBones 5.x** compatible `.zip` package.
+
+---
+
+## Goals / Success Criteria
+1. **Fast rigging workflow**
+   - Create/edit “cutout slots” attached to bones (parent→child) and assign either:
+     - Uploaded image (PNG/SVG), or
+     - Procedural colored shape (capsule/rect/circle) as placeholder or final style.
+   - Drag-and-drop to assign cutouts to bones/slots with sensible defaults (anchor/scale/rotation).
+
+2. **Multi-view support on one rig**
+   - Create “Views” like `Front`, `Side`, `Back`, `3/4`.
+   - Each view stores:
+     - A **pose snapshot** (joint offsets), and
+     - **Depth/layer overrides** (z-order, visibility, optional left/right swap rules).
+   - Switching views updates the canvas immediately.
+
+3. **Exports**
+   - Export an internal **Rig Preset** (versioned schema) that can be re-imported.
+   - Export a **DragonBones 5.x zip**: DragonBones JSON + atlas JSON + atlas PNG (packed) + any referenced images if needed.
+
+---
+
+## Key Product Decisions (Locked)
+- Export target: **Both** (internal preset + DragonBones export).
+- Views: **Single rig** with **view presets** + **depth layers**, and views can be saved from current pose.
+- Cutouts: **Images + colors/shapes**.
+- Attachment: **Bone slots** by default (parent→child), with optional joint-attach available later if needed.
+
+---
+
+## Data Model / Public Types (Engine)
+### 1) New types in `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/types.ts`
+Add:
+
+**CutoutAsset**
+- `id: string`
+- `name: string`
+- `kind: 'image' | 'shape'`
+- `image?: { src: string /* data URL or blob URL */, naturalWidth: number, naturalHeight: number }`
+- `shape?: { shapeType: 'capsule' | 'rect' | 'circle', fill: string, stroke?: string, strokeWidth?: number }`
+- `tags?: string[]`
+
+**CutoutAttachment**
+- `type: 'bone'`
+- `fromJointId: string`
+- `toJointId: string`
+
+**CutoutSlot**
+- `id: string`
+- `name: string` (e.g. `l_upper_arm`, `torso`, `head`)
+- `attachment: CutoutAttachment`
+- `assetId: string | null`
+- `visible: boolean`
+- `opacity: number`
+- `zIndex: number`
+- `mode: 'cutout' | 'rubberhose' | 'roto'` (reuse existing semantics)
+- `scale: number`
+- `lengthScale: number`
+- `volumePreserve: boolean`
+- `offsetX: number`
+- `offsetY: number`
+- `rotation: number`
+- `anchorX: number` (0..1)
+- `anchorY: number` (0..1)
+- `tint?: string | null` (applied to shapes; optional image tint later)
+
+**ViewPreset**
+- `id: string`
+- `name: string`
+- `pose: EnginePoseSnapshot` (reuse existing snapshot type)
+- `slotOverrides: Record<string, { visible?: boolean; zIndex?: number }>`
+- `camera?: { viewScale?: number; viewOffset?: Point }`
+- `reference?: { background?: Partial<ReferenceLayer>; foreground?: Partial<ReferenceLayer> }`
+
+### 2) Extend `SkeletonState` in `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/types.ts`
+Add:
+- `assets: Record<string, CutoutAsset>`
+- `cutoutSlots: Record<string, CutoutSlot>`
+- `views: ViewPreset[]`
+- `activeViewId: string`
+
+### 3) Backward compatibility + migration
+In `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/settings.ts`:
+- Keep reading old `scene.headMask` + `scene.jointMasks`, but on load:
+  - Auto-migrate them into `assets` + `cutoutSlots` (creating one image asset per old mask, and one slot per joint/bone as appropriate).
+- Keep writing only the new structure going forward (optionally keep legacy fields for 1–2 versions if you want round-trips with old exports).
+
+---
+
+## Rig Topology Source of Truth
+- Continue using `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/model.ts` for joints.
+- Derive default **bone slot candidates** from:
+  - `PARENT_MAP` in `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/types.ts` (PartName-based), OR
+  - `INITIAL_JOINTS` parent links (joint-id based).
+- For v1: create a default slot set for common segments:
+  - Spine: `navel→sternum`, `sternum→collar`, `collar→neck_base`, `neck_base→head`
+  - Arms: `l_shoulder→l_elbow`, `l_elbow→l_wrist` (+ optional `l_wrist→l_fingertip`), same for right
+  - Legs: `l_hip→l_knee`, `l_knee→l_ankle`, same for right
+- Allow users to add/remove/rename slots in UI (does not change joints, just the cutout layer).
+
+---
+
+## Rendering Changes (Canvas/SVG)
+In `/Users/bradleygeiser/Downloads/zipFilezip/client/src/App.tsx`:
+1. Replace `jointMasksLayer` + `headMaskLayer` with a single `cutoutsLayer` that:
+   - Resolves each `CutoutSlot` attachment to a bone vector:
+     - world positions from `getWorldPosition(fromJointId)` and `getWorldPosition(toJointId)`
+     - angle from vector
+     - length in px
+   - Computes final rect/shape bounds based on:
+     - `mode`:
+       - `cutout`: rigid sizing (asset natural size * scale, or head-relative fallback if unknown)
+       - `rubberhose`: height follows bone length * lengthScale; width follows thickness (with optional volume preserve)
+       - `roto`: ignores bone angle for rotation (keeps world-aligned unless overridden)
+   - Sorts by effective zIndex:
+     - base slot `zIndex`, overridden by active view `slotOverrides[slotId].zIndex`
+2. Support “depth layer” presets by storing zIndex values per view (override only, no duplication).
+
+---
+
+## View Presets (Front/Side/Back/3/4)
+### Engine behavior
+- Switching view:
+  - Applies `ViewPreset.pose` to joints via existing pose utilities (`applyPoseSnapshotToJoints`).
+  - Applies view `slotOverrides` for visibility/zIndex.
+  - Optionally applies camera overrides.
+
+### UI (Sidebar)
+Add a “Views” section:
+- List existing views; select active view.
+- Buttons:
+  - `New view from current pose`
+  - `Update selected view from current pose` (overwrite pose snapshot)
+  - Rename / delete view
+- Optional: `Duplicate view`
+
+Defaults on fresh state:
+- Create 4 presets: `Front`, `Side`, `Back`, `3/4` from the initial pose (they’ll be identical until edited).
+
+---
+
+## Cutout System UI
+Add a “Cutouts” section:
+1. **Asset library**
+   - Upload image(s) → creates `CutoutAsset(kind='image')`.
+   - Create shape assets quickly:
+     - capsule/rect/circle with color picker.
+2. **Slot list**
+   - Show all `cutoutSlots` with:
+     - asset assignment dropdown
+     - visibility toggle
+     - zIndex input (or small slider)
+     - mode selector (`cutout/rubberhose/roto`)
+     - transform controls (scale, lengthScale, anchor, offsets, rotation, opacity)
+3. **Canvas interactions**
+   - Click a bone segment to select its slot (nearest matching attachment).
+   - Drag/drop an asset onto a bone to assign it and auto-set anchors:
+     - default anchor to center (0.5, 0.5)
+     - default rotation 0
+     - default scale based on bone length vs asset height (one-time “fit” heuristic)
+
+---
+
+## Exports
+
+### A) Internal “Rig Preset” export/import (versioned)
+Create `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/export/rigPreset.ts`:
+- `schema: 'bitruvius-rig-preset@1'`
+- Payload includes:
+  - joints topology identifier (e.g., `modelId: 'human_v1'`) + any custom joint offsets you want as rest pose
+  - `assets` (optionally embedded as data URLs)
+  - `cutoutSlots`
+  - `views`
+- UI: “Export Rig Preset (.json)” + “Import Rig Preset”.
+
+### B) DragonBones 5.x export (.zip)
+Create `/Users/bradleygeiser/Downloads/zipFilezip/client/src/engine/export/dragonBones.ts`:
+- Add dependency: `jszip`.
+- Export flow:
+  1. Choose export scope: **Active view only** (v1) with later option “All views as separate armatures”.
+  2. Build DragonBones bones:
+     - One bone per joint id, parented by joint.parent.
+     - Use current pose (after applying active view) for rest transforms.
+  3. Build slots/displays from `cutoutSlots`:
+     - Each slot attaches to the *fromJointId* bone (or a derived bone); store display transform to align image on the segment.
+     - Apply z-order by ordering slots (and/or zOrder fields) based on computed zIndex.
+  4. Build texture atlas:
+     - Load all used image assets into `<canvas>`.
+     - Pack them into a single atlas PNG with a simple shelf packer.
+     - For shape assets: rasterize to an image tile first (same pipeline).
+     - Write `texture.json` + `texture.png`.
+  5. Zip files:
+     - `skeleton.json` (DragonBones data)
+     - `texture.json`
+     - `texture.png`
+- UI: “Export DragonBones (.zip)”.
+
+---
+
+## Testing / Validation
+1. Typecheck: `npm run check`.
+2. Manual acceptance checklist:
+   - Create slot on `l_shoulder→l_elbow`, assign image, verify it follows bone rotation/length.
+   - Create 4 views; make side pose; set different zIndex (e.g., hide far arm), verify switching views updates cutouts.
+   - Export Rig Preset JSON and re-import into a fresh session; verify assets/slots/views restore.
+   - Export DragonBones zip; verify JSON parses and atlas files exist; smoke-test by loading into your DragonBones runtime/tooling.
+
+(If you want automated coverage, add a small Playwright test that triggers export and inspects the downloaded zip contents, but this is optional for v1.)
+
+---
+
+## Assumptions / Defaults (Explicit)
+- No reference image provided yet; v1 uses the existing human joint set (`INITIAL_JOINTS`) as the base rig.
+- DragonBones export targets **DragonBones 5.x JSON**.
+- v1 exports **only the active view** as one armature; multi-armature per view is a follow-up.
+- Atlas packing uses a simple deterministic shelf algorithm; no rotation packing in v1.
+
+---
+
+## Follow-ups (Planned v2)
+- Per-view left/right swapping rules and automatic “far limb” occlusion presets.
+- Joint-attached slots for accessories (eyes, hair, props).
+- SVG-native export for shape assets (instead of raster).
+- Better auto-fit: guided calibration (head/top pelvis/feet) to scale/position rig quickly on new reference art.
