@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=IBM+Plex+Mono:wght@400;500&family=Share+Tech+Mono&family=Space+Mono:wght@400;700&family=Courier+Prime:wght@400;700&family=Roboto+Mono:wght@400;700&family=Fira+Code:wght@400;500&family=Source+Code+Pro:wght@400;700&family=Major+Mono+Display&family=ZCOOL+KuaiLe&family=Ma+Shan+Zheng&family=Zhi+Mang+Xing&display=swap');
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -41,4 +42,74 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #444;
+}
+
+/* Pixelated Font Classes */
+.pixel-mono {
+  font-family: 'Press Start 2P', 'JetBrains Mono', monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+}
+
+.pixel-retro {
+  font-family: 'VT323', 'Courier Prime', monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  letter-spacing: 0.05em;
+}
+
+.pixel-terminal {
+  font-family: 'IBM Plex Mono', 'Fira Code', 'Source Code Pro', monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+}
+
+.pixel-tech {
+  font-family: 'Share Tech Mono', 'Space Mono', monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  letter-spacing: 0.02em;
+}
+
+.pixel-clean {
+  font-family: 'Roboto Mono', 'Courier Prime', monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+}
+
+.pixel-display {
+  font-family: 'Major Mono Display', 'Space Mono', monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  letter-spacing: 0.03em;
+}
+
+.pixel-calligraphy {
+  font-family: 'ZCOOL KuaiLe', 'Ma Shan Zheng', cursive;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+}
+
+.pixel-brush {
+  font-family: 'Zhi Mang Xing', 'Ma Shan Zheng', cursive;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  font-weight: 400;
+}
+
+.pixel-elegant {
+  font-family: 'Ma Shan Zheng', cursive;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  font-smooth: never;
+  font-weight: 400;
+  letter-spacing: 0.08em;
 }

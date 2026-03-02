@@ -301,12 +301,32 @@ export const applyDragToState = (
     return { ...prev, joints: nextJoints };
   }
 
+  let parentPos = { x: 0, y: 0 };
+  if (joint.parent) {
+    parentPos = getWorldPosition(joint.parent, nextJoints, INITIAL_JOINTS, 'preview');
+  }
+
+  const dx = mouseWorld.x - parentPos.x;
+  const dy = mouseWorld.y - parentPos.y;
+
+  // Default preview position based on mouse
+  let newPreview = { x: dx, y: dy };
+
   // Control Mode Logic: Restrict dragging based on mode
   if (prev.controlMode === 'IK') {
     // In IK, only end effectors can be dragged (sacrum handled above)
     if (!joint.isEndEffector) return prev;
-  } else if (prev.controlMode === 'FK') {
-    // In FK, root can still be moved in FK; other joints rotate below.
+  } else if (prev.controlMode === 'Cardboard') {
+    // In Cardboard mode, enforce rigid bone lengths (no stretching)
+    if (joint.parent) {
+      const baseDist = Math.sqrt(joint.baseOffset.x ** 2 + joint.baseOffset.y ** 2);
+      const currentDist = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
+      if (currentDist > 0) {
+        const factor = baseDist / currentDist;
+        newPreview.x *= factor;
+        newPreview.y *= factor;
+      }
+    }
   } else if (prev.controlMode === 'JointDrag') {
     // JointDrag mode: change proportions without physics breaking (update baseOffset)
     const nextJoints = { ...prev.joints };
@@ -353,16 +373,21 @@ export const applyDragToState = (
     return { ...prev, joints: nextJoints };
   }
 
-  let parentPos = { x: 0, y: 0 };
+  // 2. FK / Default Dragging Logic
+
+  // Keep drag rotation continuous by unwrapping target angle relative to current preview angle.
   if (joint.parent) {
-    parentPos = getWorldPosition(joint.parent, nextJoints, INITIAL_JOINTS, 'preview');
+    const prevA = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
+    const desiredA = Math.atan2(newPreview.y, newPreview.x);
+    const desiredD = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
+    if (desiredD > 0) {
+      const unwrappedA = unwrapAngleRad(prevA, desiredA);
+      newPreview = { x: Math.cos(unwrappedA) * desiredD, y: Math.sin(unwrappedA) * desiredD };
+    }
   }
 
-  const dx = mouseWorld.x - parentPos.x;
-  const dy = mouseWorld.y - parentPos.y;
-
   // 1. IK Solver Logic (FABRIK, anchored per-limb)
-  if ((prev.controlMode === 'IK' || prev.controlMode === 'Hybrid') && joint.isEndEffector && joint.parent) {
+  if ((prev.controlMode === 'IK' || prev.controlMode === 'Rubberband') && joint.isEndEffector && joint.parent) {
     const chainIds = collectChainRootToEffector(draggingId, nextJoints);
     const offsets = solveFabrikChain(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, prev.stretchEnabled);
     if (offsets) {
@@ -388,30 +413,8 @@ export const applyDragToState = (
     }
   }
 
-  // 2. FK / Default Dragging Logic
-  let newPreview = { x: dx, y: dy };
-
-  // Keep drag rotation continuous by unwrapping the target angle relative to the current preview angle.
-  if (joint.parent) {
-    const prevA = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
-    const desiredA = Math.atan2(newPreview.y, newPreview.x);
-    const desiredD = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
-    if (desiredD > 0) {
-      const unwrappedA = unwrapAngleRad(prevA, desiredA);
-      newPreview = { x: Math.cos(unwrappedA) * desiredD, y: Math.sin(unwrappedA) * desiredD };
-    }
-  }
-
-  // FK Mode: Maintain bone length (Rigid Rotation)
-  if (prev.controlMode === 'FK' && joint.parent) {
-    const baseDist = Math.sqrt(joint.baseOffset.x ** 2 + joint.baseOffset.y ** 2);
-    const currentDist = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
-    if (currentDist > 0) {
-      const factor = baseDist / currentDist;
-      newPreview.x *= factor;
-      newPreview.y *= factor;
-    }
-  }
+  // FK Mode: Maintain bone length (Rigid Rotation) - Now handled in Cardboard mode above
+  // This section is removed to avoid duplication
 
   nextJoints[draggingId] = {
     ...joint,

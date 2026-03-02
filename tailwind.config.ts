@@ -86,6 +86,15 @@ export default {
         sans: ["var(--font-sans)"],
         serif: ["var(--font-serif)"],
         mono: ["var(--font-mono)"],
+        'pixel-mono': ['"Press Start 2P"', '"JetBrains Mono"', 'monospace'],
+        'pixel-retro': ['"VT323"', '"Courier Prime"', 'monospace'],
+        'pixel-terminal': ['"IBM Plex Mono"', '"Fira Code"', '"Source Code Pro"', 'monospace'],
+        'pixel-tech': ['"Share Tech Mono"', '"Space Mono"', 'monospace'],
+        'pixel-clean': ['"Roboto Mono"', '"Courier Prime"', 'monospace'],
+        'pixel-display': ['"Major Mono Display"', '"Space Mono"', 'monospace'],
+        'pixel-calligraphy': ['"ZCOOL KuaiLe"', '"Ma Shan Zheng"', 'cursive'],
+        'pixel-brush': ['"Zhi Mang Xing"', '"Ma Shan Zheng"', 'cursive'],
+        'pixel-elegant': ['"Ma Shan Zheng"', 'cursive'],
       },
       keyframes: {
         "accordion-down": {

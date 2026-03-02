@@ -342,8 +342,8 @@ export type AnchorName = PartName | 'root' | 'lFootTip' | 'rFootTip'; // Updated
 // Re-introduced 'stretch' and 'curl' as per user request.
 export type JointConstraint = 'fk' | 'stretch' | 'curl';
 
-// Defines the control modes for skeleton manipulation.
-export type ControlMode = 'FK' | 'IK' | 'Hybrid' | 'JointDrag';
+// Defines control modes for skeleton manipulation.
+export type ControlMode = 'Cardboard' | 'Rubberband' | 'IK' | 'JointDrag';
 
 // Defines the rendering mode for the Bone component.
 // Simplified: 'grayscale' removed as UI is globally monochrome, 'silhouette' now represents solid black fill.

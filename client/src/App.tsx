@@ -22,7 +22,8 @@ import {
   Minus,
   X,
   Grid,
-  Sparkles
+  Sparkles,
+  Power
 } from 'lucide-react';
 import { Joint, Point, SkeletonState, ControlMode, Connection } from './engine/types';
 import { viewModes, ViewModeId } from './viewModes';
@@ -262,8 +263,9 @@ return makeDefaultState();
   const canUndo = historyCtrlRef.current.canUndo();
   const canRedo = historyCtrlRef.current.canRedo();
 
-  type PoseSnapshot = Omit<SkeletonState, 'timeline'>;
+  type PoseSnapshot = Omit<SkeletonState, 'timeline'> & { timestamp?: number };
   const [poseSnapshots, setPoseSnapshots] = useState<PoseSnapshot[]>([]);
+  const [selectedPoseIndices, setSelectedPoseIndices] = useState<number[]>([]);
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdLiveRef = useRef<string | null>(null);
@@ -271,6 +273,12 @@ return makeDefaultState();
   const dragTargetRef = useRef<{ id: string; target: Point } | null>(null);
   const pinTargetsRef = useRef<Record<string, Point>>({});
   const hingeSignsRef = useRef<Record<string, number>>({});
+  
+  // Rubberband mode state
+  const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
+  const [isLongPress, setIsLongPress] = useState(false);
+  const [rubberbandPose, setRubberbandPose] = useState<SkeletonState | null>(null);
+  const dragStartTimeRef = useRef<number>(0);
   const [maskEditArmed, setMaskEditArmed] = useState(false);
   const [maskDragging, setMaskDragging] = useState<null | {
     jointId: string;
@@ -296,14 +304,29 @@ return makeDefaultState();
   const [gridRingsBgData, setGridRingsBgData] = useState<GridRingsBackgroundData | null>(null);
           const [gridRingsEnabled, setGridRingsEnabled] = useState(true);
           const [gridOverlayEnabled, setGridOverlayEnabled] = useState(true);
+          const [backlightEnabled, setBacklightEnabled] = useState(false);
           const [backgroundColor, setBackgroundColor] = useState(() => {
-    // Load saved background color or use 25% gray default
+    // Load saved background color or use faded paper default
     const saved = localStorage.getItem(BACKGROUND_COLOR_KEY);
-    return saved || '#404040'; // 25% gray default
+    return saved || '#fff3d1'; // Faded paper yellowish default
   });
           const [procgenMode, setProcgenMode] = useState<ProceduralMode>('walk');
           const [procgenCycleFrames, setProcgenCycleFrames] = useState(48);
           const [procgenStrength, setProcgenStrength] = useState(1);
+  
+  const [titleFont, setTitleFont] = useState('pixel-mono');
+  
+  const titleFontClassMap = {
+    'pixel-mono': 'font-pixel-mono',
+    'pixel-retro': 'font-pixel-retro', 
+    'pixel-terminal': 'font-pixel-terminal',
+    'pixel-tech': 'font-pixel-tech',
+    'pixel-clean': 'font-pixel-clean',
+    'pixel-display': 'font-pixel-display',
+    'pixel-calligraphy': 'font-pixel-calligraphy',
+    'pixel-brush': 'font-pixel-brush',
+    'pixel-elegant': 'font-pixel-elegant',
+  };
 
           const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
   const [widgetDragging, setWidgetDragging] = useState<null | {
@@ -414,7 +437,7 @@ return makeDefaultState();
     if (state.viewMode === 'nosferatu') {
       // Only change to black if user is still using the default background
       const savedColor = localStorage.getItem(BACKGROUND_COLOR_KEY);
-      if (!savedColor || savedColor === '#404040') {
+      if (!savedColor || savedColor === '#fff3d1') {
         setBackgroundColor('#000000');
       }
     }
@@ -565,13 +588,9 @@ return makeDefaultState();
   );
 
   useEffect(() => {
-    if (selectedJointId && selectedJointId in state.joints) {
-      setMaskJointId(selectedJointId);
-      maskJointIdRef.current = selectedJointId;
-      return;
-    }
-    maskJointIdRef.current = maskJointId;
-  }, [maskJointId, selectedJointId, state.joints]);
+    // Clear selections when poseSnapshots changes to prevent stale indices
+    setSelectedPoseIndices([]);
+  }, [poseSnapshots]);
 
   const uploadJointMaskFile = useCallback(
     async (file: File, jointId: string) => {
@@ -1105,6 +1124,20 @@ return makeDefaultState();
     historyCtrlRef.current.beginAction(`drag:${id}`, state);
     draggingIdLiveRef.current = id;
     
+    // Start long press timer for rubberband mode
+    if (state.controlMode === 'Rubberband') {
+      dragStartTimeRef.current = Date.now();
+      setIsLongPress(false);
+      
+      const timer = setTimeout(() => {
+        setIsLongPress(true);
+        // Store current pose for rubberband stretching
+        setRubberbandPose({ ...state });
+      }, 500); // 500ms for long press
+      
+      setLongPressTimer(timer);
+    }
+    
     // Exclude navel and collar from physics when they start being dragged
     if (shouldRunPosePhysics(state) && id !== 'navel' && id !== 'collar') {
       dragTargetRef.current = { id, target: getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview') };
@@ -1214,7 +1247,7 @@ return makeDefaultState();
 
         if (hasPinnedFeet && isBalanceHandle) {
           setState((prev) =>
-            (prev.controlMode === 'IK' || prev.controlMode === 'Hybrid') && pinWorld
+            (prev.controlMode === 'IK' || prev.controlMode === 'Rubberband') && pinWorld
               ? applyBalanceDragToState(prev, draggingId, { x: mouseX, y: mouseY }, pinWorld)
               : applyDragToState(prev, draggingId, { x: mouseX, y: mouseY }),
           );
@@ -1226,6 +1259,33 @@ return makeDefaultState();
     );
 
   const handleMouseUp = () => {
+    // Clear long press timer
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      setLongPressTimer(null);
+    }
+    
+    // Handle rubberband snap behavior
+    if (state.controlMode === 'Rubberband' && isLongPress && rubberbandPose) {
+      // Snap to next pose or restore based on timeline
+      if (state.timeline.enabled) {
+        // If timeline is active, advance to next frame
+        const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
+        const nextFrame = Math.min(timelineFrame + 1, maxFrame);
+        setTimelineFrame(nextFrame);
+      } else {
+        // Otherwise restore the rubberband pose
+        setStateWithHistory('rubberband_snap', (prev) => ({
+          ...prev,
+          joints: rubberbandPose.joints,
+        }));
+      }
+    }
+    
+    // Reset rubberband state
+    setIsLongPress(false);
+    setRubberbandPose(null);
+    
     if (maskDragging) {
       setMaskDragging(null);
       setMaskEditArmed(false);
@@ -1337,7 +1397,106 @@ return makeDefaultState();
     });
   }, [setStateWithHistory, timelineFrame]);
 
+  const sendPoseToTimeline = useCallback((poseSnapshot: PoseSnapshot, targetFrame?: number) => {
+    setStateWithHistory('send_pose_to_timeline', (prev) => {
+      const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
+      const frame = targetFrame !== undefined ? clamp(targetFrame, 0, frameCount - 1) : timelineFrame;
+      const pose = capturePoseSnapshot(poseSnapshot.joints, 'preview');
+
+      const keyframes = prev.timeline.clip.keyframes.filter((k) => k.frame !== frame);
+      keyframes.push({ frame, pose });
+      keyframes.sort((a, b) => a.frame - b.frame);
+
+      return {
+        ...prev,
+        timeline: {
+          ...prev.timeline,
+          enabled: true,
+          clip: {
+            ...prev.timeline.clip,
+            keyframes,
+          },
+        },
+      };
+    });
+  }, [setStateWithHistory, state.timeline.enabled, timelineFrame]);
+
+  const interpolateSelectedPoses = useCallback(() => {
+    if (selectedPoseIndices.length < 2) return;
+    
+    const selectedPoses = selectedPoseIndices.map(i => poseSnapshots[i]).filter(Boolean);
+    if (selectedPoses.length < 2) return;
+
+    setStateWithHistory('interpolate_selected_poses', (prev) => {
+      const newFrameCount = Math.max(prev.timeline.frameCount || 60, (selectedPoses.length - 1) * 10 + 1);
+      
+      if (!prev.timeline.enabled) {
+        return {
+          ...prev,
+          timeline: {
+            ...prev.timeline,
+            enabled: true,
+            frameCount: newFrameCount,
+            clip: {
+              ...prev.timeline.clip,
+              frameCount: newFrameCount,
+              keyframes: selectedPoses.map((pose, index) => ({
+                frame: index * 10, // Space poses 10 frames apart
+                pose: capturePoseSnapshot(pose.joints, 'preview'),
+              })),
+            },
+          },
+        };
+      }
+
+      const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
+      const totalFrames = Math.max(frameCount, (selectedPoses.length - 1) * 10 + 1);
+      const frameStep = totalFrames / (selectedPoses.length - 1);
+      
+      const keyframes = selectedPoses.map((pose, index) => {
+        const frame = Math.round(index * frameStep);
+        return {
+          frame: clamp(frame, 0, totalFrames),
+          pose: capturePoseSnapshot(pose.joints, 'preview'),
+        };
+      });
+
+      return {
+        ...prev,
+        timeline: {
+          ...prev.timeline,
+          frameCount: totalFrames + 1,
+          clip: {
+            ...prev.timeline.clip,
+            frameCount: totalFrames + 1,
+            keyframes: keyframes.sort((a, b) => a.frame - b.frame),
+          },
+        },
+      };
+    });
+
+    setSelectedPoseIndices([]);
+  }, [selectedPoseIndices, poseSnapshots, setStateWithHistory]);
+
+  const togglePoseSelection = useCallback((index: number) => {
+    setSelectedPoseIndices(prev => {
+      if (prev.includes(index)) {
+        return prev.filter(i => i !== index);
+      } else {
+        return [...prev, index].sort((a, b) => a - b);
+      }
+    });
+  }, []);
+
   const resetSkeleton = () => {
+    // Clear long press timer on reset
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      setLongPressTimer(null);
+    }
+    setIsLongPress(false);
+    setRubberbandPose(null);
+    
     pinTargetsRef.current = {};
     hingeSignsRef.current = {};
     setStateWithHistory('reset_engine', (prev) => ({
@@ -1612,8 +1771,8 @@ return makeDefaultState();
 
     if (isNipple) return null;
 
-    const fillColor = isLotte ? "#000000" : (isRoot ? "white" : (state.activePins.includes(id) ? "#ff8800" : "var(--accent)"));
-    const strokeColor = isLotte ? "#000000" : (isSelected ? 'rgba(255, 255, 255, 0.9)' : 'var(--bg)');
+    const fillColor = isLotte ? "#000000" : (isRoot ? "white" : (state.activePins.includes(id) ? "#ff8800" : (state.controlMode === 'Rubberband' && isLongPress ? "#ff4444" : "var(--accent)")));
+    const strokeColor = isLotte ? "#000000" : (isSelected ? 'rgba(255, 255, 255, 0.9)' : (state.controlMode === 'Rubberband' && isLongPress ? 'rgba(255, 68, 68, 0.8)' : 'var(--bg)'));
 
     return (
       <circle
@@ -1835,7 +1994,7 @@ return makeDefaultState();
                 <Activity size={20} className="text-black" />
               </div>
               <div>
-                <h1 className="text-lg font-bold tracking-tight">BITRUVIUS</h1>
+                <h1 className={`text-lg font-bold tracking-tight ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>BITRUVIUS</h1>
                 <p className="text-[10px] text-[#666] uppercase tracking-[0.2em] font-mono">
                   Core Engine v0.2 · build {BUILD_ID}
                 </p>
@@ -1848,7 +2007,7 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Move size={14} />
-                <h2 className="text-[10px] font-bold uppercase tracking-widest">Edit</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Edit</h2>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -1881,7 +2040,7 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Anchor size={14} />
-                <h2 className="text-[10px] font-bold uppercase tracking-widest">Widgets</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Widgets</h2>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {(
@@ -1921,7 +2080,7 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Settings2 size={14} />
-                <h2 className="text-[10px] font-bold uppercase tracking-widest">Rigidity & Control</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rigidity & Control</h2>
                 <HelpTip
                   text={
                     <>
@@ -1952,7 +2111,7 @@ return makeDefaultState();
                 </select>
               </div>
               <div className="flex bg-[#222] rounded-xl p-1 mb-4">
-                {(['FK', 'Hybrid', 'IK', 'JointDrag'] as const).map(mode => (
+                {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map(mode => (
                   <button
                     key={mode}
                     onClick={() =>
@@ -2023,7 +2182,7 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Activity size={14} />
-                <h2 className="text-[10px] font-bold uppercase tracking-widest">Live Feedback</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Live Feedback</h2>
               </div>
               <div className="space-y-4">
                 <div className="space-y-2">
@@ -2065,7 +2224,7 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Maximize2 size={14} />
-                <h2 className="text-[10px] font-bold uppercase tracking-widest">View Modes</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>View Modes</h2>
               </div>
                       <div className="grid grid-cols-2 gap-2">
                         {viewModes.map(mode => (
@@ -2086,8 +2245,35 @@ return makeDefaultState();
 
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
+                <Terminal size={14} />
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pixel Fonts</h2>
+              </div>
+              <div className="space-y-2">
+                <select
+                  value={titleFont}
+                  onChange={(e) => setTitleFont(e.target.value)}
+                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
+                >
+                  <option value="pixel-mono">Classic Pixel (Press Start)</option>
+                  <option value="pixel-retro">Retro Terminal (VT323)</option>
+                  <option value="pixel-terminal">Modern Terminal (IBM Plex)</option>
+                  <option value="pixel-tech">Tech Mono (Share Tech)</option>
+                  <option value="pixel-clean">Clean Mono (Roboto)</option>
+                  <option value="pixel-display">Display Mono (Major)</option>
+                  <option value="pixel-calligraphy">Pixel Calligraphy (ZCOOL)</option>
+                  <option value="pixel-brush">Brush Script (Zhi Mang)</option>
+                  <option value="pixel-elegant">Elegant Script (Ma Shan)</option>
+                </select>
+                <div className="text-[#666] text-[9px]">
+                  Font style for all titles and intertitles
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Settings2 size={14} />
-                <h2 className="text-[10px] font-bold uppercase tracking-widest">Background</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Background</h2>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
@@ -2117,7 +2303,7 @@ return makeDefaultState();
               <section>
                 <div className="flex items-center gap-2 mb-4 text-[#666]">
                   <RotateCcw size={14} />
-                  <h2 className="text-[10px] font-bold uppercase tracking-widest">Animation</h2>
+                  <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Animation</h2>
                 </div>
                 <div className="space-y-2">
                   <Toggle
@@ -2163,7 +2349,7 @@ return makeDefaultState();
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Download size={14} />
-                        <h2 className="text-[10px] font-bold uppercase tracking-widest">Transfer</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Transfer</h2>
                       </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -2198,7 +2384,7 @@ return makeDefaultState();
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Upload size={14} />
-                        <h2 className="text-[10px] font-bold uppercase tracking-widest">Export</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Export</h2>
                       </div>
                               <div className="grid grid-cols-2 gap-2">
                                 <button
@@ -2244,7 +2430,7 @@ return makeDefaultState();
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <RotateCcw size={14} />
-                        <h2 className="text-[10px] font-bold uppercase tracking-widest">Capture History</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Capture History</h2>
                       </div>
               <div className="space-y-2">
                 <button 
@@ -2252,32 +2438,78 @@ return makeDefaultState();
                     setPoseSnapshots((h) => {
                       const { timeline, ...snapshot } = state;
                       void timeline;
-                      return [snapshot, ...h].slice(0, 5);
+                      const timestampedSnapshot = { ...snapshot, timestamp: Date.now() };
+                      return [timestampedSnapshot, ...h].slice(0, 5);
                     })
                   }
                   className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
                 >
                   Capture Pose
                 </button>
+                
+                {/* Interpolation button */}
+                {selectedPoseIndices.length >= 2 && (
+                  <button 
+                    onClick={interpolateSelectedPoses}
+                    className="w-full py-2 bg-[#3366cc] hover:bg-[#4477dd] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  >
+                    Interpolate Selected ({selectedPoseIndices.length} poses)
+                  </button>
+                )}
+                
                 <div className="space-y-1">
-                  {poseSnapshots.map((h, i) => (
-                    <button 
-                      key={i}
-                      onClick={() => setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...h }))}
-                      className="w-full flex items-center justify-between p-2 rounded-md bg-white/5 hover:bg-white/10 text-[10px] transition-colors"
-                    >
-                      <span>Pose Snapshot {poseSnapshots.length - i}</span>
-                      <span className="text-[#444]">{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                    </button>
-                  ))}
+                  {poseSnapshots.map((h, i) => {
+                    const isSelected = selectedPoseIndices.includes(i);
+                    const snapshotIndex = poseSnapshots.length - i;
+                    
+                    return (
+                      <button 
+                        key={i}
+                        onClick={() => setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...h }))}
+                        onDoubleClick={() => sendPoseToTimeline(h)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          togglePoseSelection(i);
+                        }}
+                        className={`w-full flex items-center justify-between p-2 rounded-md text-[10px] transition-colors ${
+                          isSelected 
+                            ? 'bg-[#3366cc]/30 border border-[#3366cc]/50' 
+                            : 'bg-white/5 hover:bg-white/10'
+                        }`}
+                        title={`Click to apply • Double-click to send to timeline • Right-click to ${isSelected ? 'deselect' : 'select'} for interpolation`}
+                      >
+                        <div className="flex items-center gap-2">
+                          {isSelected && (
+                            <div className="w-2 h-2 bg-[#3366cc] rounded-full" />
+                          )}
+                          <span>Pose Snapshot {snapshotIndex}</span>
+                        </div>
+                        <span className="text-[#444]">
+                          {h.timestamp 
+                            ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                            : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                          }
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
+                
+                {poseSnapshots.length > 0 && (
+                  <div className="text-[#666] text-[9px] mt-2">
+                    {selectedPoseIndices.length === 0 
+                      ? 'Right-click poses to select for interpolation'
+                      : `Selected ${selectedPoseIndices.length} pose${selectedPoseIndices.length === 1 ? '' : 's'} • Right-click to deselect`
+                    }
+                  </div>
+                )}
               </div>
             </section>
 
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Layers size={14} />
-                        <h2 className="text-[10px] font-bold uppercase tracking-widest">Scene</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Scene</h2>
                       </div>
 
                       {/* Vitruvian Guides */}
@@ -3998,7 +4230,7 @@ return makeDefaultState();
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Layers size={14} />
-                        <h2 className="text-[10px] font-bold uppercase tracking-widest">Joint Hierarchy</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Joint Hierarchy</h2>
                       </div>
               {(() => {
                 const selected = selectedJointId ? state.joints[selectedJointId] : null;
@@ -4083,6 +4315,76 @@ return makeDefaultState();
           </div>
 
           <div className="p-6 pt-0">
+            <div className="mb-4">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-[#666] mb-3">Pin Controls</h3>
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] text-[#888]">Active Pins ({state.activePins.length})</span>
+                  <button
+                    onClick={() => {
+                      setStateWithHistory('clear_all_pins', (prev) => ({
+                        ...prev,
+                        activePins: [],
+                      }));
+                      pinTargetsRef.current = {};
+                    }}
+                    className="px-3 py-2 bg-[#333] hover:bg-[#444] rounded-lg text-[10px] font-bold transition-all"
+                    disabled={state.activePins.length === 0}
+                  >
+                    Clear All Pins
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => togglePin('l_ankle')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                      state.activePins.includes('l_ankle') 
+                        ? 'bg-[#ff8800] text-white' 
+                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                    }`}
+                  >
+                    Pin L Ankle
+                  </button>
+                  <button
+                    onClick={() => togglePin('r_ankle')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                      state.activePins.includes('r_ankle') 
+                        ? 'bg-[#ff8800] text-white' 
+                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                    }`}
+                  >
+                    Pin R Ankle
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => togglePin('l_wrist')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                      state.activePins.includes('l_wrist') 
+                        ? 'bg-[#ff8800] text-white' 
+                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                    }`}
+                  >
+                    Pin L Wrist
+                  </button>
+                  <button
+                    onClick={() => togglePin('r_wrist')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                      state.activePins.includes('r_wrist') 
+                        ? 'bg-[#ff8800] text-white' 
+                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                    }`}
+                  >
+                    Pin R Wrist
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-6 pt-0">
             <button 
               onClick={resetSkeleton}
               className="w-full flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
@@ -4135,14 +4437,6 @@ return makeDefaultState();
             className={`w-full h-full skeleton-canvas ${state.viewMode === 'noir' ? 'grayscale contrast-125' : ''}`}
           >
             <g transform={`translate(${state.viewOffset.x}, ${state.viewOffset.y}) scale(${state.viewScale})`}>
-              <SystemGrid 
-                visible={gridOverlayEnabled || gridRingsEnabled}
-                showGrid={gridOverlayEnabled}
-                showRings={gridRingsEnabled}
-                opacity={0.18}
-                plot={gridRingsBgData?.vitruvian.plot ?? null}
-                transform={gridOverlayTransform}
-                      />
                       {/* Reference Layers */}
                       {state.scene.background.src && state.scene.background.visible && state.scene.background.mediaType === 'image' && (
                         <image
@@ -4192,6 +4486,38 @@ return makeDefaultState();
                           </div>
                         </foreignObject>
                       )}
+
+              {/* Grid and Rings - rendered over background */}
+              <SystemGrid 
+                visible={gridOverlayEnabled || gridRingsEnabled}
+                showGrid={gridOverlayEnabled}
+                showRings={gridRingsEnabled}
+                opacity={0.18}
+                plot={gridRingsBgData?.vitruvian.plot ?? null}
+                transform={gridOverlayTransform}
+                      />
+
+              {/* Backlight Effect */}
+              {backlightEnabled && (
+                <defs>
+                  <radialGradient id="backlight-gradient">
+                    <stop offset="0%" stopColor="rgba(255, 220, 100, 0.15)" />
+                    <stop offset="50%" stopColor="rgba(255, 200, 50, 0.08)" />
+                    <stop offset="100%" stopColor="rgba(255, 180, 0, 0.02)" />
+                  </radialGradient>
+                </defs>
+              )}
+              {backlightEnabled && (
+                <rect
+                  x={-canvasSize.width}
+                  y={-canvasSize.height}
+                  width={canvasSize.width * 3}
+                  height={canvasSize.height * 3}
+                  fill="url(#backlight-gradient)"
+                  style={{ mixBlendMode: 'screen' }}
+                  pointerEvents="none"
+                />
+              )}
 
               {/* Engine Content */}
               {/* ... (Existing rendering logic like Onion Skin, Bones, etc.) ... */}
@@ -4736,12 +5062,27 @@ return makeDefaultState();
           </div>
 
           <div className="absolute top-8 right-8 flex gap-2">
-             <div className="bg-[#121212]/80 backdrop-blur-md border border-[#222] px-4 py-2 rounded-full flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                <span className="text-[10px] font-bold tracking-widest uppercase">Live Engine</span>
-             </div>
-                  </div>
-                </div>
+             <button
+               onClick={() => setBacklightEnabled(!backlightEnabled)}
+               className={`bg-[#121212]/80 backdrop-blur-md border border-[#222] px-4 py-2 rounded-full flex items-center gap-3 transition-all duration-200 ${
+                 backlightEnabled ? 'bg-yellow-500/20 border-yellow-500/50' : 'hover:bg-[#1a1a1a]'
+               }`}
+             >
+                <Power 
+                  className={`w-4 h-4 transition-colors duration-200 ${
+                    backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
+                  }`} 
+                />
+                <span className={`text-[10px] font-bold tracking-widest uppercase transition-colors duration-200 ${
+                  backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
+                }`}>
+                  {backlightEnabled ? 'Backlight ON' : 'Backlight OFF'}
+                </span>
+             </button>
+          </div>
+        </div>
+          </svg>
+        </div>
 
           {state.timeline.enabled && (() => {
             const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
@@ -4965,12 +5306,12 @@ return makeDefaultState();
               </div>
             );
           })()}
-              </main>
-            </div>
-          );
-        }
+  </main>
+</div>
+);
+}
 
-  function Toggle({ label, active, onClick }: { label: string, active: boolean, onClick: () => void }) {
+function Toggle({ label, active, onClick }: { label: string, active: boolean, onClick: () => void }) {
   return (
     <button 
       onClick={onClick}
