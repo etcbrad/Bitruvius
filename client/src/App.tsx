@@ -275,7 +275,8 @@ return makeDefaultState();
   const hingeSignsRef = useRef<Record<string, number>>({});
   
   // Rubberband mode state
-  const [longPressTimer, setLongPressTimer] = useState<NodeJS.Timeout | null>(null);
+  const [longPressTimer, setLongPressTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isLongPress, setIsLongPress] = useState(false);
   const [rubberbandPose, setRubberbandPose] = useState<SkeletonState | null>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -588,9 +589,18 @@ return makeDefaultState();
   );
 
   useEffect(() => {
-    // Clear selections when poseSnapshots changes to prevent stale indices
-    setSelectedPoseIndices([]);
+    // Clear selections only when indices become invalid (pose removed or length decreased)
+    setSelectedPoseIndices(prev => prev.filter(i => i < poseSnapshots.length));
   }, [poseSnapshots]);
+
+  // Cleanup long press timer on unmount
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
 
   const uploadJointMaskFile = useCallback(
     async (file: File, jointId: string) => {
@@ -1129,12 +1139,18 @@ return makeDefaultState();
       dragStartTimeRef.current = Date.now();
       setIsLongPress(false);
       
+      // Clear any existing timer
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+      }
+      
       const timer = setTimeout(() => {
         setIsLongPress(true);
-        // Store current pose for rubberband stretching
-        setRubberbandPose({ ...state });
+        // Store current pose for rubberband stretching (deep clone)
+        setRubberbandPose(JSON.parse(JSON.stringify(state)));
       }, 500); // 500ms for long press
       
+      longPressTimerRef.current = timer;
       setLongPressTimer(timer);
     }
     
@@ -1264,6 +1280,10 @@ return makeDefaultState();
       clearTimeout(longPressTimer);
       setLongPressTimer(null);
     }
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
     
     // Handle rubberband snap behavior
     if (state.controlMode === 'Rubberband' && isLongPress && rubberbandPose) {
@@ -1271,7 +1291,7 @@ return makeDefaultState();
       if (state.timeline.enabled) {
         // If timeline is active, advance to next frame
         const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
-        const nextFrame = Math.min(timelineFrame + 1, maxFrame);
+        const nextFrame = Math.min(timelineFrameRef.current + 1, maxFrame);
         setTimelineFrame(nextFrame);
       } else {
         // Otherwise restore the rubberband pose
@@ -1428,7 +1448,7 @@ return makeDefaultState();
     if (selectedPoses.length < 2) return;
 
     setStateWithHistory('interpolate_selected_poses', (prev) => {
-      const newFrameCount = Math.max(prev.timeline.frameCount || 60, (selectedPoses.length - 1) * 10 + 1);
+      const newFrameCount = Math.max(prev.timeline.clip.frameCount || 60, (selectedPoses.length - 1) * 10 + 1);
       
       if (!prev.timeline.enabled) {
         return {
@@ -1436,7 +1456,6 @@ return makeDefaultState();
           timeline: {
             ...prev.timeline,
             enabled: true,
-            frameCount: newFrameCount,
             clip: {
               ...prev.timeline.clip,
               frameCount: newFrameCount,
@@ -2487,7 +2506,7 @@ return makeDefaultState();
                         <span className="text-[#444]">
                           {h.timestamp 
                             ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                            : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                            : "—"
                           }
                         </span>
                       </button>
@@ -5080,8 +5099,6 @@ return makeDefaultState();
                 </span>
              </button>
           </div>
-        </div>
-          </svg>
         </div>
 
           {state.timeline.enabled && (() => {

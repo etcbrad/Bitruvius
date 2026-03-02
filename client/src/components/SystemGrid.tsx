@@ -304,7 +304,7 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
             {'label' in l && isBenchmark && (
               <text
                 x={toPxX(0.51)}
-                y={toPxY(l.y1) + 0.003}
+                y={toPxY(l.y1) + 4}
                 fill="rgba(120, 80, 40, 0.4)"
                 fontSize="10"
                 fontFamily="monospace"
