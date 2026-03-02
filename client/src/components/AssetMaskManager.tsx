@@ -142,119 +142,27 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
   };
 
   const isJointSelected = state.joints[maskJointId] !== undefined;
-  const mask = state.scene.jointMasks[maskJointId];
 
   return (
     <div className="space-y-4">
-      {isJointSelected && mask && (
+      {isJointSelected && (
         <section className="p-3 bg-[#181818] rounded-lg border border-accent/20">
           <div className="flex items-center gap-2 mb-3 text-accent">
             <Settings size={14} />
             <h2 className="text-[10px] font-bold uppercase tracking-widest">Rigging & Mask: {maskJointId}</h2>
           </div>
-          
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase transition-all cursor-pointer">
+            <div className="flex gap-2">
+              <label className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase transition-all cursor-pointer">
                 <Upload size={12} />
-                {mask.src ? 'Replace' : 'Upload'}
+                Upload Mask
                 <input type="file" accept="image/*" onChange={handleJointMaskUpload} className="hidden" />
               </label>
-              <button
-                onClick={() => setMaskEditArmed(!maskEditArmed)}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-[10px] font-bold uppercase transition-all ${
-                  maskEditArmed ? 'bg-accent text-white' : 'bg-[#222] hover:bg-[#333]'
-                }`}
-              >
-                <Anchor size={12} />
-                {maskEditArmed ? 'Pinning...' : 'Set Anchor'}
-              </button>
             </div>
-
-            {mask.src && (
-              <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[9px] uppercase tracking-tighter text-[#666]">
-                      <span>Offset X</span>
-                      <span>{mask.offsetX}</span>
-                    </div>
-                    <input
-                      type="number"
-                      value={mask.offsetX}
-                      onChange={(e) => setStateWithHistory(`mask_offset_x:${maskJointId}`, (prev) => ({
-                        ...prev,
-                        scene: { ...prev.scene, jointMasks: { ...prev.scene.jointMasks, [maskJointId]: { ...prev.scene.jointMasks[maskJointId], offsetX: parseFloat(e.target.value) || 0 }}}
-                      }))}
-                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px] border border-transparent focus:border-accent/50 outline-none"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[9px] uppercase tracking-tighter text-[#666]">
-                      <span>Offset Y</span>
-                      <span>{mask.offsetY}</span>
-                    </div>
-                    <input
-                      type="number"
-                      value={mask.offsetY}
-                      onChange={(e) => setStateWithHistory(`mask_offset_y:${maskJointId}`, (prev) => ({
-                        ...prev,
-                        scene: { ...prev.scene, jointMasks: { ...prev.scene.jointMasks, [maskJointId]: { ...prev.scene.jointMasks[maskJointId], offsetY: parseFloat(e.target.value) || 0 }}}
-                      }))}
-                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px] border border-transparent focus:border-accent/50 outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[9px] uppercase tracking-tighter text-[#666]">
-                    <span>Rotation</span>
-                    <span>{mask.rotation.toFixed(0)}°</span>
-                  </div>
-                  <RotationWheelControl
-                    value={mask.rotation}
-                    min={-360}
-                    max={360}
-                    step={1}
-                    onChange={(val) => setStateWithHistory(`mask_rotation:${maskJointId}`, (prev) => ({
-                      ...prev,
-                      scene: { ...prev.scene, jointMasks: { ...prev.scene.jointMasks, [maskJointId]: { ...prev.scene.jointMasks[maskJointId], rotation: val }}}
-                    }))}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <span className="text-[9px] uppercase tracking-tighter text-[#666]">Scale</span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={mask.scale}
-                      onChange={(e) => setStateWithHistory(`mask_scale:${maskJointId}`, (prev) => ({
-                        ...prev,
-                        scene: { ...prev.scene, jointMasks: { ...prev.scene.jointMasks, [maskJointId]: { ...prev.scene.jointMasks[maskJointId], scale: parseFloat(e.target.value) || 1 }}}
-                      }))}
-                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px] border border-transparent focus:border-accent/50 outline-none"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-[9px] uppercase tracking-tighter text-[#666]">Mode</span>
-                    <select
-                      value={mask.mode}
-                      onChange={(e) => setStateWithHistory(`mask_mode:${maskJointId}`, (prev) => ({
-                        ...prev,
-                        scene: { ...prev.scene, jointMasks: { ...prev.scene.jointMasks, [maskJointId]: { ...prev.scene.jointMasks[maskJointId], mode: e.target.value as any }}}
-                      }))}
-                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px] border border-transparent focus:border-accent/50 outline-none"
-                    >
-                      <option value="cutout">Cutout</option>
-                      <option value="rubberhose">Rubberhose</option>
-                      <option value="roto">Roto</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-            )}
+            {/* Visual Pin Tool Placeholder */}
+            <div className="p-2 bg-[#111] rounded border border-[#222] text-center">
+              <p className="text-[8px] text-[#666] uppercase">Visual Pin Tool active on canvas</p>
+            </div>
           </div>
         </section>
       )}
