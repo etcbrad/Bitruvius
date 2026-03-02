@@ -103,6 +103,11 @@ type MaskBase = {
   mode: MaskMode;
   lengthScale: number;
   volumePreserve: boolean;
+  // New transform properties
+  stretchX: number;
+  stretchY: number;
+  skewX: number;
+  skewY: number;
 };
 
 export type CutoutAsset = {
@@ -162,6 +167,10 @@ export type JointMask = {
   mode: MaskBase['mode'];
   lengthScale: MaskBase['lengthScale'];
   volumePreserve: MaskBase['volumePreserve'];
+  stretchX: MaskBase['stretchX'];
+  stretchY: MaskBase['stretchY'];
+  skewX: MaskBase['skewX'];
+  skewY: MaskBase['skewY'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
    * When empty, the mask uses the joint's parent (if any) as its relationship.
@@ -182,6 +191,10 @@ export type HeadMask = {
   mode: MaskBase['mode'];
   lengthScale: MaskBase['lengthScale'];
   volumePreserve: MaskBase['volumePreserve'];
+  stretchX: MaskBase['stretchX'];
+  stretchY: MaskBase['stretchY'];
+  skewX: MaskBase['skewX'];
+  skewY: MaskBase['skewY'];
 };
 
 export type ReferenceLayer = {
@@ -191,6 +204,7 @@ export type ReferenceLayer = {
   x: number;
   y: number;
   scale: number;
+  rotation: number;
   fitMode: string;
   mediaType: 'image' | 'video';
   videoStart: number;
@@ -211,6 +225,9 @@ export type TextOverlay = {
   fontSize: number;
   color: string;
   align: 'left' | 'center' | 'right';
+  x?: number;
+  y?: number;
+  rotation?: number;
 };
 
 // Point is an alias for Vector2D for compatibility

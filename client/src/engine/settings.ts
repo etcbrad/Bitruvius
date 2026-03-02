@@ -1,7 +1,8 @@
 import { viewModes, type ViewModeId } from '../viewModes';
 import { clamp } from '../utils';
 import { INITIAL_JOINTS } from './model';
-import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay } from './types';
+import { createDefaultCutoutSlots } from './cutouts';
+import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset } from './types';
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
@@ -48,6 +49,10 @@ const sanitizeJointMask = (raw: unknown, base: JointMask): JointMask => {
     mode,
     lengthScale: isFiniteNumber(mask.lengthScale) ? clamp(mask.lengthScale, 0.05, 10) : base.lengthScale,
     volumePreserve: typeof mask.volumePreserve === 'boolean' ? mask.volumePreserve : base.volumePreserve,
+    stretchX: isFiniteNumber(mask.stretchX) ? clamp(mask.stretchX, 0.1, 10) : base.stretchX,
+    stretchY: isFiniteNumber(mask.stretchY) ? clamp(mask.stretchY, 0.1, 10) : base.stretchY,
+    skewX: isFiniteNumber(mask.skewX) ? clamp(mask.skewX, -45, 45) : base.skewX,
+    skewY: isFiniteNumber(mask.skewY) ? clamp(mask.skewY, -45, 45) : base.skewY,
     relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
@@ -68,6 +73,10 @@ const makeDefaultJointMasks = (): Record<string, JointMask> => {
       mode: 'cutout',
       lengthScale: 1.0,
       volumePreserve: false,
+      stretchX: 1.0,
+      stretchY: 1.0,
+      skewX: 0,
+      skewY: 0,
       relatedJoints: [],
     };
   }
@@ -89,6 +98,7 @@ const sanitizeReferenceLayer = (raw: unknown, base: ReferenceLayer): ReferenceLa
     x: safeNumber(layer.x, base.x),
     y: safeNumber(layer.y, base.y),
     scale: isFiniteNumber(layer.scale) ? clamp(layer.scale, 0.01, 20) : base.scale,
+    rotation: isFiniteNumber(layer.rotation) ? layer.rotation : base.rotation,
     fitMode,
     mediaType,
     videoStart: isFiniteNumber(layer.videoStart) ? clamp(layer.videoStart, 0, 60 * 60) : base.videoStart,
@@ -119,6 +129,9 @@ const sanitizeTextOverlays = (raw: unknown, frameCount: number): TextOverlay[] =
       fontSize,
       color: typeof o.color === 'string' && o.color.trim() ? o.color : '#ffffff',
       align,
+      x: isFiniteNumber(o.x) ? o.x : undefined,
+      y: isFiniteNumber(o.y) ? o.y : undefined,
+      rotation: isFiniteNumber(o.rotation) ? o.rotation : 0,
     });
   }
   return out;
@@ -142,6 +155,10 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
     mode,
     lengthScale: isFiniteNumber(mask.lengthScale) ? clamp(mask.lengthScale, 0.05, 10) : base.lengthScale,
     volumePreserve: typeof mask.volumePreserve === 'boolean' ? mask.volumePreserve : base.volumePreserve,
+    stretchX: isFiniteNumber(mask.stretchX) ? clamp(mask.stretchX, 0.1, 10) : base.stretchX,
+    stretchY: isFiniteNumber(mask.stretchY) ? clamp(mask.stretchY, 0.1, 10) : base.stretchY,
+    skewX: isFiniteNumber(mask.skewX) ? clamp(mask.skewX, -45, 45) : base.skewX,
+    skewY: isFiniteNumber(mask.skewY) ? clamp(mask.skewY, -45, 45) : base.skewY,
   };
 };
 
@@ -166,6 +183,40 @@ export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
 
 export const makeDefaultState = (): SkeletonState => {
   const joints = sanitizeJoints(null);
+  const defaultSlots = createDefaultCutoutSlots();
+  
+  // Create default views (Front, Side, Back, 3/4)
+  const defaultViews = [
+    {
+      id: 'front',
+      name: 'Front',
+      pose: { joints: Object.fromEntries(Object.entries(INITIAL_JOINTS).map(([id, joint]) => [id, joint.previewOffset])) },
+      slotOverrides: {},
+      camera: { viewScale: 1.0, viewOffset: { x: 0, y: 0 } },
+    },
+    {
+      id: 'side', 
+      name: 'Side',
+      pose: { joints: Object.fromEntries(Object.entries(INITIAL_JOINTS).map(([id, joint]) => [id, joint.previewOffset])) },
+      slotOverrides: {},
+      camera: { viewScale: 1.0, viewOffset: { x: 0, y: 0 } },
+    },
+    {
+      id: 'back',
+      name: 'Back', 
+      pose: { joints: Object.fromEntries(Object.entries(INITIAL_JOINTS).map(([id, joint]) => [id, joint.previewOffset])) },
+      slotOverrides: {},
+      camera: { viewScale: 1.0, viewOffset: { x: 0, y: 0 } },
+    },
+    {
+      id: 'three_quarters',
+      name: '3/4',
+      pose: { joints: Object.fromEntries(Object.entries(INITIAL_JOINTS).map(([id, joint]) => [id, joint.previewOffset])) },
+      slotOverrides: {},
+      camera: { viewScale: 1.0, viewOffset: { x: 0, y: 0 } },
+    },
+  ];
+
   return {
     joints,
     mirroring: true,
@@ -201,10 +252,11 @@ export const makeDefaultState = (): SkeletonState => {
       background: {
         src: null,
         visible: false,
-        opacity: 0.5,
+        opacity: 1.0,
         x: 0,
         y: 0,
         scale: 1.0,
+        rotation: 0,
         fitMode: 'contain',
         mediaType: 'image',
         videoStart: 0,
@@ -217,6 +269,7 @@ export const makeDefaultState = (): SkeletonState => {
         x: 0,
         y: 0,
         scale: 1.0,
+        rotation: 0,
         fitMode: 'contain',
         mediaType: 'image',
         videoStart: 0,
@@ -235,11 +288,113 @@ export const makeDefaultState = (): SkeletonState => {
         mode: 'cutout',
         lengthScale: 1.0,
         volumePreserve: false,
+        stretchX: 1.0,
+        stretchY: 1.0,
+        skewX: 0,
+        skewY: 0,
       },
       jointMasks: makeDefaultJointMasks(),
       textOverlays: [],
     },
+    assets: {},
+    cutoutSlots: defaultSlots,
+    views: defaultViews,
+    activeViewId: 'front',
   };
+};
+
+// Migration utilities for backward compatibility
+const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { assets: Record<string, CutoutAsset>, cutoutSlots: Record<string, CutoutSlot> } => {
+  const assets: Record<string, CutoutAsset> = {};
+  const cutoutSlots: Record<string, CutoutSlot> = {};
+  let assetIndex = 0;
+
+  // Migrate headMask if it has an image
+  if (rawScene?.headMask?.src) {
+    const headMask = rawScene.headMask;
+    const assetId = `migrated_head_${Date.now()}`;
+    assets[assetId] = {
+      id: assetId,
+      name: 'Head (migrated)',
+      kind: 'image',
+      image: {
+        src: headMask.src,
+        naturalWidth: 100, // Default size, will be updated when loaded
+        naturalHeight: 100,
+      },
+    };
+
+    cutoutSlots['head'] = {
+      id: 'head',
+      name: 'head',
+      attachment: {
+        type: 'bone',
+        fromJointId: 'neck_base',
+        toJointId: 'head',
+      },
+      assetId,
+      visible: headMask.visible ?? false,
+      opacity: headMask.opacity ?? 1.0,
+      zIndex: 100,
+      mode: headMask.mode ?? 'cutout',
+      scale: headMask.scale ?? 1.0,
+      lengthScale: headMask.lengthScale ?? 1.0,
+      volumePreserve: headMask.volumePreserve ?? false,
+      offsetX: headMask.offsetX ?? 0,
+      offsetY: headMask.offsetY ?? 0,
+      rotation: headMask.rotation ?? 0,
+      anchorX: headMask.anchorX ?? 0.5,
+      anchorY: headMask.anchorY ?? 0.5,
+    };
+  }
+
+  // Migrate jointMasks
+  if (rawScene?.jointMasks && typeof rawScene.jointMasks === 'object') {
+    for (const [jointId, jointMask] of Object.entries(rawScene.jointMasks as Record<string, any>)) {
+      if (jointMask?.src) {
+        const assetId = `migrated_${jointId}_${Date.now()}_${assetIndex++}`;
+        assets[assetId] = {
+          id: assetId,
+          name: `${jointId} (migrated)`,
+          kind: 'image',
+          image: {
+            src: jointMask.src,
+            naturalWidth: 100,
+            naturalHeight: 100,
+          },
+        };
+
+        // Find parent joint for bone attachment
+        const joint = INITIAL_JOINTS[jointId];
+        const fromJointId = joint?.parent || 'navel';
+        
+        cutoutSlots[jointId] = {
+          id: jointId,
+          name: jointId,
+          attachment: {
+            type: 'bone',
+            fromJointId,
+            toJointId: jointId,
+          },
+          assetId,
+          visible: jointMask.visible ?? false,
+          opacity: jointMask.opacity ?? 1.0,
+          zIndex: 50,
+          mode: jointMask.mode ?? 'cutout',
+          scale: jointMask.scale ?? 0.25,
+          lengthScale: jointMask.lengthScale ?? 1.0,
+          volumePreserve: jointMask.volumePreserve ?? false,
+          offsetX: jointMask.offsetX ?? 0,
+          offsetY: jointMask.offsetY ?? 0,
+          rotation: jointMask.rotation ?? 0,
+          anchorX: jointMask.anchorX ?? 0.5,
+          anchorY: jointMask.anchorY ?? 0.5,
+        };
+      }
+    }
+  }
+
+  return { assets, cutoutSlots };
 };
 
 export const sanitizeState = (rawState: unknown): SkeletonState => {
@@ -325,6 +480,41 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
   }
   const textOverlays = sanitizeTextOverlays(rawScene?.textOverlays, frameCount);
   
+  // Handle cutout system migration and sanitization
+  let assets = base.assets;
+  let cutoutSlots = base.cutoutSlots;
+  let views = base.views;
+  let activeViewId = base.activeViewId;
+
+  // If we have legacy data but no new cutout data, migrate it
+  const hasLegacyData = (rawScene as any)?.headMask?.src || ((rawScene as any)?.jointMasks && Object.values((rawScene as any).jointMasks as Record<string, any>).some((mask: any) => mask?.src));
+  const hasNewCutoutData = raw.assets || raw.cutoutSlots;
+
+  if (hasLegacyData && !hasNewCutoutData) {
+    const migrated = migrateLegacyMasksToCutouts(rawScene, base);
+    assets = migrated.assets;
+    cutoutSlots = migrated.cutoutSlots;
+  } else {
+    // Sanitize existing cutout data
+    assets = typeof raw.assets === 'object' && raw.assets !== null ? raw.assets as Record<string, CutoutAsset> : base.assets;
+    cutoutSlots = typeof raw.cutoutSlots === 'object' && raw.cutoutSlots !== null ? raw.cutoutSlots as Record<string, CutoutSlot> : base.cutoutSlots;
+  }
+
+  // Sanitize views
+  if (Array.isArray(raw.views)) {
+    views = raw.views.filter((view): view is ViewPreset => {
+      return view && typeof view === 'object' && 
+             typeof view.id === 'string' && 
+             typeof view.name === 'string' &&
+             view.pose && typeof view.pose === 'object' &&
+             view.pose.joints && typeof view.pose.joints === 'object';
+    });
+  }
+
+  activeViewId = typeof raw.activeViewId === 'string' && raw.activeViewId && views.some(v => v.id === raw.activeViewId) 
+    ? raw.activeViewId 
+    : (views.length > 0 ? views[0].id : '');
+
   return {
     joints: sanitizeJoints(raw.joints),
     mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
@@ -361,6 +551,10 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
       jointMasks,
       textOverlays,
     },
+    assets,
+    cutoutSlots,
+    views,
+    activeViewId,
     viewScale,
     viewOffset,
   };

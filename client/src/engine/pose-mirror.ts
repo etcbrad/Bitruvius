@@ -1,7 +1,7 @@
 
 // utils/pose-mirror.ts
 
-import { Pose, PartName, partNameToPoseKey } from '../types';
+import { Pose, PartName, partNameToPoseKey } from './types';
 import { stringToPose, poseToString } from './pose-parser';
 
 export const mirrorPose = (originalPoseString: string, originalId: string, originalName: string, originalCategory: string): { id: string; cat: string; name: string; src: string; data: string } => {

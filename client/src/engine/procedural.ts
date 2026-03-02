@@ -1,7 +1,8 @@
 import { fromAngleDeg, toAngleDeg, vectorLength } from './kinematics';
 import type { EnginePoseSnapshot, Point } from './types';
+import { generateProceduralBitruviusPose } from './bitruvian/proceduralBitruvius';
 
-export type ProceduralMode = 'idle' | 'walk';
+export type ProceduralMode = 'idle' | 'walk' | 'procedural-bitruvius';
 
 const rotateOffset = (v: Point, deltaDeg: number): Point => {
   const len = vectorLength(v);
@@ -23,6 +24,19 @@ export const generateProceduralPose = (args: {
   strength: number;
 }): EnginePoseSnapshot => {
   const { mode, neutral, frame, fps, cycleFrames, strength } = args;
+
+  if (mode === 'procedural-bitruvius') {
+    return generateProceduralBitruviusPose({
+      neutral,
+      frame,
+      fps,
+      cycleFrames,
+      strength,
+      mode: 'walk', // Default to walk for Bitruvius
+      time: Date.now(),
+    });
+  }
+
   const out = clonePose(neutral);
 
   const safeCycle = Math.max(2, Math.floor(cycleFrames));

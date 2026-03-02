@@ -112,9 +112,22 @@ const drawReferenceLayerMedia = (
     drawY = boxY + (boxH - drawH) / 2;
   }
 
+  ctx.save();
+  
+  // Apply rotation if specified
+  if (layer.rotation !== 0) {
+    const centerX = drawX + drawW / 2;
+    const centerY = drawY + drawH / 2;
+    ctx.translate(centerX, centerY);
+    ctx.rotate((layer.rotation * Math.PI) / 180);
+    ctx.translate(-centerX, -centerY);
+  }
+
   ctx.globalAlpha = layer.opacity;
   ctx.drawImage(media, drawX, drawY, drawW, drawH);
   ctx.globalAlpha = 1;
+  
+  ctx.restore();
 };
 
 const pickMimeType = (): string | undefined => {
@@ -250,9 +263,20 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
       ctx.textAlign = o.align || 'center';
       ctx.textBaseline = 'top';
       ctx.font = `${Math.max(8, (o.fontSize || 32) * scale)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
-      const x = o.align === 'left' ? 24 * scale : o.align === 'right' ? canvas.width - 24 * scale : canvas.width / 2;
-      const y = 20 * scale;
-      ctx.fillText(text, x, y);
+      
+      // Use custom position if provided, otherwise use default positioning
+      const x = typeof o.x === 'number' ? o.x * scale : 
+                (o.align === 'left' ? 24 * scale : o.align === 'right' ? canvas.width - 24 * scale : canvas.width / 2);
+      const y = typeof o.y === 'number' ? o.y * scale : 20 * scale;
+      
+      // Apply rotation if specified
+      if (o.rotation && o.rotation !== 0) {
+        ctx.translate(x, y);
+        ctx.rotate((o.rotation * Math.PI) / 180);
+        ctx.fillText(text, 0, 0);
+      } else {
+        ctx.fillText(text, x, y);
+      }
       ctx.restore();
     }
   };

@@ -1,4 +1,4 @@
-import { Pose, Vector2D } from '../types';
+import { Pose, Vector2D } from './types';
 
 // Short keys for URL/file serialization
 export const SHORT_KEY_MAP: { [long: string]: string } = {
