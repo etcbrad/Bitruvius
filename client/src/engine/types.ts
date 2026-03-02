@@ -100,14 +100,14 @@ type MaskBase = {
   rotation: number;
   anchorX: number;
   anchorY: number;
-  mode: MaskMode;
-  lengthScale: number;
-  volumePreserve: boolean;
+  mode: 'cutout',
+  lengthScale: 1,
+  volumePreserve: true,
   // New transform properties
-  stretchX: number;
-  stretchY: number;
-  skewX: number;
-  skewY: number;
+  stretchX: 1,
+  stretchY: 1,
+  skewX: 0,
+  skewY: 0,
 };
 
 export type CutoutAsset = {

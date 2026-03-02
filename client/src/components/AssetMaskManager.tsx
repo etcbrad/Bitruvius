@@ -141,8 +141,31 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
     await uploadMaskFile(file);
   };
 
+  const isJointSelected = state.joints[maskJointId] !== undefined;
+
   return (
     <div className="space-y-4">
+      {isJointSelected && (
+        <section className="p-3 bg-[#181818] rounded-lg border border-accent/20">
+          <div className="flex items-center gap-2 mb-3 text-accent">
+            <Settings size={14} />
+            <h2 className="text-[10px] font-bold uppercase tracking-widest">Rigging & Mask: {maskJointId}</h2>
+          </div>
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <label className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase transition-all cursor-pointer">
+                <Upload size={12} />
+                Upload Mask
+                <input type="file" accept="image/*" onChange={handleJointMaskUpload} className="hidden" />
+              </label>
+            </div>
+            {/* Visual Pin Tool Placeholder */}
+            <div className="p-2 bg-[#111] rounded border border-[#222] text-center">
+              <p className="text-[8px] text-[#666] uppercase">Visual Pin Tool active on canvas</p>
+            </div>
+          </div>
+        </section>
+      )}
       <section>
         <div className="flex items-center gap-2 mb-4 text-[#666]">
           <Layers size={14} />

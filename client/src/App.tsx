@@ -1585,6 +1585,7 @@ return makeDefaultState();
   const renderJoint = (id: string) => {
     const joint = state.joints[id];
     const pos = getWorldPosition(id, state.joints, INITIAL_JOINTS);
+    const isLotte = state.viewMode === 'lotte';
     const isRoot = !joint.parent;
     const isSelected = selectedJointId === id;
     
@@ -1611,12 +1612,15 @@ return makeDefaultState();
 
     if (isNipple) return null;
 
+    const fillColor = isLotte ? "#000000" : (isRoot ? "white" : (state.activePins.includes(id) ? "#ff8800" : "var(--accent)"));
+    const strokeColor = isLotte ? "#000000" : (isSelected ? 'rgba(255, 255, 255, 0.9)' : 'var(--bg)');
+
     return (
       <circle
         key={`joint-${id}`}
         cx={x} cy={y} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
-        fill={isRoot ? "white" : (state.activePins.includes(id) ? "#ff8800" : "var(--accent)")}
-        stroke={isSelected ? 'rgba(255, 255, 255, 0.9)' : 'var(--bg)'}
+        fill={fillColor}
+        stroke={strokeColor}
         strokeWidth={isSelected ? 3 : 2}
         className="cursor-grab active:cursor-grabbing"
         onMouseDown={handleMouseDown(id)}

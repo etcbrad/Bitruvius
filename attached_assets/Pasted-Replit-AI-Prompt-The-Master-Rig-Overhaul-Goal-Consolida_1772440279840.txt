@@ -1,0 +1,32 @@
+Replit AI Prompt: The "Master Rig" Overhaul
+Goal: Consolidate the UI into a selection-aware "Unified Inspector," fix mesh stretching, and repair the Procedural Engine.
+
+1. Unified UI & Contextual Inspector:
+
+Selection Logic: When a Joint is selected, the sidebar must dynamically show a single "Rigging & Mask" card. This card must combine Anchor (Pin) X/Y, Mask Upload, and Offset/Rotation in one view.
+
+Pinning Refinement: Replace the 0–100% sliders with a Visual Pin Tool. Allow the user to click on the mask in the canvas to set the AnchorPoint. The mask should pivot around this point relative to the joint.
+
+2. Eliminating Needless Stretching:
+
+Default State: All new masks must default to Mode: CUTOUT (Rigid).
+
+Hard Constraints: In "Cardboard" or "Cutout" mode, the mask's scale and dimensions must remain 1:1 with the source asset. Disable any vertex-stretching shaders unless Mode: Rubberhose is explicitly toggled.
+
+Rotoscoping Logic: Ensure masks in "Roto" mode maintain their global orientation unless "Inherit Rotation" is checked, allowing for manual Harryhausen-style placement.
+
+3. Procedural Engine Fix & Reactivation:
+
+Normalization: The Procedural Engine (Walk/Idle loops) is currently over-extending joints. Re-calibrate the Strength multiplier so that a value of 1.0 stays within natural human constraints.
+
+Baking Fix: Ensure the "Bake Loop to Timeline" function maps the procedural sine waves into discrete keyframes on the animation timeline without skipping frames.
+
+4. The Cutout "Atlas Mapper":
+
+Sheet Upload: Create a new "Source Atlas" state. When a single large image/SVG is uploaded, provide a sub-menu to "Define Part."
+
+SVG Layer-to-Joint: If an SVG contains named IDs (e.g., id="L_ARM"), implement an Auto-Map button that assigns those SVG groups to the corresponding Bitruvius joints instantly.
+
+5. Style Presets (The "Lotte" Update):
+
+Update the LOTTE view mode to force all masks to #000000 (Silhouette) and the background to a configurable "Paper" hex code, ensuring the cutout aesthetic is preserved during procedural movement.

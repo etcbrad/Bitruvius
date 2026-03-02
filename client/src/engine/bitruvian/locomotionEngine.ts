@@ -67,7 +67,7 @@ export const calculateFootTipGlobalPosition = (
 };
 
 const calculateLegAngles = (s: number, g: WalkingEngineGait, phase: number, wf: number) => {
-  const hipMult = (BITRUVIAN_CONSTANTS.GAIT_PHYSICS.HIP_BASE_MULTIPLIER + (g.stride * BITRUVIAN_CONSTANTS.GAIT_PHYSICS.HIP_STRIDE_FACTOR)) * 
+  const hipMult = (BITRUVIAN_CONSTANTS.GAIT_PHYSICS.HIP_BASE_MULTIPLIER * 0.7 + (g.stride * BITRUVIAN_CONSTANTS.GAIT_PHYSICS.HIP_STRIDE_FACTOR)) * 
                   (BITRUVIAN_CONSTANTS.GAIT_PHYSICS.HIP_INTENSITY_BASE + g.intensity * BITRUVIAN_CONSTANTS.GAIT_PHYSICS.HIP_INTENSITY_FACTOR);
   let hip = s * hipMult;
   let knee = 5; 
