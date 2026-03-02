@@ -3995,162 +3995,32 @@ return makeDefaultState();
               </div>
             </section>
 
-                    <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
-                        <Layers size={14} />
-                        <h2 className="text-[10px] font-bold uppercase tracking-widest">Joint Hierarchy</h2>
-                      </div>
-              {(() => {
-                const selected = selectedJointId ? state.joints[selectedJointId] : null;
-                if (!selected || !selected.parent) {
-                  return (
-                    <div className="mb-3 text-[10px] text-[#444]">
-                      Select a joint to edit rotation.
-                    </div>
-                  );
-                }
-
-                const angleDeg = toAngleDeg(selected.previewOffset);
-                const actionId = `joint_angle:${selected.id}`;
-
-                return (
-                  <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                        {selected.label} Angle
-                      </div>
-                      <div className="font-mono text-xs text-white">{angleDeg.toFixed(1)}°</div>
-                    </div>
-                    <input
-                      type="range"
-                      min="-180"
-                      max="180"
-                      step="1"
-                              value={angleDeg}
-                              onPointerDown={() => {
-                          setTimelinePlaying(false);
-                          historyCtrlRef.current.beginAction(actionId, state);
-                        }}
-                      onPointerUp={() =>
-                        setState((prev) => {
-                          const changed = historyCtrlRef.current.commitAction(prev);
-                          return changed ? { ...prev } : prev;
-                        })
-                      }
-                      onPointerCancel={() =>
-                        setState((prev) => {
-                          const changed = historyCtrlRef.current.commitAction(prev);
-                          return changed ? { ...prev } : prev;
-                        })
-                      }
-                      onChange={(e) => setJointAngleDeg(selected.id, parseFloat(e.target.value))}
-                      className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                    />
-                  </div>
-                );
-              })()}
-                      <div className="max-h-[300px] overflow-y-auto pr-2 space-y-1">
-                        {(Object.values(state.joints) as Joint[]).map((joint: Joint) => (
-                          <div 
-                            key={joint.id}
-                      onClick={() => setSelectedJointId(joint.id)}
-                            className={`group flex items-center justify-between p-2 rounded-md transition-colors cursor-pointer ${
-                        draggingId === joint.id
-                          ? 'bg-white/10'
-                          : selectedJointId === joint.id
-                            ? 'bg-white/5'
-                            : 'hover:bg-white/5'
-                      }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <div className={`w-1.5 h-1.5 rounded-full ${joint.isEndEffector ? 'bg-white' : 'bg-[#444]'}`} />
-                              <span className="text-xs font-medium">{joint.label}</span>
-                            </div>
-                            <button 
-                              onClick={(e) => {
-                          e.stopPropagation();
-                          togglePin(joint.id);
-                        }}
-                              className={`p-1 rounded transition-colors ${state.activePins.includes(joint.id) ? 'text-[#ff8800]' : 'text-[#444] group-hover:text-[#888]'}`}
-                            >
-                              <Anchor size={12} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                            </section>
-            </div>
-          </div>
-
-          <div className="p-6 pt-0">
-            <button 
-              onClick={resetSkeleton}
-              className="w-full flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
-            >
-              <RotateCcw size={14} />
-              RESET ENGINE
-            </button>
+            <section className="p-0 border-none">
+              <AssetMaskManager
+                state={state}
+                setState={setState}
+                setStateWithHistory={setStateWithHistory}
+                maskJointId={selectedJointId || 'head'}
+                setMaskJointId={setSelectedJointId}
+                maskEditArmed={maskEditArmed}
+                setMaskEditArmed={setMaskEditArmed}
+                uploadJointMaskFile={uploadJointMaskFile}
+                uploadMaskFile={uploadMaskFile}
+                addConsoleLog={addConsoleLog}
+              />
+            </section>
           </div>
         </div>
-      </motion.aside>
 
-      {/* Main Viewport */}
-      <main className="flex-1 relative flex flex-col overflow-hidden">
-        {/* Toggle Sidebar Button */}
-        <button 
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="absolute top-6 left-6 z-10 p-2 bg-[#121212] border border-[#222] rounded-lg hover:bg-[#222] transition-colors"
-        >
-          {sidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
-        </button>
+            </section>
+          </div>
+        </div>
 
-        {/* Canvas */}
-        <div 
-          ref={canvasRef}
-          className="flex-1 cursor-crosshair relative"
-          onMouseDown={() => setSelectedJointId(null)}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onDragOver={(e) => {
-            if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
-          }}
-          onDrop={(e) => {
-            const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
-            if (payload !== 'joint_masks' && payload !== 'console' && payload !== 'camera' && payload !== 'procgen') return;
-            e.preventDefault();
-            spawnFloatingWidget(payload, e.clientX, e.clientY);
-          }}
-        >
-          <svg
-            ref={svgRef}
-            width={canvasSize.width}
-            height={canvasSize.height}
-            viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
-            onMouseMove={onCanvasMouseMove}
-            onMouseDown={(e) => {
-              if (e.button === 1) e.preventDefault(); // Prevent auto-scroll on middle click
-              setSelectedJointId(null);
-            }}
-            className={`w-full h-full skeleton-canvas ${state.viewMode === 'noir' ? 'grayscale contrast-125' : ''}`}
-          >
-            <g transform={`translate(${state.viewOffset.x}, ${state.viewOffset.y}) scale(${state.viewScale})`}>
-              <SystemGrid 
-                visible={gridOverlayEnabled || gridRingsEnabled}
-                showGrid={gridOverlayEnabled}
-                showRings={gridRingsEnabled}
-                opacity={0.18}
-                plot={gridRingsBgData?.vitruvian.plot ?? null}
-                transform={gridOverlayTransform}
-                      />
-                      {/* Reference Layers */}
-                      {state.scene.background.src && state.scene.background.visible && state.scene.background.mediaType === 'image' && (
-                        <image
-                          href={state.scene.background.src}
-                          x={state.scene.background.x}
-                          y={state.scene.background.y}
-                          width={canvasSize.width * state.scene.background.scale}
-                          height={canvasSize.height * state.scene.background.scale}
+        <div className="p-6 pt-0 mt-auto">
+      </main>
+    </div>
+  );
+}
                           preserveAspectRatio={
                             state.scene.background.fitMode === 'none' ? 'none' :
                             state.scene.background.fitMode === 'fill' ? 'none' :

@@ -118,24 +118,14 @@ export const RotationWheelControl: React.FC<RotationWheelControlProps> = ({
   return (
     <div
       className={[
-        'flex items-center justify-center gap-2',
+        'flex flex-col items-center justify-center gap-2',
         isDisabled ? 'opacity-50 pointer-events-none' : '',
         className,
       ].join(' ')}
     >
-      <button
-        type="button"
-        onClick={() => adjustStep(-1)}
-        className="w-8 h-8 flex items-center justify-center border border-white/20 text-white/70 hover:bg-white/10 transition-colors text-lg font-bold"
-        aria-label="Decrement rotation"
-        disabled={isDisabled}
-      >
-        -
-      </button>
-
       <div
         ref={wheelRef}
-        className="relative flex items-center justify-center select-none"
+        className="relative flex items-center justify-center select-none cursor-pointer group"
         style={{ width: WHEEL_SIZE, height: WHEEL_SIZE }}
         onPointerDown={handlePointerDown}
         role="slider"
@@ -145,40 +135,92 @@ export const RotationWheelControl: React.FC<RotationWheelControlProps> = ({
         aria-valuenow={value}
       >
         <svg width={WHEEL_SIZE} height={WHEEL_SIZE} className="absolute inset-0">
-          <circle cx={CENTER} cy={CENTER} r={RADIUS} fill="#2D2D2D" stroke="#3A3A3A" strokeWidth="1" />
+          <circle cx={CENTER} cy={CENTER} r={RADIUS} fill="#111" stroke="#333" strokeWidth="1" className="group-hover:stroke-accent/50 transition-colors" />
+          <circle cx={CENTER} cy={CENTER} r={RADIUS - 8} fill="none" stroke="#222" strokeWidth="1" strokeDasharray="2 4" />
           {dragging && (
             <circle
               cx={CENTER}
               cy={CENTER}
               r={RADIUS - 2}
               fill="none"
-              stroke="#E5E7EB"
+              stroke="var(--accent)"
               strokeWidth="2"
               strokeDasharray="5 5"
+              className="opacity-50"
             />
           )}
+          <line 
+            x1={CENTER} 
+            y1={CENTER} 
+            x2={indicator.x} 
+            y2={indicator.y} 
+            stroke="var(--accent)" 
+            strokeWidth="1" 
+            className="opacity-30" 
+          />
           <circle
             cx={indicator.x}
             cy={indicator.y}
-            r="4"
-            fill="#E5E7EB"
-            stroke="#2D2D2D"
-            strokeWidth="1"
-            className="pointer-events-none"
+            r="5"
+            fill="var(--accent)"
+            stroke="#000"
+            strokeWidth="1.5"
+            className="pointer-events-none shadow-xl"
           />
         </svg>
-        <span className="relative text-white text-lg font-bold tracking-tight pointer-events-none">{value.toFixed(0)}°</span>
+        <div className="flex flex-col items-center justify-center relative">
+          <span className="text-white text-xl font-bold tracking-tighter leading-none">{value.toFixed(0)}°</span>
+          <span className="text-[8px] text-[#666] uppercase font-bold tracking-widest mt-1">deg</span>
+        </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => adjustStep(1)}
-        className="w-8 h-8 flex items-center justify-center border border-white/20 text-white/70 hover:bg-white/10 transition-colors text-lg font-bold"
-        aria-label="Increment rotation"
-        disabled={isDisabled}
-      >
-        +
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => adjustStep(-1)}
+          className="w-10 h-6 flex items-center justify-center rounded bg-[#222] border border-[#333] text-white/70 hover:bg-[#333] hover:text-white transition-all text-xs font-bold"
+          aria-label="Decrement rotation"
+          disabled={isDisabled}
+        >
+          -
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange(0)}
+          className="px-2 h-6 flex items-center justify-center rounded bg-[#222] border border-[#333] text-[8px] font-bold uppercase tracking-widest text-[#666] hover:text-white transition-all"
+          disabled={isDisabled}
+        >
+          Reset
+        </button>
+        <button
+          type="button"
+          onClick={() => adjustStep(1)}
+          className="w-10 h-6 flex items-center justify-center rounded bg-[#222] border border-[#333] text-white/70 hover:bg-[#333] hover:text-white transition-all text-xs font-bold"
+          aria-label="Increment rotation"
+          disabled={isDisabled}
+        >
+          +
+        </button>
+      </div>
+    </div>
+        <button
+          type="button"
+          onClick={() => onChange(0)}
+          className="px-2 h-6 flex items-center justify-center rounded bg-[#222] border border-[#333] text-[8px] font-bold uppercase tracking-widest text-[#666] hover:text-white transition-all"
+          disabled={isDisabled}
+        >
+          Reset
+        </button>
+        <button
+          type="button"
+          onClick={() => adjustStep(1)}
+          className="w-10 h-6 flex items-center justify-center rounded bg-[#222] border border-[#333] text-white/70 hover:bg-[#333] hover:text-white transition-all text-xs font-bold"
+          aria-label="Increment rotation"
+          disabled={isDisabled}
+        >
+          +
+        </button>
+      </div>
     </div>
   );
 };
