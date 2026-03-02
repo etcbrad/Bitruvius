@@ -1989,7 +1989,7 @@ return makeDefaultState();
     .filter(id => id !== 'sacrum' && !id.includes('rib'))
     .map(renderJoint);
   
-  const xMarkers = [].map(id => renderXMarker(id, "#ff8800"));
+  const xMarkers = state.activePins.map(id => renderXMarker(id, "#ff8800"));
   
   return [...regularJoints, ...xMarkers];
 })() : null;
@@ -4698,6 +4698,247 @@ return makeDefaultState();
                         </g>
                       );
                     })()}
+          <div className="absolute top-8 right-8 flex gap-2">
+             <button
+               onClick={() => setBacklightEnabled(!backlightEnabled)}
+               className={`bg-[#121212]/80 backdrop-blur-md border border-[#222] px-4 py-2 rounded-full flex items-center gap-3 transition-all duration-200 ${
+                 backlightEnabled ? 'bg-yellow-500/20 border-yellow-500/50' : 'hover:bg-[#1a1a1a]'
+               }`}
+             >
+                <Power 
+                  className={`w-4 h-4 transition-colors duration-200 ${
+                    backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
+                  }`} 
+                />
+                <span className={`text-[10px] font-bold tracking-widest uppercase transition-colors duration-200 ${
+                  backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
+                }`}>
+                  {backlightEnabled ? 'Backlight ON' : 'Backlight OFF'}
+                </span>
+             </button>
+          </div>
+          {state.timeline.enabled && (() => {
+            const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
+            const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
+            const hasKeyframe = state.timeline.clip.keyframes.some((k) => k.frame === timelineFrame);
+
+            return (
+              <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-[#121212]/90 backdrop-blur-md border border-[#222] rounded-xl px-6 py-4">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (timelinePlaying) {
+                        setTimelinePlaying(false);
+                        return;
+                      }
+                      timelineFrameRef.current = timelineFrame;
+                      setTimelinePlaying(true);
+                    }}
+                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
+                  >
+                    {timelinePlaying ? 'Pause' : 'Play'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={setKeyframeHere}
+                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
+                  >
+                    {hasKeyframe ? 'Update Key' : 'Set Key'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={deleteKeyframeHere}
+                    disabled={!hasKeyframe}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      hasKeyframe ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                  >
+                    Delete Key
+                  </button>
+
+                  <div className="ml-auto flex items-center gap-4">
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                      <span>FPS</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={state.timeline.clip?.fps || 24}
+                        onChange={(e) => {
+                          setTimelinePlaying(false);
+                          const next = clamp(parseInt(e.target.value || '0', 10), 1, 60);
+                          setStateWithHistory('timeline_set_fps', (prev) => ({
+                            ...prev,
+                            timeline: {
+                              ...prev.timeline,
+                              clip: { ...prev.timeline.clip, fps: next },
+                            },
+                          }));
+                        }}
+                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                      <span>Frames</span>
+                      <input
+                        type="number"
+                        min={2}
+                        max={600}
+                        value={state.timeline.clip?.frameCount || 120}
+                        onChange={(e) => {
+                          setTimelinePlaying(false);
+                          const next = clamp(parseInt(e.target.value || '0', 10), 2, 600);
+                          setStateWithHistory('timeline_set_frame_count', (prev) => ({
+                            ...prev,
+                            timeline: {
+                              ...prev.timeline,
+                              clip: {
+                                ...prev.timeline.clip,
+                                frameCount: next,
+                                keyframes: prev.timeline.clip.keyframes.filter((k) => k.frame < next),
+                              },
+                            },
+                          }));
+                          setTimelineFrame((f) => {
+                            const clamped = clamp(f, 0, next - 1);
+                            timelineFrameRef.current = clamped;
+                            return clamped;
+                          });
+                        }}
+                        className="w-20 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                      <span>Easing</span>
+                      <select
+                        value={state.timeline.clip?.easing || 'linear'}
+                        onChange={(e) => {
+                          setTimelinePlaying(false);
+                          const next = e.target.value === 'easeInOut' ? 'easeInOut' : 'linear';
+                          setStateWithHistory('timeline_set_easing', (prev) => ({
+                            ...prev,
+                            timeline: {
+                              ...prev.timeline,
+                              clip: { ...prev.timeline.clip, easing: next },
+                            },
+                          }));
+                        }}
+                        className="px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white text-xs"
+                      >
+                        <option value="linear">Linear</option>
+                        <option value="easeInOut">EaseInOut</option>
+                      </select>
+                    </div>
+
+                    <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
+                      <input
+                        type="checkbox"
+                        checked={state.timeline.onionSkin.enabled}
+                        onChange={() => {
+                          setTimelinePlaying(false);
+                          setStateWithHistory('toggle_onion_skin', (prev) => ({
+                            ...prev,
+                            timeline: {
+                              ...prev.timeline,
+                              onionSkin: { ...prev.timeline.onionSkin, enabled: !prev.timeline.onionSkin.enabled },
+                            },
+                          }));
+                        }}
+                        className="accent-white"
+                      />
+                      Onion
+                    </label>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="w-28 font-mono text-xs text-[#666]">
+                    {timelineFrame}/{frameCount - 1}
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={frameCount - 1}
+                    step={1}
+                    value={timelineFrame}
+                    onPointerDown={() => {
+                      setTimelinePlaying(false);
+                      historyCtrlRef.current.beginAction('timeline_scrub', state);
+                    }}
+                    onPointerUp={() =>
+                      setState((prev) => {
+                        const changed = historyCtrlRef.current.commitAction(prev);
+                        return changed ? { ...prev } : prev;
+                      })
+                    }
+                    onPointerCancel={() =>
+                      setState((prev) => {
+                        const changed = historyCtrlRef.current.commitAction(prev);
+                        return changed ? { ...prev } : prev;
+                      })
+                    }
+                    onChange={(e) => applyTimelineFrame(parseInt(e.target.value, 10))}
+                    className="flex-1 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                  />
+                  <div className="w-24 text-[10px] font-bold uppercase tracking-widest text-[#666] text-right">
+                    Keys: {state.timeline.clip?.keyframes?.length || 0}
+                  </div>
+                </div>
+
+                {state.timeline.onionSkin.enabled && (
+                  <div className="mt-3 flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                    <div className="flex items-center gap-2">
+                      <span>Past</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={12}
+                        value={state.timeline.onionSkin.past}
+                        onChange={(e) => {
+                          setTimelinePlaying(false);
+                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
+                          setStateWithHistory('onion_past', (prev) => ({
+                            ...prev,
+                            timeline: {
+                              ...prev.timeline,
+                              onionSkin: { ...prev.timeline.onionSkin, past: next },
+                            },
+                          }));
+                        }}
+                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span>Future</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={12}
+                        value={state.timeline.onionSkin.future}
+                        onChange={(e) => {
+                          setTimelinePlaying(false);
+                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
+                          setStateWithHistory('onion_future', (prev) => ({
+                            ...prev,
+                            timeline: {
+                              ...prev.timeline,
+                              onionSkin: { ...prev.timeline.onionSkin, future: next },
+                            },
+                          }));
+                        }}
+                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
                   </svg>
 
           {/* Floating Widgets */}
@@ -5150,7 +5391,7 @@ return makeDefaultState();
                         type="number"
                         min={1}
                         max={60}
-                        value={fps}
+                        value={state.timeline.clip?.fps || 24}
                         onChange={(e) => {
                           setTimelinePlaying(false);
                           const next = clamp(parseInt(e.target.value || '0', 10), 1, 60);
@@ -5172,7 +5413,7 @@ return makeDefaultState();
                         type="number"
                         min={2}
                         max={600}
-                        value={frameCount}
+                        value={state.timeline.clip?.frameCount || 120}
                         onChange={(e) => {
                           setTimelinePlaying(false);
                           const next = clamp(parseInt(e.target.value || '0', 10), 2, 600);
@@ -5200,7 +5441,7 @@ return makeDefaultState();
                     <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
                       <span>Easing</span>
                       <select
-                        value={state.timeline.clip.easing}
+                        value={state.timeline.clip?.easing || 'linear'}
                         onChange={(e) => {
                           setTimelinePlaying(false);
                           const next = e.target.value === 'easeInOut' ? 'easeInOut' : 'linear';
@@ -5270,7 +5511,7 @@ return makeDefaultState();
                     className="flex-1 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                   />
                   <div className="w-24 text-[10px] font-bold uppercase tracking-widest text-[#666] text-right">
-                    Keys: {state.timeline.clip.keyframes.length}
+                    Keys: {state.timeline.clip?.keyframes?.length || 0}
                   </div>
                 </div>
 
@@ -5322,7 +5563,7 @@ return makeDefaultState();
                 )}
               </div>
             );
-          })()}
+          })}
   </main>
 </div>
 );
