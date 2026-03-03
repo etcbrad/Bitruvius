@@ -1,0 +1,10 @@
+[
+  {
+    "type": "pageerror",
+    "text": "TypeError: Cannot read properties of undefined (reading 'join')"
+  },
+  {
+    "type": "console.error",
+    "text": "The above error occurred in the <App> component:\n\n    at App (http://localhost:5002/src/App.tsx?t=1772568830613:360:36)\n    at Route (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/wouter.js?v=6815d4ad:357:16)\n    at Switch (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/wouter.js?v=6815d4ad:414:17)\n\nConsider adding an error boundary to your tree to customize error handling behavior.\nVisit https://reactjs.org/link/error-boundaries to learn more about error boundaries."
+  }
+]

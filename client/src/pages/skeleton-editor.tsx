@@ -269,7 +269,7 @@ export default function SkeletonEditorPage() {
       const ty = y + Math.sin(a) * bone.length;
 
       ctx.lineWidth = selectedBoneId === bone.id ? 4 : 2;
-      ctx.strokeStyle = selectedBoneId === bone.id ? '#ff8800' : '#444';
+      ctx.strokeStyle = selectedBoneId === bone.id ? '#00ff88' : '#444';
       ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.lineTo(tx, ty);
@@ -297,7 +297,7 @@ export default function SkeletonEditorPage() {
       const x = t.targetX;
       const y = t.targetY;
       const s = 10;
-      ctx.fillStyle = '#ff8800';
+      ctx.fillStyle = '#00ff88';
       ctx.beginPath();
       ctx.moveTo(x, y - s);
       ctx.lineTo(x + s, y);
@@ -312,7 +312,7 @@ export default function SkeletonEditorPage() {
       const b = posed.bones[selectedBoneId];
       if (b && Number.isFinite(b.worldX) && Number.isFinite(b.worldY)) {
         ctx.font = '12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
-        ctx.fillStyle = '#ff8800';
+        ctx.fillStyle = '#00ff88';
         ctx.fillText(b.name, (b.worldX ?? 0) + 12, (b.worldY ?? 0) - 12);
       }
     }

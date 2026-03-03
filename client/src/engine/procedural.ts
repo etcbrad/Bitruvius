@@ -4,6 +4,7 @@ import { generateProceduralBitruviusPose } from './bitruvian/proceduralBitruvius
 import type { IdleSettings, PhysicsControls, WalkingEngineGait } from './bitruvian/types';
 import { createRng, type Rng } from './rng';
 import { createBitruviusRuntimeState, resetBitruviusRuntimeState, type BitruviusRuntimeState } from './bitruvian/proceduralBitruvius';
+import { clamp } from '../utils';
 
 export type ProceduralMode = 'idle' | 'walk' | 'procedural-bitruvius';
 
@@ -117,6 +118,7 @@ export const stepProcgenPose = (args: {
   mode: ProcgenMode;
   neutral: EnginePoseSnapshot;
   dtSec: number;
+  cycleFrames: number;
   strength: number;
   gait: WalkingEngineGait;
   gaitEnabled?: Partial<Record<keyof WalkingEngineGait, boolean>>;
@@ -124,12 +126,12 @@ export const stepProcgenPose = (args: {
   idle: IdleSettings;
   options: ProcgenOptions;
 }): EnginePoseSnapshot => {
-  const { runtime, mode, neutral, dtSec, strength, gait, gaitEnabled, physics, idle, options } = args;
+  const { runtime, mode, neutral, dtSec, strength, gait, gaitEnabled, physics, idle, options, cycleFrames } = args;
   const fps = 60;
-  const cycleFrames = 120;
+  const safeCycleFrames = clamp(Math.floor(cycleFrames || 0), 2, 600);
   runtime.tSec += Math.max(0, dtSec);
   const nextFrame = Math.floor(runtime.tSec * fps);
-  runtime.frame = nextFrame % cycleFrames;
+  runtime.frame = nextFrame % safeCycleFrames;
   const timeMs = Math.floor(runtime.tSec * 1000);
 
   const gaitOverrides: Partial<WalkingEngineGait> = {};
@@ -138,14 +140,40 @@ export const stepProcgenPose = (args: {
     gaitOverrides[k] = gait[k];
   });
 
+  const runBoostedGait = (() => {
+    if (mode !== 'run_in_place') return gaitOverrides;
+    const boosted: Partial<WalkingEngineGait> = { ...gaitOverrides };
+    const mul = <K extends keyof WalkingEngineGait>(k: K, factor: number, min: number, max: number) => {
+      const v = boosted[k];
+      if (typeof v !== 'number') return;
+      boosted[k] = clamp(v * factor, min, max);
+    };
+    const add = <K extends keyof WalkingEngineGait>(k: K, delta: number, min: number, max: number) => {
+      const v = boosted[k];
+      if (typeof v !== 'number') return;
+      boosted[k] = clamp(v + delta, min, max);
+    };
+
+    mul('stride', 1.35, 0, 2);
+    mul('intensity', 1.6, 0, 2);
+    add('gravity', 0.08, 0, 1);
+    add('hover_height', 0.15, 0, 1);
+    mul('arm_swing', 1.2, 0, 2);
+    add('kick_up_force', 0.4, 0, 1);
+    add('lean', 0.2, -1, 1);
+    mul('elbow_bend', 1.15, 0, 1.5);
+
+    return boosted;
+  })();
+
   return generateProceduralBitruviusPose({
     neutral,
     frame: runtime.frame,
     fps,
-    cycleFrames,
+    cycleFrames: safeCycleFrames,
     strength,
     mode: mode === 'idle' ? 'idle' : 'walk',
-    gait: gaitOverrides,
+    gait: runBoostedGait,
     physics,
     idle,
     options,
@@ -179,6 +207,33 @@ export const bakeProcgenLoop = (args: {
     if (gaitEnabled && gaitEnabled[k] === false) return;
     gaitOverrides[k] = gait[k];
   });
+  const resolvedGait =
+    mode === 'run_in_place'
+      ? (() => {
+          const boosted: Partial<WalkingEngineGait> = { ...gaitOverrides };
+          const mul = <K extends keyof WalkingEngineGait>(k: K, factor: number, min: number, max: number) => {
+            const v = boosted[k];
+            if (typeof v !== 'number') return;
+            boosted[k] = clamp(v * factor, min, max);
+          };
+          const add = <K extends keyof WalkingEngineGait>(k: K, delta: number, min: number, max: number) => {
+            const v = boosted[k];
+            if (typeof v !== 'number') return;
+            boosted[k] = clamp(v + delta, min, max);
+          };
+
+          mul('stride', 1.35, 0, 2);
+          mul('intensity', 1.6, 0, 2);
+          add('gravity', 0.08, 0, 1);
+          add('hover_height', 0.15, 0, 1);
+          mul('arm_swing', 1.2, 0, 2);
+          add('kick_up_force', 0.4, 0, 1);
+          add('lean', 0.2, -1, 1);
+          mul('elbow_bend', 1.15, 0, 1.5);
+
+          return boosted;
+        })()
+      : gaitOverrides;
 
   const keyframes: TimelineKeyframe[] = [];
   for (let f = 0; f < safeFrameCount; f += step) {
@@ -192,7 +247,7 @@ export const bakeProcgenLoop = (args: {
         cycleFrames: safeFrameCount,
         strength,
         mode: mode === 'idle' ? 'idle' : 'walk',
-        gait: gaitOverrides,
+        gait: resolvedGait,
         physics,
         idle,
         options,

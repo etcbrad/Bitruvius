@@ -62,7 +62,8 @@ export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
 
   // Torso slots
   slots['torso'] = createSlot('torso', 'Torso', 'navel', 'sternum', 50);
-  slots['pelvis'] = createSlot('pelvis', 'Pelvis', 'navel', 'navel', 15); // Pelvis is centered on navel
+  // Optional waist/pelvis band (mask optional per spec); spans hip-to-hip.
+  slots['waist'] = { ...createSlot('waist', 'Waist', 'l_hip', 'r_hip', 15), visible: false };
 
   return slots;
 };
@@ -74,6 +75,8 @@ export const getBoneSlotCandidates = (): Array<{ id: string; name: string; fromJ
   // Create slots based on INITIAL_JOINTS parent relationships
   for (const [jointId, joint] of Object.entries(INITIAL_JOINTS)) {
     if (joint.parent && INITIAL_JOINTS[joint.parent]) {
+      // `root` is a technical joint; do not offer a `root -> navel` bone candidate.
+      if (joint.parent === 'root') continue;
       candidates.push({
         id: jointId,
         name: jointId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),

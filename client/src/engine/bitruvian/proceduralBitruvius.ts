@@ -5,6 +5,7 @@ import {
   WalkingEngineProportions, 
   PhysicsControls,
   IdleSettings,
+  BITRUVIAN_CONSTANTS,
   DEFAULT_PROCEDURAL_BITRUVIAN_GAIT,
   DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS,
   DEFAULT_PROCEDURAL_BITRUVIAN_IDLE,
@@ -13,10 +14,12 @@ import {
 import { updateLocomotionPhysics, INITIAL_LOCOMOTION_STATE, LocomotionState } from './locomotionEngine';
 import { createIdleRuntimeState, IdleRuntimeState, updateIdlePhysics } from './idleEngine';
 import { applyFootGrounding } from './groundingEngine';
-import { lerp, rotateVecInternal } from './kinematics';
+import { clamp, lerp, rotateVecInternal } from './kinematics';
 import type { ProcgenOptions } from '../types';
 import type { Rng } from '../rng';
 import { createRng } from '../rng';
+import { getWorldPositionFromOffsets } from '../kinematics';
+import { INITIAL_JOINTS } from '../model';
 
 export type BitruviusRuntimeState = {
   locomotion: LocomotionState;
@@ -72,19 +75,40 @@ const bitruviusPoseToEnginePose = (bitruviusPose: Partial<WalkingEnginePose>, ba
     result.joints[engineKey] = rotateVecInternal(baseOffset, angleDeg);
   });
 
-  // Apply body translation to the skeleton root (navel). Applying it to child roots (hips)
+  // Apply body translation to the skeleton root (`root`). Applying it to child roots (hips)
   // double-counts and causes sudden "sinking"/drift.
   if (typeof bitruviusPose.x_offset === 'number' || typeof bitruviusPose.y_offset === 'number') {
-    const root = result.joints.navel;
-    if (root) {
-      result.joints.navel = {
-        x: root.x + (bitruviusPose.x_offset ?? 0),
-        y: root.y + (bitruviusPose.y_offset ?? 0),
-      };
-    }
+    const base = result.joints.root ?? { x: 0, y: 0 };
+    result.joints.root = {
+      x: base.x + (bitruviusPose.x_offset ?? 0),
+      y: base.y + (bitruviusPose.y_offset ?? 0),
+    };
   }
 
   return result;
+};
+
+const inferBaseUnitHFromNeutral = (neutral: EnginePoseSnapshot): number => {
+  const lenOf = (id: string): number | null => {
+    const v = neutral.joints[id];
+    if (!v) return null;
+    const l = Math.hypot(v.x, v.y);
+    return Number.isFinite(l) && l > 1e-6 ? l : null;
+  };
+
+  const thighSamples = [lenOf('l_knee'), lenOf('r_knee')].filter((v): v is number => typeof v === 'number');
+  const calfSamples = [lenOf('l_ankle'), lenOf('r_ankle')].filter((v): v is number => typeof v === 'number');
+
+  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const thighLen = avg(thighSamples);
+  const calfLen = avg(calfSamples);
+
+  const denom =
+    BITRUVIAN_CONSTANTS.ANATOMY_RAW_RELATIVE_TO_BASE_HEAD_UNIT.LEG_UPPER +
+    BITRUVIAN_CONSTANTS.ANATOMY_RAW_RELATIVE_TO_BASE_HEAD_UNIT.LEG_LOWER;
+  const total = (thighLen ?? 0) + (calfLen ?? 0);
+  const est = denom > 1e-6 && total > 1e-6 ? total / denom : 25;
+  return clamp(est, 4, 200);
 };
 
 export const generateProceduralBitruviusPose = (args: {
@@ -133,7 +157,7 @@ export const generateProceduralBitruviusPose = (args: {
   const safeCycle = Math.max(2, Math.floor(cycleFrames));
   const phase = ((frame % safeCycle) / safeCycle) * Math.PI * 2;
   
-  const baseUnitH = 100; // Base unit height in pixels
+  const baseUnitH = inferBaseUnitHFromNeutral(neutral);
   
   const mergedGait: WalkingEngineGait = { ...DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, ...gait };
   const mergedPhysics: PhysicsControls = { ...DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, ...physics };
@@ -143,6 +167,8 @@ export const generateProceduralBitruviusPose = (args: {
     inPlace: true,
     groundingEnabled: true,
     pauseWhileDragging: false,
+    groundPlaneY: 13,
+    groundPlaneVisible: true,
     ...(options ?? {}),
   };
 
@@ -160,16 +186,30 @@ export const generateProceduralBitruviusPose = (args: {
     );
     
     if (mergedOptions.groundingEnabled) {
+      const neutralHipL = getWorldPositionFromOffsets('l_hip', neutral.joints, INITIAL_JOINTS);
+      const neutralHipR = getWorldPositionFromOffsets('r_hip', neutral.joints, INITIAL_JOINTS);
+      const neutralHipCenter = {
+        x: (neutralHipL.x + neutralHipR.x) * 0.5,
+        y: (neutralHipL.y + neutralHipR.y) * 0.5,
+      };
+      const floorYGlobal = clamp((mergedOptions.groundPlaneY ?? 0) - neutralHipCenter.y, -500, 500);
+
+      const s = Math.sin(phase);
+      const transition = 0.15;
+      const activePins =
+        s < -transition ? ['lAnkle'] : s > transition ? ['rAnkle'] : ['lAnkle', 'rAnkle'];
+
       const groundingResults = applyFootGrounding(
         locomotionPose,
         mergedProportions,
         baseUnitH,
         mergedPhysics,
-        ['lAnkle', 'rAnkle'], // Active pins for grounding
+        activePins,
         mergedIdle,
         'center',
         1.0, // Full locomotion weight
-        deltaTimeMs
+        deltaTimeMs,
+        floorYGlobal,
       );
       pose = groundingResults.adjustedPose;
     } else {
@@ -198,7 +238,10 @@ export const generateProceduralBitruviusPose = (args: {
 
   // Keep vertical grounding (y_offset) for walk mode; suppress lateral sliding by default.
   if (mode === 'walk') {
-    if (mergedOptions.inPlace && typeof pose.x_offset === 'number') pose.x_offset = 0;
+    if (mergedOptions.inPlace) {
+      if (typeof pose.x_offset === 'number') pose.x_offset = 0;
+      if (typeof pose.y_offset === 'number') pose.y_offset = 0;
+    }
   } else {
     delete pose.x_offset;
     delete pose.y_offset;

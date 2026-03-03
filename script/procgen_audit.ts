@@ -22,7 +22,13 @@ const assert = (cond: unknown, msg: string) => {
 };
 
 const neutral = makeNeutralPose();
-const options: ProcgenOptions = { inPlace: true, groundingEnabled: true, pauseWhileDragging: false };
+const options: ProcgenOptions = {
+  inPlace: true,
+  groundingEnabled: true,
+  pauseWhileDragging: false,
+  groundPlaneY: 13,
+  groundPlaneVisible: true,
+};
 
 // 1) Bake determinism
 const a = bakeProcgenLoop({
@@ -66,6 +72,7 @@ for (let i = 0; i < 240; i++) {
     mode: 'walk_in_place',
     neutral,
     dtSec: 1 / 60,
+    cycleFrames: 120,
     strength: 0.6,
     gait: { ...DEFAULT_PROCEDURAL_BITRUVIAN_GAIT },
     gaitEnabled: {},
@@ -78,6 +85,7 @@ for (let i = 0; i < 240; i++) {
     mode: 'walk_in_place',
     neutral,
     dtSec: 1 / 60,
+    cycleFrames: 120,
     strength: 0.6,
     gait: { ...DEFAULT_PROCEDURAL_BITRUVIAN_GAIT },
     gaitEnabled: {},

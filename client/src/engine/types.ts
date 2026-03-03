@@ -293,7 +293,7 @@ export type TimelineState = {
   };
 };
 
-export type ProcgenMode = 'walk_in_place' | 'idle';
+export type ProcgenMode = 'walk_in_place' | 'run_in_place' | 'idle';
 
 export type ProcgenBakeSettings = { cycleFrames: number; keyframeStep: number };
 
@@ -301,6 +301,8 @@ export type ProcgenOptions = {
   inPlace: boolean;
   groundingEnabled: boolean;
   pauseWhileDragging: boolean;
+  groundPlaneY: number;
+  groundPlaneVisible: boolean;
 };
 
 export type ProcgenState = {
@@ -325,6 +327,17 @@ export type SceneState = {
   textOverlays: TextOverlay[];
 };
 
+export type BoneStyle = {
+  /**
+   * 0..1 blend across a violet→magenta palette.
+   */
+  hueT: number;
+  /**
+   * -1..1 mix toward black (<0) or white (>0).
+   */
+  lightness: number;
+};
+
 export type SkeletonState = {
   joints: Record<string, Joint>;
   mirroring: boolean;
@@ -337,7 +350,16 @@ export type SkeletonState = {
    * Used by `engine/physics-config.ts`.
    */
   physicsRigidity?: number;
-  activePins: string[];
+  /**
+   * "Roots" are hard world pins for joints. They are planted via triple-click
+   * in the editor, and used by the physics solver as zero-compliance pin constraints.
+   */
+  activeRoots: string[];
+  /**
+   * When no joint roots are active, the engine uses a "Ground Root" that anchors
+   * the center of gravity (sternum-heavy) to this world-space target.
+   */
+  groundRootTarget: Point;
   showJoints: boolean;
   jointsOverMasks: boolean;
   lookMode: LookModeId;
@@ -353,11 +375,12 @@ export type SkeletonState = {
   cutoutSlots: Record<string, CutoutSlot>;
   views: ViewPreset[];
   activeViewId: string;
+  boneStyle: BoneStyle;
   /**
    * Per-bone overrides keyed by canonical connection key `${min(a,b)}:${max(a,b)}`.
    * Used for editor controls and physics behavior; avoids mutating module-level CONNECTIONS.
    */
-  connectionOverrides: Record<string, { stretchMode?: BoneStretchMode }>;
+  connectionOverrides: Record<string, { stretchMode?: BoneStretchMode; shape?: string }>;
 };
 export type Pose = {
   root: Vector2D;

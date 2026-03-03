@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Slider } from "@/components/ui/slider";
 import { SystemGrid } from "@/components/SystemGrid";
@@ -46,6 +47,7 @@ import {
 } from './engine/autoPoseCapture';
 import { makeDefaultState, sanitizeStateWithReport, sanitizeJoints } from './engine/settings';
 import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
+import { applyGroundRootCorrectionToJoints, computeCogWorld } from './engine/rooting';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
 import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
@@ -61,6 +63,7 @@ import {
 } from './components/ViewSwitchDialog';
 import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
+import { ProcgenWidget } from './components/ProcgenWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
@@ -72,6 +75,64 @@ const BACKGROUND_COLOR_KEY = 'bitruvius_background_color';
 const POSE_TRACE_KEY = 'bitruvius_pose_trace_enabled';
 const BUILD_ID = 'Bitruvius';
 const DND_WIDGET_MIME = 'text/bitruvius-widget';
+
+const BONE_PALETTE = {
+  violet: '#2b0057',
+  magenta: '#ff2bbd',
+} as const;
+
+const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
+  const h = hex.trim().replace(/^#/, '');
+  if (h.length !== 6) return null;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  if (![r, g, b].every((n) => Number.isFinite(n))) return null;
+  return { r, g, b };
+};
+
+const rgbToHex = (r: number, g: number, b: number): string => {
+  const to = (n: number) => clamp(Math.round(n), 0, 255).toString(16).padStart(2, '0');
+  return `#${to(r)}${to(g)}${to(b)}`;
+};
+
+const mixHex = (a: string, b: string, t: number): string => {
+  const ra = hexToRgb(a);
+  const rb = hexToRgb(b);
+  if (!ra || !rb) return a;
+  const tt = clamp(t, 0, 1);
+  return rgbToHex(
+    lerp(ra.r, rb.r, tt),
+    lerp(ra.g, rb.g, tt),
+    lerp(ra.b, rb.b, tt),
+  );
+};
+
+const applyLightness = (hex: string, lightness: number): string => {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const l = clamp(lightness, -1, 1);
+  const target = l >= 0 ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 };
+  const t = Math.abs(l);
+  return rgbToHex(
+    lerp(rgb.r, target.r, t),
+    lerp(rgb.g, target.g, t),
+    lerp(rgb.b, target.b, t),
+  );
+};
+
+const rgbCss = (hex: string, alpha = 1): string => {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const a = clamp(alpha, 0, 1);
+  return `rgb(${rgb.r} ${rgb.g} ${rgb.b} / ${a})`;
+};
+
+const getBoneHex = (boneStyle: SkeletonState['boneStyle'] | null | undefined): string => {
+  const hueT = clamp(boneStyle?.hueT ?? 0, 0, 1);
+  const lightness = clamp(boneStyle?.lightness ?? 0, -1, 1);
+  return applyLightness(mixHex(BONE_PALETTE.violet, BONE_PALETTE.magenta, hueT), lightness);
+};
 
 type ReferenceVideoMeta = { duration: number; width: number; height: number };
 type ReferenceSequenceKind = 'gif' | 'zip';
@@ -339,17 +400,289 @@ const cleanupImageCache = () => {
   }
 };
 
-type WidgetKind = 'joint_masks' | 'cutout_relationships' | 'bone_inspector' | 'console' | 'camera' | 'procgen' | 'atomic_units';
+type SidebarTab = 'character' | 'physics' | 'animation' | 'global';
+
+type WidgetId =
+  | 'tools'
+  | 'edit'
+  | 'joint_hierarchy'
+  | 'joint_masks'
+  | 'cutout_relationships'
+  | 'bone_inspector'
+  | 'rig_controls'
+  | 'responsiveness'
+  | 'atomic_units'
+  | 'animation'
+  | 'procgen'
+  | 'camera'
+  | 'look'
+  | 'views'
+  | 'pixel_fonts'
+  | 'background'
+  | 'scene'
+  | 'project'
+  | 'export'
+  | 'pose_capture'
+  | 'console';
+
+type WidgetMode = 'docked' | 'floating';
 
 type FloatingWidget = {
-  id: string;
-  kind: WidgetKind;
+  id: WidgetId;
   x: number;
   y: number;
   w: number;
   h: number;
   minimized: boolean;
 };
+
+const isWidgetId = (value: unknown): value is WidgetId => {
+  return (
+    value === 'tools' ||
+    value === 'edit' ||
+    value === 'joint_hierarchy' ||
+    value === 'joint_masks' ||
+    value === 'cutout_relationships' ||
+    value === 'bone_inspector' ||
+    value === 'rig_controls' ||
+    value === 'responsiveness' ||
+    value === 'atomic_units' ||
+    value === 'animation' ||
+    value === 'procgen' ||
+    value === 'camera' ||
+    value === 'look' ||
+    value === 'views' ||
+    value === 'pixel_fonts' ||
+    value === 'background' ||
+    value === 'scene' ||
+    value === 'project' ||
+    value === 'export' ||
+    value === 'pose_capture' ||
+    value === 'console'
+  );
+};
+
+const WIDGETS: Record<
+  WidgetId,
+  {
+    title: string;
+    tabGroup: SidebarTab | null;
+    isGlobal: boolean;
+    docs: React.ReactNode;
+    defaultFloatSize: { w: number; h: number };
+    minFloatSize: { w: number; h: number };
+  }
+> = {
+  tools: {
+    title: 'Tools',
+    tabGroup: 'character',
+    isGlobal: false,
+    docs: (
+      <div className="space-y-2">
+        <div className="text-[11px] text-[#ddd]">
+          Widgets live in the side console by default to keep the canvas clean.
+        </div>
+        <ul className="list-disc pl-4 text-[11px] text-[#bbb] space-y-1">
+          <li>Click a widget to activate it here.</li>
+          <li>Drag a widget onto the canvas to pop it out.</li>
+          <li>Drag a widget back onto the sidebar to dock it.</li>
+        </ul>
+      </div>
+    ),
+    defaultFloatSize: { w: 360, h: 240 },
+    minFloatSize: { w: 260, h: 160 },
+  },
+  edit: {
+    title: 'Edit',
+    tabGroup: 'character',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Undo/redo and editor utilities.</div>,
+    defaultFloatSize: { w: 360, h: 190 },
+    minFloatSize: { w: 260, h: 160 },
+  },
+  joint_hierarchy: {
+    title: 'Joint Hierarchy',
+    tabGroup: 'character',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Quick navigation through joints and bones.</div>,
+    defaultFloatSize: { w: 360, h: 540 },
+    minFloatSize: { w: 280, h: 240 },
+  },
+  joint_masks: {
+    title: 'Masks',
+    tabGroup: 'character',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Edit cutout masks and masking behavior.</div>,
+    defaultFloatSize: { w: 360, h: 420 },
+    minFloatSize: { w: 280, h: 240 },
+  },
+  cutout_relationships: {
+    title: 'Cutout Relationships',
+    tabGroup: 'character',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Visualize and debug cutout overlaps and ordering.</div>,
+    defaultFloatSize: { w: 420, h: 420 },
+    minFloatSize: { w: 320, h: 240 },
+  },
+  bone_inspector: {
+    title: 'Rig Inspector',
+    tabGroup: 'character',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Inspect bones, joints, and stretch behavior.</div>,
+    defaultFloatSize: { w: 360, h: 300 },
+    minFloatSize: { w: 300, h: 200 },
+  },
+  rig_controls: {
+    title: 'Rig Controls',
+    tabGroup: 'physics',
+    isGlobal: false,
+    docs: (
+      <div className="space-y-2 text-[11px] text-[#bbb]">
+        <div>
+          Use <span className="font-bold text-white">Rigidity</span> to choose how stiff the rig behaves overall.
+        </div>
+        <div>
+          <span className="font-bold text-white">Control mode</span> changes how dragging works (rigid vs elastic vs pinned posing).
+        </div>
+      </div>
+    ),
+    defaultFloatSize: { w: 420, h: 520 },
+    minFloatSize: { w: 320, h: 260 },
+  },
+  responsiveness: {
+    title: 'Responsiveness',
+    tabGroup: 'physics',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Fine-tune smoothing, damping, and feel.</div>,
+    defaultFloatSize: { w: 420, h: 420 },
+    minFloatSize: { w: 320, h: 240 },
+  },
+  atomic_units: {
+    title: 'Advanced Controls',
+    tabGroup: 'physics',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Low-level rig settings and debugging utilities.</div>,
+    defaultFloatSize: { w: 420, h: 560 },
+    minFloatSize: { w: 320, h: 260 },
+  },
+  animation: {
+    title: 'Animation',
+    tabGroup: 'animation',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Timeline and keyframe tools.</div>,
+    defaultFloatSize: { w: 420, h: 340 },
+    minFloatSize: { w: 320, h: 240 },
+  },
+  procgen: {
+    title: 'Auto Motion',
+    tabGroup: 'animation',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Procedural motion and loop baking.</div>,
+    defaultFloatSize: { w: 420, h: 420 },
+    minFloatSize: { w: 320, h: 240 },
+  },
+  camera: {
+    title: 'Camera',
+    tabGroup: 'animation',
+    isGlobal: false,
+    docs: <div className="text-[11px] text-[#bbb]">Viewport and export framing controls.</div>,
+    defaultFloatSize: { w: 320, h: 220 },
+    minFloatSize: { w: 260, h: 180 },
+  },
+  look: {
+    title: 'Look',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Display style and look presets.</div>,
+    defaultFloatSize: { w: 420, h: 420 },
+    minFloatSize: { w: 320, h: 240 },
+  },
+  views: {
+    title: 'Views',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Save and switch camera / view presets.</div>,
+    defaultFloatSize: { w: 420, h: 520 },
+    minFloatSize: { w: 320, h: 260 },
+  },
+  pixel_fonts: {
+    title: 'Pixel Fonts',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Choose the UI title font style.</div>,
+    defaultFloatSize: { w: 420, h: 260 },
+    minFloatSize: { w: 320, h: 220 },
+  },
+  background: {
+    title: 'Background',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Canvas background color and defaults.</div>,
+    defaultFloatSize: { w: 420, h: 320 },
+    minFloatSize: { w: 320, h: 240 },
+  },
+  scene: {
+    title: 'Scene',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Reference layers, titles, and scene overlays.</div>,
+    defaultFloatSize: { w: 520, h: 640 },
+    minFloatSize: { w: 360, h: 280 },
+  },
+  project: {
+    title: 'Project',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Save and open project files.</div>,
+    defaultFloatSize: { w: 420, h: 260 },
+    minFloatSize: { w: 320, h: 220 },
+  },
+  export: {
+    title: 'Export',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Export SVG/PNG/WebM outputs.</div>,
+    defaultFloatSize: { w: 420, h: 280 },
+    minFloatSize: { w: 320, h: 220 },
+  },
+  pose_capture: {
+    title: 'Pose Capture',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Capture pose snapshots and bake recordings.</div>,
+    defaultFloatSize: { w: 520, h: 560 },
+    minFloatSize: { w: 360, h: 260 },
+  },
+  console: {
+    title: 'Console',
+    tabGroup: 'global',
+    isGlobal: true,
+    docs: <div className="text-[11px] text-[#bbb]">Engine and workflow logs.</div>,
+    defaultFloatSize: { w: 520, h: 340 },
+    minFloatSize: { w: 340, h: 220 },
+  },
+};
+
+const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
+  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'cutout_relationships', 'bone_inspector'],
+  physics: ['rig_controls', 'responsiveness', 'atomic_units'],
+  animation: ['animation', 'procgen', 'camera'],
+  global: [],
+};
+
+const WIDGET_GLOBAL_ORDER: WidgetId[] = [
+  'look',
+  'views',
+  'pixel_fonts',
+  'background',
+  'scene',
+  'project',
+  'export',
+  'pose_capture',
+  'console',
+];
+
+WIDGET_TAB_ORDER.global = WIDGET_GLOBAL_ORDER;
 
 type RigTrack = 'body' | 'arms';
 type RigSide = 'front' | 'back'; // front=right, back=left
@@ -416,13 +749,13 @@ export default function App() {
     cleanupImageCache(); // Clean up old cache entries
   }, []);
 
-  const activePinsKey = state.activePins.join('|');
+  const activeRootsKey = state.activeRoots.join('|');
   useEffect(() => {
-    const active = new Set(state.activePins);
+    const active = new Set(state.activeRoots);
     const next = { ...pinTargetsRef.current };
     let changed = false;
 
-    for (const id of state.activePins) {
+    for (const id of state.activeRoots) {
       if (!next[id]) {
         next[id] = getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
         changed = true;
@@ -437,7 +770,7 @@ export default function App() {
     }
 
     if (changed) pinTargetsRef.current = next;
-  }, [activePinsKey]);
+  }, [activeRootsKey]);
 
   useEffect(() => {
     if (shouldRunPosePhysics(state)) return;
@@ -476,6 +809,12 @@ export default function App() {
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdLiveRef = useRef<string | null>(null);
+  const effectiveDraggingIdLiveRef = useRef<string | null>(null);
+  const [groundRootDragging, setGroundRootDragging] = useState(false);
+  const groundRootDraggingLiveRef = useRef(false);
+  const [rootLeverDraggingId, setRootLeverDraggingId] = useState<string | null>(null);
+  const rootLeverDraggingLiveRef = useRef<string | null>(null);
+  const rootDragKindLiveRef = useRef<'none' | 'root_target' | 'root_lever'>('none');
   const pinWorldRef = useRef<Record<string, Point> | null>(null);
   const dragTargetRef = useRef<{ id: string; target: Point } | null>(null);
   const pinTargetsRef = useRef<Record<string, Point>>({});
@@ -508,7 +847,12 @@ export default function App() {
     mode: MaskDragMode;
   }>(null);
   const maskDraggingLiveRef = useRef(false);
-  const [maskJointId, setMaskJointId] = useState<string>(() => Object.keys(INITIAL_JOINTS)[0] ?? 'navel');
+  const [groundPlaneDragging, setGroundPlaneDragging] = useState<null | {
+    startMouseWorldY: number;
+    startPlaneY: number;
+  }>(null);
+  const groundPlaneDraggingLiveRef = useRef(false);
+  const [maskJointId, setMaskJointId] = useState<string>(() => (INITIAL_JOINTS.navel ? 'navel' : (Object.keys(INITIAL_JOINTS).find((id) => id !== 'root') ?? 'navel')));
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
   const [selectedConnectionKey, setSelectedConnectionKey] = useState<string | null>(null);
   const [rigFocus, setRigFocus] = useState<RigFocus>({ track: 'body', index: 0, side: 'front', stage: 'joint' });
@@ -526,7 +870,6 @@ export default function App() {
   const [fgVideoMeta, setFgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
   const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  type SidebarTab = 'character' | 'physics' | 'animation';
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -587,9 +930,68 @@ export default function App() {
   });
 
   const stateLiveRef = useRef(state);
+  stateLiveRef.current = state;
+
+  const resolveEffectiveManipulationId = useCallback((clickedId: string): string => {
+    if (clickedId !== 'navel') return clickedId;
+    const live = stateLiveRef.current;
+    if (live.joints.sternum || INITIAL_JOINTS.sternum) return 'sternum';
+    return clickedId;
+  }, []);
+
   useEffect(() => {
-    stateLiveRef.current = state;
-  }, [state]);
+    if (state.activeRoots.length > 0) return;
+    setState((prev) => {
+      if (prev.activeRoots.length > 0) return prev;
+      const corrected = applyGroundRootCorrectionToJoints({
+        joints: prev.joints,
+        baseJoints: INITIAL_JOINTS,
+        activeRoots: prev.activeRoots,
+        groundRootTarget: prev.groundRootTarget,
+      });
+      if (corrected === prev.joints) return prev;
+      return { ...prev, joints: corrected };
+    });
+  }, [state.activeRoots.length, state.groundRootTarget.x, state.groundRootTarget.y, state.joints]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as any).render_game_to_text = () => {
+      const s: SkeletonState = stateLiveRef.current;
+      const jointIds = ['navel', 'sternum', 'head', 'l_hip', 'r_hip', 'l_knee', 'r_knee', 'l_ankle', 'r_ankle'] as const;
+      const joints: Record<string, { x: number; y: number }> = {};
+      let nanCount = 0;
+      for (const id of jointIds) {
+        const j = s.joints[id];
+        const p = j?.currentOffset ?? j?.previewOffset;
+        const x = Number(p?.x);
+        const y = Number(p?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) nanCount += 1;
+        joints[id] = { x, y };
+      }
+      return JSON.stringify(
+        {
+          showJoints: s.showJoints,
+          procgen: {
+            enabled: s.procgen.enabled,
+            mode: s.procgen.mode,
+            strength: s.procgen.strength,
+            seed: s.procgen.seed,
+            cycleFrames: s.procgen.bake.cycleFrames,
+            options: s.procgen.options,
+          },
+          view: { scale: s.viewScale, offset: s.viewOffset },
+          nanCount,
+          joints,
+        },
+        null,
+        2,
+      );
+    };
+    return () => {
+      delete (window as any).render_game_to_text;
+    };
+  }, []);
 
   useEffect(() => {
     const isFullFluid = getPhysicsBlendMode(state) === 'fluid';
@@ -601,7 +1003,7 @@ export default function App() {
 
     const clip = state.timeline.clip;
     const keyframes = Array.isArray(clip.keyframes) ? clip.keyframes : [];
-    const sig = `${state.activePins.join(',')}|${state.stretchEnabled ? 'S1' : 'S0'}|${clip.frameCount}|${
+    const sig = `${state.activeRoots.join(',')}|${state.stretchEnabled ? 'S1' : 'S0'}|${clip.frameCount}|${
       clip.fps
     }|${clip.easing}|${keyframes.map((k) => k.frame).join(',')}`;
 
@@ -611,15 +1013,15 @@ export default function App() {
       sampleClipPose(clip, 0, INITIAL_JOINTS, { stretchEnabled: state.stretchEnabled }) ??
       capturePoseSnapshot(INITIAL_JOINTS, 'preview');
 
-    const targets = state.activePins.reduce<Record<string, Point>>((acc, pinId) => {
-      acc[pinId] = getWorldPositionFromOffsets(pinId, pose0.joints, INITIAL_JOINTS);
+    const targets = state.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
+      acc[rootId] = getWorldPositionFromOffsets(rootId, pose0.joints, INITIAL_JOINTS);
       return acc;
     }, {});
 
     timelinePinTargetsRef.current = targets;
     timelinePinTargetsKeyRef.current = sig;
   }, [
-    state.activePins,
+    state.activeRoots,
     state.physicsRigidity,
     state.stretchEnabled,
     state.timeline.clip.easing,
@@ -663,23 +1065,46 @@ export default function App() {
     'pixel-elegant': 'font-pixel-elegant',
   };
 
-	          const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
-            const [dockedWidgets, setDockedWidgets] = useState<WidgetKind[]>([]);
-            const [activeDockedWidget, setActiveDockedWidget] = useState<WidgetKind | null>(null);
+  const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
+  const [activeWidgetId, setActiveWidgetId] = useState<WidgetId>('tools');
   const [widgetDragging, setWidgetDragging] = useState<null | {
-    id: string;
+    id: WidgetId;
     startClientX: number;
     startClientY: number;
     startX: number;
     startY: number;
   }>(null);
 
-  const [consoleOpen, setConsoleOpen] = useState(false);
-  const [consoleMinimized, setConsoleMinimized] = useState(false);
+  const [widgetResizing, setWidgetResizing] = useState<null | {
+    id: WidgetId;
+    startClientX: number;
+    startClientY: number;
+    startW: number;
+    startH: number;
+  }>(null);
+
+  const widgetSnapGridPx = 16;
   const [consoleLogs, setConsoleLogs] = useState<ConsoleLogEntry[]>([]);
   const [activeLogLevels, setActiveLogLevels] = useState<Set<ConsoleLogLevel>>(
     () => new Set<ConsoleLogLevel>(['info', 'warning', 'error', 'success']),
   );
+  const floatingWidgetIds = useMemo(() => new Set<WidgetId>(floatingWidgets.map((w) => w.id)), [floatingWidgets]);
+  const [widgetPortalTargets, setWidgetPortalTargets] = useState<Partial<Record<WidgetId, HTMLDivElement | null>>>({});
+
+  const registerWidgetPortalTarget = useCallback((id: WidgetId, el: HTMLDivElement | null) => {
+    setWidgetPortalTargets((prev) => {
+      if (prev[id] === el) return prev;
+      return { ...prev, [id]: el };
+    });
+  }, []);
+
+  useEffect(() => {
+    const tabWidgets = WIDGET_TAB_ORDER[sidebarTab];
+    const desired = tabWidgets[0] ?? 'tools';
+    if (WIDGETS[activeWidgetId]?.tabGroup !== sidebarTab) {
+      setActiveWidgetId(desired);
+    }
+  }, [sidebarTab, activeWidgetId]);
 
   const addConsoleLog = useCallback((level: ConsoleLogLevel, message: string, data?: unknown) => {
     const id = Math.random().toString(36).slice(2, 10);
@@ -696,17 +1121,6 @@ export default function App() {
   }, []);
 
   const filteredConsoleLogs = consoleLogs.filter((log) => activeLogLevels.has(log.level));
-
-  const widgetTitleForKind = useCallback((kind: WidgetKind): string => {
-    if (kind === 'joint_masks') return 'Masks';
-    if (kind === 'cutout_relationships') return 'Cutout Relationships';
-    if (kind === 'bone_inspector') return 'Rig Inspector';
-    if (kind === 'console') return 'Console';
-    if (kind === 'camera') return 'Camera';
-    if (kind === 'procgen') return 'Auto Motion';
-    if (kind === 'atomic_units') return 'Advanced Controls';
-    return 'Widget';
-  }, []);
 
   const disposeSequenceData = useCallback((seq: ReferenceSequenceData) => {
     for (const frame of seq.frames) {
@@ -837,53 +1251,96 @@ export default function App() {
     [loadGifSequence, loadZipSequence],
   );
 
-	    const spawnFloatingWidget = useCallback(
-	    (kind: WidgetKind, clientX: number, clientY: number) => {
-      const rect = canvasRef.current?.getBoundingClientRect();
-      const x = rect ? clientX - rect.left : clientX;
-      const y = rect ? clientY - rect.top : clientY;
-
-	      const w =
-	        kind === 'console'
-	          ? 420
-	          : kind === 'camera'
-	            ? 200
-	            : kind === 'procgen'
-	              ? 300
-	              : kind === 'atomic_units'
-	                ? 380
-                  : kind === 'bone_inspector'
-                    ? 320
-	                : 360;
-	      const h =
-	        kind === 'console'
-	          ? 280
-	          : kind === 'camera'
-	            ? 150
-	            : kind === 'procgen'
-	              ? 200
-	              : kind === 'atomic_units'
-	                ? 520
-                  : kind === 'bone_inspector'
-                    ? 240
-	                : 420;
-      const id = kind + '-' + Math.random().toString(36).slice(2, 9);
-
-      setFloatingWidgets((prev) => [
-        ...prev,
-        {
-          id,
-          kind,
-          minimized: false,
-          w,
-          h,
-          x: Math.max(12, Math.round(x - w * 0.5)),
-          y: Math.max(12, Math.round(y - 18)),
-        },
-      ]);
+  const snapToGrid = useCallback(
+    (v: number, gridPx: number) => {
+      const g = Math.max(1, Math.floor(gridPx));
+      return Math.round(v / g) * g;
     },
     [],
   );
+
+  const focusFloatingWidget = useCallback((id: WidgetId) => {
+    setFloatingWidgets((prev) => {
+      const idx = prev.findIndex((w) => w.id === id);
+      if (idx < 0) return prev;
+      const next = prev.slice();
+      const w = next[idx]!;
+      next.splice(idx, 1);
+      next.push(w);
+      return next;
+    });
+  }, []);
+
+  const activateWidget = useCallback(
+    (id: WidgetId) => {
+      setSidebarOpen(true);
+      const tab = WIDGETS[id].tabGroup;
+      if (tab) setSidebarTab(tab);
+
+      const isFloating = floatingWidgets.some((w) => w.id === id);
+      setActiveWidgetId(id);
+      if (isFloating) {
+        setFloatingWidgets((prev) => {
+          const idx = prev.findIndex((w) => w.id === id);
+          if (idx < 0) return prev;
+          const next = prev.slice();
+          const w = next[idx]!;
+          next.splice(idx, 1);
+          next.push({ ...w, minimized: false });
+          return next;
+        });
+        return;
+      }
+    },
+    [floatingWidgets],
+  );
+
+  const popOutWidget = useCallback(
+    (id: WidgetId, clientX: number, clientY: number) => {
+      const tab = WIDGETS[id].tabGroup;
+      if (tab) setSidebarTab(tab);
+      setActiveWidgetId(id);
+
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const localX = rect ? clientX - rect.left : clientX;
+      const localY = rect ? clientY - rect.top : clientY;
+      const { w, h } = WIDGETS[id].defaultFloatSize;
+
+      setFloatingWidgets((prev) => {
+        const idx = prev.findIndex((fw) => fw.id === id);
+        if (idx >= 0) {
+          const existing = prev[idx]!;
+          const next = prev.slice();
+          next.splice(idx, 1);
+          next.push({ ...existing, minimized: false });
+          return next;
+        }
+
+        const x = Math.max(12, Math.round(localX - w * 0.5));
+        const y = Math.max(12, Math.round(localY - 18));
+        return [
+          ...prev,
+          {
+            id,
+            minimized: false,
+            w: snapToGrid(w, widgetSnapGridPx),
+            h: snapToGrid(h, widgetSnapGridPx),
+            x: snapToGrid(x, widgetSnapGridPx),
+            y: snapToGrid(y, widgetSnapGridPx),
+          },
+        ];
+      });
+    },
+    [snapToGrid, widgetSnapGridPx],
+  );
+
+  const dockWidget = useCallback((id: WidgetId) => {
+    setSidebarOpen(true);
+    const tab = WIDGETS[id].tabGroup;
+    if (tab) setSidebarTab(tab);
+    setActiveWidgetId(id);
+    setFloatingWidgets((prev) => prev.filter((w) => w.id !== id));
+  }, []);
 
   const focusJointId = useCallback((focus: RigFocus): string => {
     if (focus.track === 'body') {
@@ -981,63 +1438,6 @@ export default function App() {
     return { x, y };
   }, []);
 
-  const ensureFloatingWidgetOpen = useCallback((kind: WidgetKind) => {
-    const center = getCanvasCenterClient();
-    setFloatingWidgets((prev) => {
-      const idx = prev.findIndex((w) => w.kind === kind);
-      if (idx >= 0) {
-        const w = prev[idx]!;
-        const next = prev.slice();
-        next.splice(idx, 1);
-        next.push({ ...w, minimized: false });
-        return next;
-      }
-
-      const rect = canvasRef.current?.getBoundingClientRect();
-      const x = rect ? center.x - rect.left : center.x;
-      const y = rect ? center.y - rect.top : center.y;
-
-      const w =
-        kind === 'console'
-          ? 420
-          : kind === 'camera'
-            ? 200
-            : kind === 'procgen'
-              ? 300
-              : kind === 'atomic_units'
-                ? 380
-                : kind === 'bone_inspector'
-                  ? 320
-                  : 360;
-      const h =
-        kind === 'console'
-          ? 280
-          : kind === 'camera'
-            ? 150
-            : kind === 'procgen'
-              ? 200
-              : kind === 'atomic_units'
-                ? 520
-                : kind === 'bone_inspector'
-                  ? 240
-                  : 420;
-
-      const id = kind + '-' + Math.random().toString(36).slice(2, 9);
-      return [
-        ...prev,
-        {
-          id,
-          kind,
-          minimized: false,
-          w,
-          h,
-          x: Math.max(12, Math.round(x - w * 0.5)),
-          y: Math.max(12, Math.round(y - 18)),
-        },
-      ];
-    });
-  }, [getCanvasCenterClient]);
-
   const applyRigFocus = useCallback((focus: RigFocus) => {
     const live = stateLiveRef.current;
     const jointId = focusJointId(focus);
@@ -1055,12 +1455,12 @@ export default function App() {
     }
 
     if (focus.stage === 'bone') {
-      ensureFloatingWidgetOpen('bone_inspector');
+      activateWidget('bone_inspector');
       return;
     }
 
-    ensureFloatingWidgetOpen('joint_masks');
-  }, [ensureFloatingWidgetOpen, focusBoneKeyForJointId, focusJointId, setState]);
+    activateWidget('joint_masks');
+  }, [activateWidget, focusBoneKeyForJointId, focusJointId, setState]);
 
   useEffect(() => {
     applyRigFocus(rigFocus);
@@ -1073,13 +1473,17 @@ export default function App() {
     const onMove = (e: MouseEvent) => {
       const dx = e.clientX - widgetDragging.startClientX;
       const dy = e.clientY - widgetDragging.startClientY;
+      const rawX = widgetDragging.startX + dx;
+      const rawY = widgetDragging.startY + dy;
+      const x = e.altKey ? rawX : snapToGrid(rawX, widgetSnapGridPx);
+      const y = e.altKey ? rawY : snapToGrid(rawY, widgetSnapGridPx);
       setFloatingWidgets((prev) =>
         prev.map((w) =>
           w.id === widgetDragging.id
             ? {
                 ...w,
-                x: widgetDragging.startX + dx,
-                y: widgetDragging.startY + dy,
+                x,
+                y,
               }
             : w,
         ),
@@ -1094,7 +1498,37 @@ export default function App() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
-  }, [widgetDragging]);
+  }, [snapToGrid, widgetDragging, widgetSnapGridPx]);
+
+  useEffect(() => {
+    if (!widgetResizing) return;
+
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - widgetResizing.startClientX;
+      const dy = e.clientY - widgetResizing.startClientY;
+      const rawW = widgetResizing.startW + dx;
+      const rawH = widgetResizing.startH + dy;
+
+      const min = WIDGETS[widgetResizing.id].minFloatSize;
+      const clampedW = Math.max(min.w, rawW);
+      const clampedH = Math.max(min.h, rawH);
+      const w = e.altKey ? clampedW : snapToGrid(clampedW, widgetSnapGridPx);
+      const h = e.altKey ? clampedH : snapToGrid(clampedH, widgetSnapGridPx);
+
+      setFloatingWidgets((prev) =>
+        prev.map((fw) => (fw.id === widgetResizing.id ? { ...fw, w, h } : fw)),
+      );
+    };
+
+    const onUp = () => setWidgetResizing(null);
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [snapToGrid, widgetResizing, widgetSnapGridPx]);
 
   // Save background color to localStorage when it changes
   useEffect(() => {
@@ -1476,7 +1910,7 @@ export default function App() {
 	        baseJoints: INITIAL_JOINTS,
 	        connections: CONNECTIONS,
 	        scene: state.scene,
-	        activePins: state.activePins,
+	        activeRoots: state.activeRoots,
 	        stretchEnabled: state.stretchEnabled,
 	        fallbackPose: capturePoseSnapshot(state.joints, 'preview'),
 	      });
@@ -1488,7 +1922,7 @@ export default function App() {
 	    backgroundColor,
 	    canvasSize.height,
 	    canvasSize.width,
-	    state.activePins,
+	    state.activeRoots,
 	    state.scene,
 	    state.stretchEnabled,
 	    state.timeline,
@@ -1766,6 +2200,44 @@ export default function App() {
       if (key === 'l') {
         e.preventDefault();
         setStateWithHistory('toggle_lead_shortcut', (prev) => ({ ...prev, leadEnabled: !prev.leadEnabled }));
+        return;
+      }
+      if (key === 'a') {
+        e.preventDefault();
+        setTimelinePlaying(false);
+        setStateWithHistory('procgen:shortcut_cycle', (prev) => {
+          const recommendedCycleFrames = {
+            walk_in_place: 48,
+            run_in_place: 32,
+            idle: 120,
+          } as const;
+
+          const next = (() => {
+            if (!prev.procgen.enabled) return { enabled: true, mode: 'walk_in_place' as const };
+            if (prev.procgen.mode === 'walk_in_place') return { enabled: true, mode: 'run_in_place' as const };
+            if (prev.procgen.mode === 'run_in_place') return { enabled: true, mode: 'idle' as const };
+            return { enabled: false, mode: prev.procgen.mode };
+          })();
+
+          return {
+            ...prev,
+            showJoints: next.enabled ? true : prev.showJoints,
+            procgen: {
+              ...prev.procgen,
+              enabled: next.enabled,
+              mode: next.mode,
+              neutralPose: next.enabled
+                ? (prev.procgen.neutralPose ?? capturePoseSnapshot(prev.joints, 'preview'))
+                : prev.procgen.neutralPose,
+              bake: {
+                ...prev.procgen.bake,
+                cycleFrames: next.enabled
+                  ? (recommendedCycleFrames[next.mode] ?? prev.procgen.bake.cycleFrames)
+                  : prev.procgen.bake.cycleFrames,
+              },
+            },
+          };
+        });
         return;
       }
       if (key === 'o') {
@@ -2074,10 +2546,11 @@ export default function App() {
 	        last = now;
 
 	        const drag = dragTargetRef.current;
-	        const isDirectManipulation = Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current;
+	        const isDirectManipulation =
+            Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current || groundPlaneDraggingLiveRef.current;
 	        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
 	        const allowPosePhysics = !prev.timeline.enabled || prev.procgen.enabled || isDirectManipulation || Boolean(drag);
-	        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activePins.length > 0);
+	        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activeRoots.length > 0);
 
         const applyPoseSnapshotToPreviewOffsetsOnly = (
           joints: Record<string, Joint>,
@@ -2114,6 +2587,7 @@ export default function App() {
               mode: prev.procgen.mode,
               neutral,
               dtSec: dt,
+              cycleFrames: prev.procgen.bake.cycleFrames,
               strength: prev.procgen.strength,
               gait: prev.procgen.gait,
               gaitEnabled: prev.procgen.gaitEnabled,
@@ -2130,11 +2604,12 @@ export default function App() {
           procgenNeutralFallbackRef.current = null;
         }
         
-        // Exclude navel and collar from physics when they're being dragged to prevent tension/jitter
-        const navelIsDragged = drag?.id === 'navel';
+        // Exclude balance joints from physics when they're being dragged to prevent tension/jitter.
+        // Note: Navel drags proxy to sternum (handled via `drag.id`).
+        const sternumIsDragged = drag?.id === 'sternum';
         const collarIsDragged = drag?.id === 'collar';
 
-        if (physicsActive && !navelIsDragged && !collarIsDragged) {
+        if (physicsActive && !sternumIsDragged && !collarIsDragged) {
           const handshakeKey = [
             prev.controlMode,
             prev.rigidity,
@@ -2151,30 +2626,30 @@ export default function App() {
 
 	          const pinTargets = pinTargetsRef.current;
 	          const activePinTargets: Record<string, Point> = {};
-	          for (const id of prev.activePins) {
+	          for (const id of prev.activeRoots) {
 	            const t = pinTargets[id];
 	            if (t) activePinTargets[id] = t;
 	          }
 
           const rubberbandAnchor = rubberbandAnchorPinRef.current;
-          const activePins =
+          const activeRoots =
             rubberbandAnchor && rubberbandAnchor.id in prev.joints
-              ? Array.from(new Set([...prev.activePins, rubberbandAnchor.id]))
-              : prev.activePins;
+              ? Array.from(new Set([...prev.activeRoots, rubberbandAnchor.id]))
+              : prev.activeRoots;
 	          if (rubberbandAnchor && rubberbandAnchor.id in prev.joints) {
 	            activePinTargets[rubberbandAnchor.id] = rubberbandAnchor.target;
 	          }
 
 	          const dragInput = drag && drag.id in prev.joints ? drag : null;
-	          const dragIsPinned = Boolean(dragInput && prev.activePins.includes(dragInput.id));
+	          const dragIsPinned = Boolean(dragInput && prev.activeRoots.includes(dragInput.id));
 	          if (dragIsPinned && dragInput) {
 	            activePinTargets[dragInput.id] = dragInput.target;
 	          }
 
 	          const result = stepPosePhysics({
 	            joints: jointsForFrame,
-	            activePins,
-	            pinTargets: activePinTargets,
+	            activeRoots,
+	            rootTargets: activePinTargets,
 	            drag: dragIsPinned ? null : dragInput,
 	            connectionOverrides: prev.connectionOverrides,
 	            options: {
@@ -2318,27 +2793,27 @@ export default function App() {
           if (!pose) return prev;
 
           const isFullFluid = getPhysicsBlendMode(prev) === 'fluid';
-          if (!isFullFluid || prev.activePins.length === 0) {
+          if (!isFullFluid || prev.activeRoots.length === 0) {
             return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
           }
 
           const seeded = applyPoseSnapshotToJoints(prev.joints, pose);
-          const pinTargets =
+          const rootTargets =
             timelinePinTargetsRef.current ??
             (() => {
               const pose0 =
                 sampleClipPose(prev.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled }) ??
                 capturePoseSnapshot(INITIAL_JOINTS, 'preview');
-              return prev.activePins.reduce<Record<string, Point>>((acc, pinId) => {
-                acc[pinId] = getWorldPositionFromOffsets(pinId, pose0.joints, INITIAL_JOINTS);
+              return prev.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
+                acc[rootId] = getWorldPositionFromOffsets(rootId, pose0.joints, INITIAL_JOINTS);
                 return acc;
               }, {});
             })();
 	          const projected = stepPosePhysics({
 	            joints: seeded,
 	            baseJoints: INITIAL_JOINTS,
-	            activePins: prev.activePins,
-	            pinTargets,
+	            activeRoots: prev.activeRoots,
+	            rootTargets,
 	            drag: null,
 	            connectionOverrides: prev.connectionOverrides,
 	            options: {
@@ -2381,27 +2856,27 @@ export default function App() {
       if (!pose) return prev;
 
       const isFullFluid = getPhysicsBlendMode(prev) === 'fluid';
-      if (!isFullFluid || prev.activePins.length === 0) {
+      if (!isFullFluid || prev.activeRoots.length === 0) {
         return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
       }
 
       const seeded = applyPoseSnapshotToJoints(prev.joints, pose);
-      const pinTargets =
+      const rootTargets =
         timelinePinTargetsRef.current ??
         (() => {
           const pose0 =
             sampleClipPose(prev.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled }) ??
             capturePoseSnapshot(INITIAL_JOINTS, 'preview');
-          return prev.activePins.reduce<Record<string, Point>>((acc, pinId) => {
-            acc[pinId] = getWorldPositionFromOffsets(pinId, pose0.joints, INITIAL_JOINTS);
+          return prev.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
+            acc[rootId] = getWorldPositionFromOffsets(rootId, pose0.joints, INITIAL_JOINTS);
             return acc;
           }, {});
         })();
 	      const projected = stepPosePhysics({
 	        joints: seeded,
 	        baseJoints: INITIAL_JOINTS,
-	        activePins: prev.activePins,
-	        pinTargets,
+	        activeRoots: prev.activeRoots,
+	        rootTargets,
 	        drag: null,
 	        connectionOverrides: prev.connectionOverrides,
 	        options: {
@@ -2421,6 +2896,12 @@ export default function App() {
   }, [state.procgen.enabled, state.timeline.enabled, state.timeline.clip, timelineFrame, timelinePlaying]);
 
   const handleMouseDown = (id: string) => (e: React.MouseEvent) => {
+    if (e.detail === 3) {
+      e.stopPropagation();
+      toggleRoot(id);
+      return;
+    }
+
     e.stopPropagation();
     setTimelinePlaying(false);
     setSelectedJointId(id);
@@ -2429,8 +2910,18 @@ export default function App() {
     syncRigFocusFromJointId(id);
     historyCtrlRef.current.beginAction(`drag:${id}`, state);
     draggingIdLiveRef.current = id;
+    effectiveDraggingIdLiveRef.current = resolveEffectiveManipulationId(id);
+    const isRooted = state.activeRoots.includes(effectiveDraggingIdLiveRef.current);
+    rootDragKindLiveRef.current = isRooted && e.ctrlKey ? 'root_target' : 'none';
+    setGroundRootDragging(false);
+    groundRootDraggingLiveRef.current = false;
     precisionAnchorRef.current = null;
-    lastEffectiveMouseWorldRef.current = getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
+    lastEffectiveMouseWorldRef.current = getWorldPosition(
+      effectiveDraggingIdLiveRef.current,
+      state.joints,
+      INITIAL_JOINTS,
+      'preview',
+    );
 
     if (autoPoseCaptureEnabled) {
       if (autoPoseRecordingTimerRef.current) {
@@ -2501,7 +2992,7 @@ export default function App() {
       
       const timer = setTimeout(() => {
         setIsLongPress(true);
-        const anchorId = pickRubberbandAnchorId(id);
+        const anchorId = pickRubberbandAnchorId(effectiveDraggingIdLiveRef.current ?? id);
         if (anchorId && state.joints[anchorId]) {
           rubberbandAnchorPinRef.current = {
             id: anchorId,
@@ -2516,15 +3007,54 @@ export default function App() {
       setLongPressTimer(timer);
     }
     
-    // Exclude navel and collar from physics when they start being dragged
-    if (shouldRunPosePhysics(state) && id !== 'navel' && id !== 'collar') {
-      dragTargetRef.current = { id, target: getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview') };
+    const effectiveId = effectiveDraggingIdLiveRef.current ?? id;
+    const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
+    if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag && (!isRooted || rootDragKindLiveRef.current === 'root_target')) {
+      dragTargetRef.current = { id: effectiveId, target: getWorldPosition(effectiveId, state.joints, INITIAL_JOINTS, 'preview') };
     }
-    pinWorldRef.current = state.activePins.reduce<Record<string, Point>>((acc, pinId) => {
-      acc[pinId] = getWorldPosition(pinId, state.joints, INITIAL_JOINTS, 'preview');
-      return acc;
-    }, {});
+
+    pinWorldRef.current =
+      state.activeRoots.length === 0
+        ? null
+        : state.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
+            acc[rootId] = pinTargetsRef.current[rootId] ?? getWorldPosition(rootId, state.joints, INITIAL_JOINTS, 'preview');
+            return acc;
+          }, {});
     setDraggingId(id);
+  };
+
+  const handleGroundRootMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (state.activeRoots.length > 0) return;
+    setTimelinePlaying(false);
+    setSelectedJointId(null);
+    historyCtrlRef.current.beginAction('drag:ground_root', state);
+    setDraggingId(null);
+    draggingIdLiveRef.current = null;
+    effectiveDraggingIdLiveRef.current = null;
+    setGroundRootDragging(true);
+    groundRootDraggingLiveRef.current = true;
+    precisionAnchorRef.current = null;
+    lastEffectiveMouseWorldRef.current = state.groundRootTarget;
+  };
+
+  const handleRootLeverMouseDown = (rootId: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!state.activeRoots.includes(rootId)) return;
+    if (!state.joints[rootId]?.parent) return;
+    setTimelinePlaying(false);
+    setSelectedJointId(rootId);
+    historyCtrlRef.current.beginAction(`root_lever:${rootId}`, state);
+    setDraggingId(null);
+    draggingIdLiveRef.current = null;
+    effectiveDraggingIdLiveRef.current = null;
+    setGroundRootDragging(false);
+    groundRootDraggingLiveRef.current = false;
+    setRootLeverDraggingId(rootId);
+    rootLeverDraggingLiveRef.current = rootId;
+    rootDragKindLiveRef.current = 'root_lever';
+    precisionAnchorRef.current = null;
+    lastEffectiveMouseWorldRef.current = pinTargetsRef.current[rootId] ?? getWorldPosition(rootId, state.joints, INITIAL_JOINTS, 'preview');
   };
 
   const handleMaskMouseDown = (jointId: string) => (e: React.MouseEvent) => {
@@ -2682,6 +3212,23 @@ export default function App() {
           showTarget: false,
         });
 
+        if (groundPlaneDragging) {
+          groundPlaneDraggingLiveRef.current = true;
+          const dyWorld = mouseWorldRaw.y - groundPlaneDragging.startMouseWorldY;
+          const nextY = clamp(groundPlaneDragging.startPlaneY + dyWorld, -200, 200);
+          setState((prev) => ({
+            ...prev,
+            procgen: {
+              ...prev.procgen,
+              options: {
+                ...prev.procgen.options,
+                groundPlaneY: nextY,
+              },
+            },
+          }));
+          return;
+        }
+
         if (maskDragging) {
           maskDraggingLiveRef.current = true;
           let dx = e.clientX - maskDragging.startClientX;
@@ -2760,6 +3307,118 @@ export default function App() {
           return;
         }
 
+        if (rootLeverDraggingId) {
+          const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
+          const effectiveWorld = (() => {
+            let next = mouseWorldRaw;
+            if (e.altKey) {
+              const anchor =
+                precisionAnchorRef.current ??
+                (() => {
+                  const a = { raw: mouseWorldRaw, applied: lastEffectiveMouseWorldRef.current ?? mouseWorldRaw };
+                  precisionAnchorRef.current = a;
+                  return a;
+                })();
+              const dx = (mouseWorldRaw.x - anchor.raw.x) * PRECISION_DRAG_SCALE;
+              const dy = (mouseWorldRaw.y - anchor.raw.y) * PRECISION_DRAG_SCALE;
+              next = { x: anchor.applied.x + dx, y: anchor.applied.y + dy };
+            }
+            if (e.shiftKey) {
+              const step = 1 / (WORLD_PX_SCALE * Math.max(1e-6, state.viewScale));
+              next = { x: snapWorld(next.x, step), y: snapWorld(next.y, step) };
+            }
+
+            lastEffectiveMouseWorldRef.current = next;
+            return next;
+          })();
+
+          updateCursorHud({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            rawWorld: mouseWorldRaw,
+            effectiveWorld,
+            altKey: e.altKey,
+            shiftKey: e.shiftKey,
+            showTarget: Boolean(e.altKey || e.shiftKey),
+          });
+
+          const leverId = rootLeverDraggingId;
+          setState((prev) => {
+            const joint = prev.joints[leverId];
+            if (!joint?.parent) return prev;
+            const rootWorld =
+              pinTargetsRef.current[leverId] ?? getWorldPosition(leverId, prev.joints, INITIAL_JOINTS, 'preview');
+            const dx = effectiveWorld.x - rootWorld.x;
+            const dy = effectiveWorld.y - rootWorld.y;
+            const mag = Math.hypot(dx, dy);
+            if (!Number.isFinite(mag) || mag < 1e-6) return prev;
+            const nx = dx / mag;
+            const ny = dy / mag;
+
+            const len = vectorLength(prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) || vectorLength(joint.previewOffset);
+            if (!Number.isFinite(len) || len < 1e-6) return prev;
+
+            // Lever rotates the bone around the rooted joint: parent ends up in the direction of the lever.
+            const nextOffset = { x: -nx * len, y: -ny * len };
+            const nextJoints = { ...prev.joints };
+            nextJoints[leverId] = { ...joint, previewOffset: nextOffset, targetOffset: nextOffset, currentOffset: nextOffset };
+            return { ...prev, joints: nextJoints };
+          });
+          return;
+        }
+
+        if (groundRootDragging) {
+          const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
+          const effectiveWorld = (() => {
+            let next = mouseWorldRaw;
+            if (e.altKey) {
+              const anchor =
+                precisionAnchorRef.current ??
+                (() => {
+                  const a = { raw: mouseWorldRaw, applied: lastEffectiveMouseWorldRef.current ?? mouseWorldRaw };
+                  precisionAnchorRef.current = a;
+                  return a;
+                })();
+              const dx = (mouseWorldRaw.x - anchor.raw.x) * PRECISION_DRAG_SCALE;
+              const dy = (mouseWorldRaw.y - anchor.raw.y) * PRECISION_DRAG_SCALE;
+              next = { x: anchor.applied.x + dx, y: anchor.applied.y + dy };
+            }
+            if (e.shiftKey) {
+              const step = 1 / (WORLD_PX_SCALE * Math.max(1e-6, state.viewScale));
+              next = { x: snapWorld(next.x, step), y: snapWorld(next.y, step) };
+            }
+
+            lastEffectiveMouseWorldRef.current = next;
+            return next;
+          })();
+
+          updateCursorHud({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            rawWorld: mouseWorldRaw,
+            effectiveWorld,
+            altKey: e.altKey,
+            shiftKey: e.shiftKey,
+            showTarget: Boolean(e.altKey || e.shiftKey),
+          });
+
+          setState((prev) => {
+            if (prev.activeRoots.length > 0) return prev;
+            const nextTarget = { x: effectiveWorld.x, y: effectiveWorld.y };
+            const corrected = applyGroundRootCorrectionToJoints({
+              joints: prev.joints,
+              baseJoints: INITIAL_JOINTS,
+              activeRoots: prev.activeRoots,
+              groundRootTarget: nextTarget,
+            });
+            if (corrected === prev.joints && prev.groundRootTarget.x === nextTarget.x && prev.groundRootTarget.y === nextTarget.y) {
+              return prev;
+            }
+            return { ...prev, groundRootTarget: nextTarget, joints: corrected };
+          });
+          return;
+        }
+
         if (!draggingId) return;
         draggingIdLiveRef.current = draggingId;
 
@@ -2804,33 +3463,57 @@ export default function App() {
         const mouseX = effectiveWorld.x;
         const mouseY = effectiveWorld.y;
 
-        // Exclude navel and collar from physics drag updates
-        if (shouldRunPosePhysics(state) && draggingId !== 'navel' && draggingId !== 'collar') {
-          dragTargetRef.current = { id: draggingId, target: { x: mouseX, y: mouseY } };
+        const effectiveId = effectiveDraggingIdLiveRef.current ?? draggingId;
+
+        const isRooted = state.activeRoots.includes(effectiveId);
+        if (isRooted && rootDragKindLiveRef.current !== 'root_target') {
+          setState((prev) => {
+            const joint = prev.joints[effectiveId];
+            if (!joint?.parent) return prev;
+            const rootWorld =
+              pinTargetsRef.current[effectiveId] ?? getWorldPosition(effectiveId, prev.joints, INITIAL_JOINTS, 'preview');
+            const dx = mouseX - rootWorld.x;
+            const dy = mouseY - rootWorld.y;
+            const mag = Math.hypot(dx, dy);
+            if (!Number.isFinite(mag) || mag < 1e-6) return prev;
+            const nx = dx / mag;
+            const ny = dy / mag;
+
+            const len = vectorLength(prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) || vectorLength(joint.previewOffset);
+            if (!Number.isFinite(len) || len < 1e-6) return prev;
+
+            const nextOffset = { x: -nx * len, y: -ny * len };
+            const nextJoints = { ...prev.joints };
+            nextJoints[effectiveId] = { ...joint, previewOffset: nextOffset, targetOffset: nextOffset, currentOffset: nextOffset };
+            return { ...prev, joints: nextJoints };
+          });
           return;
         }
 
         const pinWorld = pinWorldRef.current;
-        const hasPinnedFeet = Boolean(pinWorld && ('l_ankle' in pinWorld || 'r_ankle' in pinWorld));
+        const hasRootedFeet = Boolean(pinWorld && (pinWorld.l_ankle || pinWorld.r_ankle));
 	        const isBalanceHandle =
-	          draggingId === 'head' ||
-	          draggingId === 'neck_base' ||
-	          draggingId === 'sternum' ||
-	          draggingId === 'navel' ||
-	          draggingId === 'l_hip' ||
-	          draggingId === 'r_hip';
+	          effectiveId === 'head' ||
+	          effectiveId === 'neck_base' ||
+	          effectiveId === 'sternum' ||
+	          effectiveId === 'navel' ||
+	          effectiveId === 'l_hip' ||
+	          effectiveId === 'r_hip';
 
-        if (hasPinnedFeet && isBalanceHandle) {
-          setState((prev) =>
-            (prev.controlMode === 'IK' || prev.controlMode === 'Rubberband') && pinWorld
-              ? applyBalanceDragToState(prev, draggingId, { x: mouseX, y: mouseY }, pinWorld)
-              : applyDragToState(prev, draggingId, { x: mouseX, y: mouseY }),
-          );
-        } else {
-          setState((prev) => applyDragToState(prev, draggingId, { x: mouseX, y: mouseY }));
+        if (hasRootedFeet && isBalanceHandle && pinWorld) {
+          setState((prev) => applyBalanceDragToState(prev, effectiveId, { x: mouseX, y: mouseY }, pinWorld));
+          return;
         }
+
+        const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
+        if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag) {
+          dragTargetRef.current = { id: effectiveId, target: { x: mouseX, y: mouseY } };
+          return;
+        }
+
+        setState((prev) => applyDragToState(prev, effectiveId, { x: mouseX, y: mouseY }));
       },
-      [draggingId, maskDragging, state.stretchEnabled, state.viewScale, state.viewOffset, canvasSize],
+      [draggingId, groundRootDragging, maskDragging, rootLeverDraggingId, state.activeRoots, state.stretchEnabled, state.viewScale, state.viewOffset, canvasSize],
     );
 
   const handleMouseUp = () => {
@@ -2843,6 +3526,14 @@ export default function App() {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+
+    if (groundPlaneDragging) {
+      setGroundPlaneDragging(null);
+      groundPlaneDraggingLiveRef.current = false;
+      commitHistoryAction();
+      return;
+    }
+
     precisionAnchorRef.current = null;
     lastEffectiveMouseWorldRef.current = null;
     if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
@@ -2867,12 +3558,13 @@ export default function App() {
     const endFrameToJump =
       finalizedRecording && recordingFrames.length ? recordingFrames[recordingFrames.length - 1]!.frame : null;
 
-    // If a pinned joint was dragged, update its pin target so it "sticks" on release.
-    if (draggingId && state.activePins.includes(draggingId)) {
+    // If a rooted joint was explicitly root-dragged, update its root target so it "sticks" on release.
+    const effectiveId = draggingId ? (effectiveDraggingIdLiveRef.current ?? draggingId) : null;
+    if (effectiveId && state.activeRoots.includes(effectiveId) && rootDragKindLiveRef.current === 'root_target') {
       const drag = dragTargetRef.current;
       const nextTarget =
-        drag && drag.id === draggingId ? drag.target : getWorldPosition(draggingId, state.joints, INITIAL_JOINTS, 'preview');
-      pinTargetsRef.current = { ...pinTargetsRef.current, [draggingId]: nextTarget };
+        drag && drag.id === effectiveId ? drag.target : getWorldPosition(effectiveId, state.joints, INITIAL_JOINTS, 'preview');
+      pinTargetsRef.current = { ...pinTargetsRef.current, [effectiveId]: nextTarget };
     }
     
     // Handle rubberband snap behavior
@@ -2902,16 +3594,15 @@ export default function App() {
       setMaskEditArmed(false);
     }
 
-    // Clear navel and collar from physics drag target specifically
-    if (draggingId === 'navel' || draggingId === 'collar') {
-      dragTargetRef.current = null;
-    }
-
+    setGroundRootDragging(false);
+    groundRootDraggingLiveRef.current = false;
+    setRootLeverDraggingId(null);
+    rootLeverDraggingLiveRef.current = null;
+    rootDragKindLiveRef.current = 'none';
     draggingIdLiveRef.current = null;
+    effectiveDraggingIdLiveRef.current = null;
     pinWorldRef.current = null;
-    if (draggingId !== 'navel' && draggingId !== 'collar') {
-      dragTargetRef.current = null;
-    }
+    dragTargetRef.current = null;
     setDraggingId(null);
     setState((prev) => {
       let next = prev;
@@ -3201,17 +3892,19 @@ export default function App() {
     pinTargetsRef.current = {};
     rubberbandAnchorPinRef.current = null;
     hingeSignsRef.current = {};
+    const nextJoints = sanitizeJoints(null);
     setStateWithHistory('reset_engine', (prev) => ({
       ...prev,
-      joints: sanitizeJoints(null),
-      activePins: [],
+      joints: nextJoints,
+      activeRoots: [],
+      groundRootTarget: computeCogWorld(nextJoints, INITIAL_JOINTS),
       viewScale: 1.0,
       viewOffset: { x: 0, y: 0 },
     }));
   };
 
-  const togglePin = (id: string) => {
-    if (state.activePins.includes(id)) {
+  const toggleRoot = (id: string) => {
+    if (state.activeRoots.includes(id)) {
       const next = { ...pinTargetsRef.current };
       delete next[id];
       pinTargetsRef.current = next;
@@ -3221,11 +3914,11 @@ export default function App() {
         [id]: getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview'),
       };
     }
-    setStateWithHistory('toggle_pin', (prev) => ({
+    setStateWithHistory('toggle_root', (prev) => ({
       ...prev,
-      activePins: prev.activePins.includes(id)
-        ? prev.activePins.filter((p) => p !== id)
-        : [...prev.activePins, id],
+      activeRoots: prev.activeRoots.includes(id)
+        ? prev.activeRoots.filter((p) => p !== id)
+        : [...prev.activeRoots, id],
     }));
   };
 
@@ -3261,12 +3954,13 @@ export default function App() {
     const angle = Math.atan2(dy, dx) * (180 / Math.PI);
 
     // Styling based on connection type
-    const useGridPalette = true;
-    let strokeColor = "#2b0057";
+    const boneHex = getBoneHex(state.boneStyle);
+    let strokeColor = boneHex;
     let strokeWidth = 4;
     let opacity = 0.9;
     let dashArray = "";
     const connKey = canonicalConnKey(conn.from, conn.to);
+    const override = state.connectionOverrides?.[connKey];
     const isSelectedConn = selectedConnectionKey === connKey;
 
     if (conn.type === 'soft_limit') {
@@ -3276,23 +3970,31 @@ export default function App() {
     } else if (conn.type === 'structural_link') {
       strokeWidth = 1;
       opacity = 0.3;
-      strokeColor = useGridPalette ? "rgba(43, 0, 87, 0.55)" : "#666";
+      strokeColor = rgbCss(boneHex, 0.55);
     }
 
     if (isSelectedConn) {
-      strokeColor = '#ff8800';
+      strokeColor = '#00ff88';
       opacity = 1.0;
       strokeWidth = Math.max(strokeWidth, 4) + 2;
       dashArray = '';
     }
 
     const renderShape = () => {
-      const shape = conn.shape || 'standard';
+      const shape = override?.shape || conn.shape || 'standard';
       const fillColor = isNosferatuLook ? '#ffffff' : strokeColor;
       const lineColor = isNosferatuLook ? '#ffffff' : strokeColor;
       const shapeOpacity = isNosferatuLook ? Math.max(opacity, 0.85) : opacity;
       
       switch (shape) {
+        case 'bone':
+          return (
+            <g transform={`translate(${x1}, ${y1}) rotate(${angle})`} style={{ opacity: shapeOpacity }}>
+              <rect x="0" y="-3.5" width={len} height="7" rx="3.5" ry="3.5" fill={fillColor} />
+              <circle cx="0" cy="0" r="5.5" fill={fillColor} />
+              <circle cx={len} cy="0" r="5.5" fill={fillColor} />
+            </g>
+          );
         case 'muscle':
           return (
             <path
@@ -3300,6 +4002,44 @@ export default function App() {
                 M 0,0
                 Q ${len * 0.5}, -15 ${len}, 0
                 Q ${len * 0.5}, 15 0, 0
+                Z
+              `}
+              fill={fillColor}
+              transform={`translate(${x1}, ${y1}) rotate(${angle})`}
+              style={{ opacity: shapeOpacity }}
+            />
+          );
+        case 'capsule':
+          return (
+            <rect
+              x="0"
+              y="-4"
+              width={len}
+              height="8"
+              rx="4"
+              ry="4"
+              fill={fillColor}
+              transform={`translate(${x1}, ${y1}) rotate(${angle})`}
+              style={{ opacity: shapeOpacity }}
+            />
+          );
+        case 'diamond':
+          return (
+            <polygon
+              points={`0,0 ${len * 0.5},-7 ${len},0 ${len * 0.5},7`}
+              fill={fillColor}
+              transform={`translate(${x1}, ${y1}) rotate(${angle})`}
+              style={{ opacity: shapeOpacity }}
+            />
+          );
+        case 'ribbon':
+          return (
+            <path
+              d={`
+                M 0,-5
+                C ${len * 0.25}, -10, ${len * 0.75}, 0, ${len}, -5
+                L ${len}, 5
+                C ${len * 0.75}, 0, ${len * 0.25}, 10, 0, 5
                 Z
               `}
               fill={fillColor}
@@ -3386,6 +4126,9 @@ export default function App() {
     const isLotte = state.lookMode === 'lotte';
     const isRoot = !joint.parent;
     const isSelected = selectedJointId === id;
+
+    // `root` is a technical joint (world translation); keep it invisible.
+    if (id === 'root') return null;
     
     // Convert sacrum and ribs to x markers instead of joints
     const isSacrum = id === 'sacrum';
@@ -3420,8 +4163,8 @@ export default function App() {
         ? '#000000'
         : isRoot
           ? 'white'
-          : state.activePins.includes(id)
-            ? '#ff8800'
+          : state.activeRoots.includes(id)
+            ? '#00ff88'
             : state.controlMode === 'Rubberband' && isLongPress
               ? '#ff4444'
               : 'var(--accent)';
@@ -3435,20 +4178,39 @@ export default function App() {
             ? 'rgba(255, 68, 68, 0.8)'
             : 'var(--bg)';
 
+    const glowStrength = clamp(state.physicsRigidity ?? 0, 0, 1);
+    const baseGlow = isNosferatu ? 0 : glowStrength * 0.35;
+    const selectedGlow = isSelected ? 0.18 : 0;
+    const pinnedGlow = state.activeRoots.includes(id) ? 0.22 : 0;
+    const glowOpacity = clamp(baseGlow + selectedGlow + pinnedGlow, 0, 0.75);
+
     return (
-      <circle
-        key={`joint-${id}`}
-        cx={sx} cy={sy} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
-        fill={fillColor}
-        stroke={strokeColor}
-        strokeWidth={isSelected ? 3 : 2}
-        className="cursor-grab active:cursor-grabbing"
-        onMouseDown={handleMouseDown(id)}
-      />
+      <g key={`joint-${id}`}>
+        {glowOpacity > 0.001 && (
+          <circle
+            cx={sx}
+            cy={sy}
+            r={isRoot ? 14 : 10}
+            fill="rgb(125 255 170 / 1)"
+            opacity={glowOpacity}
+            filter="url(#joint-soft-glow)"
+            pointerEvents="none"
+            style={{ mixBlendMode: 'screen' }}
+          />
+        )}
+        <circle
+          cx={sx} cy={sy} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
+          fill={fillColor}
+          stroke={strokeColor}
+          strokeWidth={isSelected ? 3 : 2}
+          className="cursor-grab active:cursor-grabbing"
+          onMouseDown={handleMouseDown(id)}
+        />
+      </g>
     );
   };
 
-  const renderXMarker = (id: string, color: string = "#ff8800") => {
+  const renderXMarker = (id: string, color: string = "#00ff88") => {
     const pos = getWorldPosition(id, state.joints, INITIAL_JOINTS);
     const scale = 20;
     const centerX = canvasSize.width / 2;
@@ -3466,6 +4228,102 @@ export default function App() {
       <g key={`x-marker-${id}`}>
         <line x1={sx - size} y1={sy - size} x2={sx + size} y2={sy + size} stroke={color} strokeWidth="2" />
         <line x1={sx + size} y1={sy - size} x2={sx - size} y2={sy + size} stroke={color} strokeWidth="2" />
+      </g>
+    );
+  };
+
+  const renderGroundRootHandle = () => {
+    if (state.activeRoots.length > 0) return null;
+    if (!Number.isFinite(state.groundRootTarget.x) || !Number.isFinite(state.groundRootTarget.y)) return null;
+
+    const scale = 20;
+    const centerX = canvasSize.width / 2;
+    const centerY = canvasSize.height / 2;
+
+    const x = state.groundRootTarget.x * scale + centerX;
+    const y = state.groundRootTarget.y * scale + centerY;
+    const sx = snapPx(x);
+    const sy = snapPx(y);
+    if (isNaN(sx) || isNaN(sy)) return null;
+
+    return (
+      <g key="ground-root-handle">
+        <circle
+          cx={sx}
+          cy={sy}
+          r={10}
+          fill="rgba(255, 255, 255, 0.06)"
+          stroke="rgba(255, 255, 255, 0.45)"
+          strokeWidth={2}
+          className="cursor-grab active:cursor-grabbing"
+          onMouseDown={handleGroundRootMouseDown}
+        />
+        <line x1={sx - 8} y1={sy} x2={sx + 8} y2={sy} stroke="rgba(255, 255, 255, 0.55)" strokeWidth={2} pointerEvents="none" />
+        <line x1={sx} y1={sy - 8} x2={sx} y2={sy + 8} stroke="rgba(255, 255, 255, 0.55)" strokeWidth={2} pointerEvents="none" />
+      </g>
+    );
+  };
+
+  const renderProcgenGroundPlane = () => {
+    if (!state.procgen.enabled) return null;
+    if (!state.procgen.options.groundPlaneVisible) return null;
+    if (!canvasSize.width || !canvasSize.height) return null;
+
+    const scale = WORLD_PX_SCALE;
+    const centerX = canvasSize.width / 2;
+    const centerY = canvasSize.height / 2;
+
+    const y = snapPx(state.procgen.options.groundPlaneY * scale + centerY);
+    if (!Number.isFinite(y)) return null;
+
+    const x1 = snapPx(centerX - canvasSize.width * 2);
+    const x2 = snapPx(centerX + canvasSize.width * 2);
+
+    const handleDown = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      setTimelinePlaying(false);
+      beginHistoryAction('procgen:ground_plane_drag');
+      const mouseWorld = getMouseWorld(e.clientX, e.clientY);
+      groundPlaneDraggingLiveRef.current = true;
+      setGroundPlaneDragging({
+        startMouseWorldY: mouseWorld.y,
+        startPlaneY: stateLiveRef.current.procgen.options.groundPlaneY,
+      });
+    };
+
+    return (
+      <g key="procgen-ground-plane" opacity={0.9}>
+        <line
+          x1={x1}
+          y1={y}
+          x2={x2}
+          y2={y}
+          stroke="rgba(0,0,0,0)"
+          strokeWidth={14}
+          className="cursor-ns-resize"
+          onMouseDown={handleDown}
+        />
+        <line
+          x1={x1}
+          y1={y}
+          x2={x2}
+          y2={y}
+          stroke="rgba(255, 255, 255, 0.25)"
+          strokeWidth={1}
+          strokeDasharray="6 6"
+          pointerEvents="none"
+        />
+        <text
+          x={snapPx(x1 + 12)}
+          y={snapPx(y - 8)}
+          fontSize={10}
+          fill="rgba(255, 255, 255, 0.45)"
+          fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace"
+          pointerEvents="none"
+        >
+          GROUND
+        </text>
       </g>
     );
   };
@@ -3740,21 +4598,34 @@ export default function App() {
     return hierarchy;
   };
 
-  const jointsLayer = state.showJoints ? (() => {
-  const regularJoints = Object.keys(state.joints)
-    .filter(id => id !== 'sacrum' && !id.includes('rib'))
-    .map(renderJoint);
-  
-  const xMarkers = state.activePins.map(id => renderXMarker(id, "#ff8800"));
-  
-  return [...regularJoints, ...xMarkers];
-})() : null;
+  const jointsLayer = state.showJoints
+    ? (() => {
+        const regularJoints = Object.keys(state.joints)
+          .filter((id) => id !== 'sacrum' && !id.includes('rib'))
+          .map(renderJoint);
+
+        const xMarkers = state.activeRoots.map((id) => renderXMarker(id, "#00ff88"));
+
+        const groundRoot = renderGroundRootHandle();
+        return groundRoot ? [...regularJoints, ...xMarkers, groundRoot] : [...regularJoints, ...xMarkers];
+      })()
+    : null;
 
   const controlModeUi: Record<ControlMode, { label: string; title: string }> = {
     Cardboard: { label: 'Rigid', title: 'Rigid drag (Cardboard): crisp, stiff posing.' },
     Rubberband: { label: 'Elastic', title: 'Elastic drag (Rubberband): stretchy, hose-like posing.' },
-    IK: { label: 'Pin', title: 'Pinned posing (IK): drag pins to pose limbs.' },
+    IK: { label: 'Root', title: 'Rooted posing (IK): drag rooted joints to pose limbs.' },
     JointDrag: { label: 'Direct', title: 'Direct joint drag: move joints without extra posing modes.' },
+  };
+
+  const WidgetPortal = ({ id, children }: { id: WidgetId; children: React.ReactNode }) => {
+    const isFloating = floatingWidgetIds.has(id);
+    if (isFloating) {
+      const target = widgetPortalTargets[id] ?? null;
+      return target ? createPortal(children, target) : null;
+    }
+    if (activeWidgetId !== id) return null;
+    return <>{children}</>;
   };
 
   return (
@@ -3772,28 +4643,17 @@ export default function App() {
           if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
         }}
         onDrop={(e) => {
-          const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
-          if (
-            payload !== 'joint_masks' &&
-            payload !== 'bone_inspector' &&
-            payload !== 'console' &&
-            payload !== 'camera' &&
-            payload !== 'procgen' &&
-            payload !== 'atomic_units'
-          ) {
-            return;
-          }
+          const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
+          if (!isWidgetId(payload)) return;
           e.preventDefault();
-          setDockedWidgets((prev) => {
-            if (prev.includes(payload)) return prev;
-            return [...prev, payload];
-          });
-          setActiveDockedWidget(payload);
+          dockWidget(payload);
         }}
       >
         <div className="w-[360px] h-full flex flex-col">
           <div className="p-6 pb-4">
-            <div className="flex items-center gap-3">
+            <div
+              className={`flex items-center gap-3 ${sidebarTab === 'global' ? 'opacity-0 pointer-events-none select-none' : ''}`}
+            >
               <div className="p-2 bg-white rounded-lg">
                 <Activity size={20} className="text-black" />
               </div>
@@ -3814,6 +4674,7 @@ export default function App() {
                   { id: 'character' as const, label: 'Character' },
                   { id: 'physics' as const, label: 'Physics' },
                   { id: 'animation' as const, label: 'Animation' },
+                  { id: 'global' as const, label: 'Global' },
                 ] as const
               ).map((tab) => {
                 const active = sidebarTab === tab.id;
@@ -3833,9 +4694,86 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-6 pb-6">
-            <div className="space-y-6">
-            {sidebarTab === 'character' && (
+          <div className="flex-1 min-h-0 flex flex-col px-6 pb-6">
+            <section className="shrink-0 pt-2">
+              <div className="flex items-center gap-2 mb-3 text-[#666]">
+                <Anchor size={14} />
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Widgets</h2>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                {WIDGET_TAB_ORDER[sidebarTab].map((id) => {
+                  const isFloating = floatingWidgetIds.has(id);
+                  const active = activeWidgetId === id && !isFloating;
+                  return (
+                    <button
+                      key={`widget:${id}`}
+                      type="button"
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData(DND_WIDGET_MIME, id);
+                        e.dataTransfer.effectAllowed = 'copy';
+                      }}
+                      onClick={() => activateWidget(id)}
+                      className={`relative py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${
+                        active ? 'bg-white text-black border-white' : 'bg-[#222] hover:bg-[#333] border-[#222] text-white'
+                      }`}
+                      title={isFloating ? 'Floating (click to focus)' : 'Click to activate; drag to pop out'}
+                    >
+                      <span className="truncate">{WIDGETS[id].title}</span>
+                      {isFloating && (
+                        <span
+                          className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[#00ff88]"
+                          aria-label="Floating"
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 text-[10px] text-[#444]">
+                Drag onto the canvas to pop out. Hold <span className="font-mono text-[#666]">Alt</span> while dragging/resizing to disable snapping.
+              </div>
+            </section>
+
+            <section className="shrink-0 mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                  {WIDGETS[activeWidgetId].title}
+                </div>
+                <div className="text-[9px] font-mono text-[#444]">
+                  {floatingWidgetIds.has(activeWidgetId) ? 'FLOATING' : 'DOCKED'}
+                </div>
+              </div>
+              <div className="mt-2">{WIDGETS[activeWidgetId].docs}</div>
+            </section>
+
+            <div className="flex-1 min-h-0 overflow-y-auto mt-4">
+              {floatingWidgetIds.has(activeWidgetId) && (
+                <div className="mb-4 p-3 rounded-xl bg-[#181818] border border-[#222] flex items-center justify-between gap-3">
+                  <div className="text-[11px] text-[#bbb]">This widget is popped out on the canvas.</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => activateWidget(activeWidgetId)}
+                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                    >
+                      Focus
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => dockWidget(activeWidgetId)}
+                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                    >
+                      Dock
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-6 pb-6">
+                <WidgetPortal id="edit">
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Move size={14} />
@@ -3868,212 +4806,572 @@ export default function App() {
                 </button>
               </div>
             </section>
-            )}
+                </WidgetPortal>
 
-            {sidebarTab === 'character' && (
-            <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
-                <Anchor size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Tools</h2>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                {(
-	                  [
-		                    { kind: 'joint_masks' as const, label: 'Masks' },
-	                      { kind: 'cutout_relationships' as const, label: 'Cutout Relationships' },
-	                      { kind: 'bone_inspector' as const, label: 'Rig' },
-	                    { kind: 'console' as const, label: 'Console' },
-	                    { kind: 'camera' as const, label: 'Camera' },
-	                  { kind: 'procgen' as const, label: 'Auto Motion' },
-	                    { kind: 'atomic_units' as const, label: 'Advanced' },
-	                  ] as const
-	                ).map(({ kind, label }) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData(DND_WIDGET_MIME, kind);
-                      e.dataTransfer.effectAllowed = 'copy';
-	                    }}
-	                    onClick={() => {
-	                      if (dockedWidgets.includes(kind)) {
-	                        setActiveDockedWidget(kind);
-	                        return;
-	                      }
-	                      const rect = canvasRef.current?.getBoundingClientRect();
-	                      const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
-	                      const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
-	                      spawnFloatingWidget(kind, cx, cy);
-	                    }}
-                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-                    title="Drag onto canvas or click to spawn"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-		              <p className="mt-2 text-[10px] text-[#444]">
-		                Drag a tool onto the canvas, or click to open it.
-		              </p>
-		            </section>
-            )}
-
-              {sidebarTab === 'character' && (
-              <section>
-                <div className="flex items-center gap-2 mb-4 text-[#666]">
-                  <Terminal size={14} />
-                  <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Dock</h2>
-                </div>
-                <div className="text-[10px] text-[#444] mb-3">
-                  Drag a tool button onto the sidebar to dock it as a tab.
-                </div>
-
-                {dockedWidgets.length === 0 ? (
-                  <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-[10px] text-[#555]">
-                    No docked widgets.
-                  </div>
-                ) : (
-                  <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="flex gap-1 overflow-x-auto pb-2">
-                      {dockedWidgets.map((kind) => {
-                        const active = kind === activeDockedWidget;
-                        return (
-                          <div key={`dock-tab:${kind}`} className="flex items-center gap-1 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => setActiveDockedWidget(kind)}
-                              className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest border transition-colors ${
-                                active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:bg-white/5'
-                              }`}
-                            >
-                              {widgetTitleForKind(kind)}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setDockedWidgets((prev) => {
-                                  const next = prev.filter((k) => k !== kind);
-                                  setActiveDockedWidget((curr) => (curr === kind ? next[0] ?? null : curr));
-                                  return next;
-                                });
-                              }}
-                              className="px-1.5 py-1 rounded hover:bg-white/10 text-[#666]"
-                              title="Close tab"
-                            >
-                              <X size={10} />
-                            </button>
-                          </div>
-                        );
-                      })}
+                <WidgetPortal id="tools">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Anchor size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Tools
+                      </h2>
                     </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-[11px] text-[#bbb] space-y-2">
+                      <div>Widgets start docked in the side console to keep the canvas clean.</div>
+                      <ul className="list-disc pl-4 space-y-1 text-[#aaa]">
+                        <li>Activate widgets from the picker above.</li>
+                        <li>Drag a widget onto the canvas to pop it out.</li>
+                        <li>Drag a floating widget back onto the sidebar to dock it.</li>
+                        <li>Floating widgets snap to a {widgetSnapGridPx}px grid (hold Alt to disable).</li>
+                      </ul>
+                      <div className="text-[#666] text-[10px] uppercase tracking-widest font-bold">Tip</div>
+                      <div className="text-[#aaa] text-[11px]">Use the bottom-right corner to resize floating widgets.</div>
+                    </div>
+                  </section>
+                </WidgetPortal>
 
-                    <div className="max-h-[420px] overflow-auto">
-                      {activeDockedWidget === 'joint_masks' ? (
-                        <JointMaskWidget
-                          state={state}
-                          setStateWithHistory={setStateWithHistory}
-                          maskJointId={maskJointId}
-                          setMaskJointId={setMaskJointId}
-                          maskEditArmed={maskEditArmed}
-                          setMaskEditArmed={setMaskEditArmed}
-                          maskDragMode={maskDragMode}
-                          setMaskDragMode={setMaskDragMode}
-                          uploadJointMaskFile={uploadJointMaskFile}
-                          uploadMaskFile={uploadMaskFile}
-                          copyJointMaskTo={copyJointMaskTo}
-                        />
-                      ) : activeDockedWidget === 'cutout_relationships' ? (
-                        <CutoutRelationshipVisualizer
-                          state={state}
-                          setStateWithHistory={setStateWithHistory}
-                          uploadJointMaskFile={uploadJointMaskFile}
-                          addConsoleLog={addConsoleLog}
-                        />
-                      ) : activeDockedWidget === 'console' ? (
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              {(['info', 'warning', 'error', 'success'] as const).map((lvl) => {
-                                const active = activeLogLevels.has(lvl);
-                                const color =
-                                  lvl === 'error'
-                                    ? 'text-orange-400'
-                                    : lvl === 'warning'
-                                      ? 'text-yellow-300'
-                                      : lvl === 'success'
-                                        ? 'text-green-400'
-                                        : 'text-blue-300';
-                                return (
-                                  <button
-                                    key={lvl}
-                                    type="button"
-                                    onClick={() =>
-                                      setActiveLogLevels((prev) => {
-                                        const next = new Set(prev);
-                                        if (next.has(lvl)) next.delete(lvl);
-                                        else next.add(lvl);
-                                        return next;
-                                      })
-                                    }
-                                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest border ${
-                                      active ? 'bg-[#222] border-[#333]' : 'bg-transparent border-[#222] opacity-60'
-                                    } ${color}`}
-                                  >
-                                    {lvl}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setConsoleLogs([])}
-                              className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                            >
-                              Clear
-                            </button>
-                          </div>
+                <WidgetPortal id="joint_masks">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Anchor size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Masks
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <JointMaskWidget
+                        state={state}
+                        setStateWithHistory={setStateWithHistory}
+                        maskJointId={maskJointId}
+                        setMaskJointId={setMaskJointId}
+                        maskEditArmed={maskEditArmed}
+                        setMaskEditArmed={setMaskEditArmed}
+                        maskDragMode={maskDragMode}
+                        setMaskDragMode={setMaskDragMode}
+                        uploadJointMaskFile={uploadJointMaskFile}
+                        uploadMaskFile={uploadMaskFile}
+                        copyJointMaskTo={copyJointMaskTo}
+                      />
+                    </div>
+                  </section>
+                </WidgetPortal>
 
-                          <div className="space-y-1 font-mono text-[11px]">
-                            {filteredConsoleLogs.slice(-120).map((log) => (
-                              <div key={log.id} className="flex gap-2 items-start">
-                                <span className="text-[#555] shrink-0">
-                                  {new Date(log.ts).toLocaleTimeString([], {
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                    second: '2-digit',
-                                  })}
-                                </span>
-                                <span className="text-[#666] shrink-0">{log.level.toUpperCase()}</span>
-                                <span className="text-white break-words">{log.message}</span>
+                <WidgetPortal id="cutout_relationships">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Layers size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Cutout Relationships
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <CutoutRelationshipVisualizer
+                        state={state}
+                        setStateWithHistory={setStateWithHistory}
+                        uploadJointMaskFile={uploadJointMaskFile}
+                        addConsoleLog={addConsoleLog}
+                      />
+                    </div>
+                  </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="bone_inspector">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Layers size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Rig Inspector
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <div className="space-y-3">
+                        {(() => {
+                          const connKey = selectedConnectionKey;
+                          if (!connKey) {
+                            return (
+                              <div className="text-[10px] text-[#444]">
+                                No bone selected. Use Tab/Shift+Tab, or press 2.
                               </div>
-                            ))}
-                            {filteredConsoleLogs.length === 0 && (
-                              <div className="text-[#444]">No logs (filters may be hiding everything).</div>
-                            )}
-                          </div>
-                        </div>
-                      ) : activeDockedWidget === 'atomic_units' ? (
-                        <AtomicUnitsControl
-                          state={state}
-                          setStateNoHistory={setStateNoHistory}
-                          setStateWithHistory={setStateWithHistory}
-                          beginHistoryAction={beginHistoryAction}
-                          commitHistoryAction={commitHistoryAction}
-                          addConsoleLog={addConsoleLog}
-                        />
-                      ) : (
-                        <div className="text-[10px] text-[#555]">
-                          This panel can’t be docked yet. Open it as a floating tool for now.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </section>
-              )}
+                            );
+                          }
 
-	            {sidebarTab === 'physics' && (
+                          const [a, b] = connKey.split(':');
+                          const conn = CONNECTIONS.find((c) => canonicalConnKey(c.from, c.to) === connKey) ?? null;
+                          const override = state.connectionOverrides?.[connKey];
+                          const currentMode = override?.stretchMode ?? conn?.stretchMode ?? 'rigid';
+                          const label = conn?.label || `${a} ↔ ${b}`;
+
+                          const deriveFocusForJoint = (jointId: string): RigFocus | null => {
+                            const isRight = jointId.startsWith('r_');
+                            const isLeft = jointId.startsWith('l_');
+                            const side: RigSide | null = isRight ? 'front' : isLeft ? 'back' : null;
+
+                            const bodyIndex = (() => {
+                              if (jointId === 'head') return 0;
+                              if (jointId === 'collar') return 1;
+                              if (jointId === 'navel') return 2;
+                              if (jointId.endsWith('_hip')) return 3;
+                              if (jointId.endsWith('_knee')) return 4;
+                              if (jointId.endsWith('_ankle')) return 5;
+                              if (jointId.endsWith('_toe')) return 6;
+                              return null;
+                            })();
+
+                            if (bodyIndex !== null) {
+                              return {
+                                ...rigFocus,
+                                stage: 'bone',
+                                track: 'body',
+                                index: bodyIndex,
+                                side: side ?? rigFocus.side,
+                              };
+                            }
+
+                            const armsIndex = (() => {
+                              if (jointId.endsWith('_shoulder')) return 0;
+                              if (jointId.endsWith('_elbow')) return 1;
+                              if (jointId.endsWith('_wrist')) return 2;
+                              if (jointId.endsWith('_fingertip')) return 3;
+                              return null;
+                            })();
+
+                            if (armsIndex !== null && side) {
+                              return {
+                                ...rigFocus,
+                                stage: 'bone',
+                                track: 'arms',
+                                index: armsIndex,
+                                side,
+                              };
+                            }
+
+                            if (jointId === 'navel') {
+                              return { ...rigFocus, stage: 'bone', track: 'body', index: 2 };
+                            }
+
+                            return null;
+                          };
+
+                          const relatedKeys = (() => {
+                            const sidePrefix = rigFocus.side === 'front' ? 'r' : 'l';
+                            if (rigFocus.track === 'body') {
+                              return [
+                                canonicalConnKey('navel', 'sternum'),
+                                canonicalConnKey('sternum', 'collar'),
+                                canonicalConnKey('collar', 'neck_base'),
+                                canonicalConnKey('neck_base', 'head'),
+                                canonicalConnKey('navel', `${sidePrefix}_hip`),
+                                canonicalConnKey(`${sidePrefix}_hip`, `${sidePrefix}_knee`),
+                                canonicalConnKey(`${sidePrefix}_knee`, `${sidePrefix}_ankle`),
+                                canonicalConnKey(`${sidePrefix}_ankle`, `${sidePrefix}_toe`),
+                              ];
+                            }
+
+                            return [
+                              canonicalConnKey('collar', `${sidePrefix}_shoulder`),
+                              canonicalConnKey(`${sidePrefix}_shoulder`, `${sidePrefix}_elbow`),
+                              canonicalConnKey(`${sidePrefix}_elbow`, `${sidePrefix}_wrist`),
+                              canonicalConnKey(`${sidePrefix}_wrist`, `${sidePrefix}_fingertip`),
+                            ];
+                          })().filter((k) => {
+                            const parts = k.split(':');
+                            if (parts.length !== 2) return false;
+                            return parts[0] in state.joints && parts[1] in state.joints;
+                          });
+
+                          return (
+                            <>
+                              <div className="space-y-1">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                                  Selected Bone
+                                </div>
+                                <div className="text-[11px] text-white font-mono">{label}</div>
+                                <div className="text-[10px] text-[#555] font-mono">{connKey}</div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                                  Stretch Mode
+                                </div>
+                                <div className="flex bg-[#222] rounded-md p-0.5">
+                                  {(['rigid', 'elastic', 'stretch'] as const).map((m) => (
+                                    <button
+                                      key={m}
+                                      type="button"
+                                      onClick={() => {
+                                        setStateWithHistory(`conn_mode:${connKey}`, (prev) => ({
+                                          ...prev,
+                                          connectionOverrides: {
+                                            ...prev.connectionOverrides,
+                                            [connKey]: { ...(prev.connectionOverrides[connKey] ?? {}), stretchMode: m },
+                                          },
+                                        }));
+                                      }}
+                                      className={`px-2 py-1 rounded text-[8px] font-bold uppercase transition-all ${
+                                        currentMode === m ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                                      }`}
+                                    >
+                                      {m}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="text-[10px] text-[#444] italic">
+                                  Overrides persist in the project state (no global mutation).
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Shape</div>
+                                <select
+                                  value={override?.shape ?? 'auto'}
+                                  onChange={(e) => {
+                                    const nextShape = e.target.value;
+                                    setStateWithHistory(`conn_shape:${connKey}`, (prev) => {
+                                      const nextOverrides = { ...(prev.connectionOverrides ?? {}) };
+                                      const existing = (nextOverrides[connKey] ?? {}) as Record<string, unknown>;
+                                      if (nextShape === 'auto') {
+                                        const cleaned = { ...existing };
+                                        delete cleaned.shape;
+                                        if (Object.keys(cleaned).length === 0) delete nextOverrides[connKey];
+                                        else nextOverrides[connKey] = cleaned as any;
+                                      } else {
+                                        nextOverrides[connKey] = { ...existing, shape: nextShape } as any;
+                                      }
+                                      return { ...prev, connectionOverrides: nextOverrides as any };
+                                    });
+                                  }}
+                                  className="w-full px-2 py-2 bg-[#222] rounded-md text-[10px] border border-white/5 font-bold uppercase tracking-widest"
+                                >
+                                  <option value="auto">Auto (Per bone)</option>
+                                  <option value="standard">Standard</option>
+                                  <option value="bone">Bone</option>
+                                  <option value="capsule">Capsule</option>
+                                  <option value="muscle">Muscle</option>
+                                  <option value="tapered">Tapered</option>
+                                  <option value="cylinder">Cylinder</option>
+                                  <option value="diamond">Diamond</option>
+                                  <option value="ribbon">Ribbon</option>
+                                  <option value="wire">Wire</option>
+                                  <option value="wireframe">Wireframe</option>
+                                </select>
+                                <div className="text-[10px] text-[#444] italic">
+                                  Shape overrides apply at render-time (physics is unchanged).
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                                  Related ({rigFocus.track} • {rigFocus.side})
+                                </div>
+                                <div className="space-y-1">
+                                  {relatedKeys.map((k) => {
+                                    const [ka, kb] = k.split(':');
+                                    const c = CONNECTIONS.find((x) => canonicalConnKey(x.from, x.to) === k) ?? null;
+                                    const name = c?.label || `${ka} ↔ ${kb}`;
+                                    const active = k === connKey;
+                                    return (
+                                      <button
+                                        key={k}
+                                        type="button"
+                                        onClick={() => {
+                                          const joints = stateLiveRef.current.joints;
+                                          const child =
+                                            joints[ka]?.parent === kb
+                                              ? ka
+                                              : joints[kb]?.parent === ka
+                                                ? kb
+                                                : (kb || ka);
+                                          const nextFocus = deriveFocusForJoint(child);
+                                          if (nextFocus) {
+                                            setRigFocus(nextFocus);
+                                            applyRigFocus(nextFocus);
+                                          } else {
+                                            setSelectedJointId(child);
+                                            setMaskJointId(child);
+                                            setSelectedConnectionKey(k);
+                                          }
+                                        }}
+                                        className={`w-full text-left px-2 py-1 rounded text-[10px] font-mono transition-colors ${
+                                          active
+                                            ? 'bg-[#00ff88]/20 text-[#00ff88]'
+                                            : 'bg-white/5 hover:bg-white/10 text-[#ddd]'
+                                        }`}
+                                      >
+                                        {name}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="console">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Terminal size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Console
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          {(['info', 'warning', 'error', 'success'] as const).map((lvl) => {
+                            const active = activeLogLevels.has(lvl);
+                            const color =
+                              lvl === 'error'
+                                ? 'text-lime-400'
+                                : lvl === 'warning'
+                                  ? 'text-yellow-300'
+                                  : lvl === 'success'
+                                    ? 'text-green-400'
+                                    : 'text-blue-300';
+                            return (
+                              <button
+                                key={lvl}
+                                type="button"
+                                onClick={() =>
+                                  setActiveLogLevels((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(lvl)) next.delete(lvl);
+                                    else next.add(lvl);
+                                    return next;
+                                  })
+                                }
+                                className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest border ${
+                                  active ? 'bg-[#222] border-[#333]' : 'bg-transparent border-[#222] opacity-60'
+                                } ${color}`}
+                              >
+                                {lvl}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setConsoleLogs([])}
+                          className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                        >
+                          Clear
+                        </button>
+                      </div>
+
+                      <div className="space-y-1 font-mono text-[11px]">
+                        {filteredConsoleLogs.slice(-120).map((log) => (
+                          <div key={log.id} className="flex gap-2 items-start">
+                            <span className="text-[#555] shrink-0">
+                              {new Date(log.ts).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit',
+                              })}
+                            </span>
+                            <span className="text-[#666] shrink-0">{log.level.toUpperCase()}</span>
+                            <span className="text-white break-words">{log.message}</span>
+                          </div>
+                        ))}
+                        {filteredConsoleLogs.length === 0 && (
+                          <div className="text-[#444]">No logs (filters may be hiding everything).</div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="camera">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Maximize2 size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Camera
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <div className="space-y-4">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-[#666] uppercase tracking-widest flex justify-between">
+                            <span>Zoom</span>
+                            <span>{state.viewScale.toFixed(2)}x</span>
+                          </label>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="3.0"
+                            step="0.01"
+                            value={state.viewScale}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              setState((prev) => ({ ...prev, viewScale: val }));
+                            }}
+                            className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => {
+                              setState((prev) => ({
+                                ...prev,
+                                viewOffset: { x: prev.viewOffset.x - 50, y: prev.viewOffset.y },
+                              }));
+                            }}
+                            className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
+                          >
+                            Left
+                          </button>
+                          <button
+                            onClick={() => {
+                              setState((prev) => ({
+                                ...prev,
+                                viewOffset: { x: prev.viewOffset.x + 50, y: prev.viewOffset.y },
+                              }));
+                            }}
+                            className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
+                          >
+                            Right
+                          </button>
+                          <button
+                            onClick={() => {
+                              setState((prev) => ({
+                                ...prev,
+                                viewOffset: { x: prev.viewOffset.x, y: prev.viewOffset.y - 50 },
+                              }));
+                            }}
+                            className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
+                          >
+                            Up
+                          </button>
+                          <button
+                            onClick={() => {
+                              setState((prev) => ({
+                                ...prev,
+                                viewOffset: { x: prev.viewOffset.x, y: prev.viewOffset.y + 50 },
+                              }));
+                            }}
+                            className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
+                          >
+                            Down
+                          </button>
+                        </div>
+
+                        <button
+                          onClick={() => {
+                            setState((prev) => ({ ...prev, viewScale: 1.0, viewOffset: { x: 0, y: 0 } }));
+                          }}
+                          className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
+                        >
+                          Reset View
+                        </button>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">
+                              Debug Overlay
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={debugOverlayEnabled}
+                              onChange={(e) => {
+                                setDebugOverlayEnabled(e.target.checked);
+                                if (e.target.checked) resetGridDriftBaseline();
+                              }}
+                            />
+                          </label>
+
+                          <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">
+                              Freeze Grid
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={freezeGridCalibration}
+                              onChange={(e) => setFreezeGridCalibration(e.target.checked)}
+                            />
+                          </label>
+
+                          <button
+                            type="button"
+                            onClick={resetGridDriftBaseline}
+                            className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
+                          >
+                            Reset Drift Baseline
+                          </button>
+                        </div>
+
+                        <div className="p-2 bg-white/5 rounded-md text-[9px] text-[#555] uppercase tracking-tight leading-relaxed">
+                          <span className="text-white/40">Pan:</span> MMB or Space+Drag
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="procgen">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Sparkles size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Auto Motion
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <ProcgenWidget
+                        state={state}
+                        setTimelinePlaying={setTimelinePlaying}
+                        setStateWithHistory={setStateWithHistory}
+                        captureProcgenNeutralFromCurrent={captureProcgenNeutralFromCurrent}
+                        resetProcgenNeutralToTPose={resetProcgenNeutralToTPose}
+                        resetProcgenPhase={resetProcgenPhase}
+                        requestProcgenBake={requestProcgenBake}
+                      />
+                    </div>
+                  </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="atomic_units">
+                  <section>
+                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <Grid size={14} />
+                      <h2
+                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                      >
+                        Advanced Controls
+                      </h2>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <AtomicUnitsControl
+                        state={state}
+                        setStateNoHistory={setStateNoHistory}
+                        setStateWithHistory={setStateWithHistory}
+                        beginHistoryAction={beginHistoryAction}
+                        commitHistoryAction={commitHistoryAction}
+                        addConsoleLog={addConsoleLog}
+                      />
+                    </div>
+                  </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="rig_controls">
               <section>
 	              <div className="flex items-center gap-2 mb-4 text-[#666]">
 	                <Settings2 size={14} />
@@ -4102,17 +5400,28 @@ export default function App() {
 	                    {getPhysicsBlendMode(state).toUpperCase()} • {Math.round((state.physicsRigidity ?? 0) * 100)}%
 	                  </div>
 	                </div>
-	                <input
-	                  type="range"
-	                  min="0"
-	                  max="1"
-	                  step="0.01"
-	                  value={state.physicsRigidity ?? 0}
-	                  onChange={(e) => {
-	                    const v = parseFloat(e.target.value);
+	                <Slider
+	                  min={0}
+	                  max={1}
+	                  step={0.01}
+	                  value={[state.physicsRigidity ?? 0]}
+	                  onValueChange={(values) => {
+	                    const v = values[0] ?? 0;
 	                    applyEngineTransition('physics_dial', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
 	                  }}
-	                  className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+	                  className="w-full"
+	                  trackClassName="bg-transparent h-2"
+	                  rangeClassName="bg-transparent"
+	                  thumbClassName="border-white/20"
+	                  trackStyle={{
+	                    background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
+	                  }}
+	                  rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.85) }}
+	                  thumbStyle={{
+	                    backgroundColor: getBoneHex(state.boneStyle),
+	                    boxShadow:
+	                      '0 0 0 4px rgb(125 255 170 / 0.22), 0 0 18px rgb(125 255 170 / 0.35)',
+	                  }}
 	                />
 	                <div className="mt-3 grid grid-cols-2 gap-2">
 	                  <button
@@ -4131,6 +5440,80 @@ export default function App() {
 	                  >
 	                    Set Rigid Start
 	                  </button>
+	                </div>
+	              </div>
+	              <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
+	                <div className="flex items-center justify-between mb-2">
+	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
+	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">
+	                    {getBoneHex(state.boneStyle)}
+	                  </div>
+	                </div>
+	                <div className="space-y-3">
+	                  <div className="space-y-1">
+	                    <div className="flex items-center justify-between">
+	                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
+	                      <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
+	                    </div>
+	                    <Slider
+	                      min={0}
+	                      max={1}
+	                      step={0.01}
+	                      value={[state.boneStyle?.hueT ?? 0]}
+	                      onValueChange={(values) => {
+	                        const v = values[0] ?? 0;
+	                        setStateWithHistory('bone_style:hue', (prev) => ({
+	                          ...prev,
+	                          boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
+	                        }));
+	                      }}
+	                      className="w-full"
+	                      trackClassName="bg-transparent h-2"
+	                      rangeClassName="bg-transparent"
+	                      thumbClassName="border-white/20"
+	                      trackStyle={{
+	                        background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
+	                      }}
+	                      rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
+	                      thumbStyle={{
+	                        backgroundColor: getBoneHex(state.boneStyle),
+	                        boxShadow:
+	                          '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+	                      }}
+	                    />
+	                  </div>
+	                  <div className="space-y-1">
+	                    <div className="flex items-center justify-between">
+	                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
+	                      <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
+	                    </div>
+	                    <Slider
+	                      min={-0.5}
+	                      max={0.5}
+	                      step={0.01}
+	                      value={[state.boneStyle?.lightness ?? 0]}
+	                      onValueChange={(values) => {
+	                        const v = values[0] ?? 0;
+	                        setStateWithHistory('bone_style:lightness', (prev) => ({
+	                          ...prev,
+	                          boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), lightness: clamp(v, -1, 1) },
+	                        }));
+	                      }}
+	                      className="w-full"
+	                      trackClassName="bg-transparent h-2"
+	                      rangeClassName="bg-transparent"
+	                      thumbClassName="border-white/20"
+	                      trackStyle={{
+	                        background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(getBoneHex(state.boneStyle), 0.45)})`,
+	                      }}
+	                      rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
+	                      thumbStyle={{
+	                        backgroundColor: getBoneHex(state.boneStyle),
+	                        boxShadow:
+	                          '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+	                      }}
+	                    />
+	                  </div>
 	                </div>
 	              </div>
 	              <div className="mb-4">
@@ -4214,9 +5597,9 @@ export default function App() {
                 />
               </div>
 	            </section>
-              )}
+                </WidgetPortal>
 
-            {sidebarTab === 'physics' && (
+                <WidgetPortal id="responsiveness">
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Activity size={14} />
@@ -4261,9 +5644,9 @@ export default function App() {
                 </div>
               </div>
             </section>
-            )}
+                </WidgetPortal>
 
-            {sidebarTab === 'character' && (
+                <WidgetPortal id="look">
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Maximize2 size={14} />
@@ -4288,9 +5671,9 @@ export default function App() {
                         {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
                       </div>
                     </section>
-            )}
+                </WidgetPortal>
 
-            {sidebarTab === 'character' && (
+                <WidgetPortal id="views">
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Layers size={14} />
@@ -4359,8 +5742,9 @@ export default function App() {
                 </div>
               </div>
             </section>
-            )}
+                </WidgetPortal>
 
+                <WidgetPortal id="pixel_fonts">
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Terminal size={14} />
@@ -4387,7 +5771,9 @@ export default function App() {
                 </div>
               </div>
             </section>
+                </WidgetPortal>
 
+                <WidgetPortal id="background">
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Settings2 size={14} />
@@ -4417,8 +5803,9 @@ export default function App() {
                 </button>
               </div>
             </section>
+                </WidgetPortal>
 
-              {sidebarTab === 'animation' && (
+                <WidgetPortal id="animation">
               <section>
                 <div className="flex items-center gap-2 mb-4 text-[#666]">
                   <RotateCcw size={14} />
@@ -4464,8 +5851,9 @@ export default function App() {
                   </button>
                 </div>
               </section>
-              )}
+                </WidgetPortal>
 
+                <WidgetPortal id="project">
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Download size={14} />
@@ -4502,7 +5890,9 @@ export default function App() {
                 }}
                       />
                     </section>
+                </WidgetPortal>
 
+                <WidgetPortal id="export">
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Upload size={14} />
@@ -4548,7 +5938,9 @@ export default function App() {
                     Export WebM
                   </button>
                             </section>
+                </WidgetPortal>
 
+                <WidgetPortal id="pose_capture">
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <RotateCcw size={14} />
@@ -4744,7 +6136,9 @@ export default function App() {
                 )}
               </div>
             </section>
+                </WidgetPortal>
 
+                <WidgetPortal id="scene">
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Layers size={14} />
@@ -5694,7 +7088,82 @@ export default function App() {
                       </div>
 
             </section>
+                </WidgetPortal>
 
+                <WidgetPortal id="rig_controls">
+                    <section>
+                      <div className="flex items-center gap-2 mb-4 text-[#666]">
+                        <Anchor size={14} />
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Root Controls</h2>
+                      </div>
+                      <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-[#888]">Active Roots ({state.activeRoots.length})</span>
+                          <button
+                            onClick={() => {
+                              setStateWithHistory('clear_roots_ground_root', (prev) => ({
+                                ...prev,
+                                activeRoots: [],
+                                groundRootTarget: computeCogWorld(prev.joints, INITIAL_JOINTS),
+                              }));
+                              pinTargetsRef.current = {};
+                            }}
+                            className="px-3 py-2 bg-[#333] hover:bg-[#444] rounded-lg text-[10px] font-bold transition-all"
+                          >
+                            Clear Roots (Ground Root)
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => toggleRoot('l_ankle')}
+                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                              state.activeRoots.includes('l_ankle')
+                                ? 'bg-[#00ff88] text-white'
+                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                            }`}
+                          >
+                            Root L Ankle
+                          </button>
+                          <button
+                            onClick={() => toggleRoot('r_ankle')}
+                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                              state.activeRoots.includes('r_ankle')
+                                ? 'bg-[#00ff88] text-white'
+                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                            }`}
+                          >
+                            Root R Ankle
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            onClick={() => toggleRoot('l_wrist')}
+                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                              state.activeRoots.includes('l_wrist')
+                                ? 'bg-[#00ff88] text-white'
+                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                            }`}
+                          >
+                            Root L Wrist
+                          </button>
+                          <button
+                            onClick={() => toggleRoot('r_wrist')}
+                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
+                              state.activeRoots.includes('r_wrist')
+                                ? 'bg-[#00ff88] text-white'
+                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
+                            }`}
+                          >
+                            Root R Wrist
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+                </WidgetPortal>
+
+                <WidgetPortal id="joint_hierarchy">
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Layers size={14} />
@@ -5702,7 +7171,9 @@ export default function App() {
                       </div>
               {(() => {
                 const selected = selectedJointId ? state.joints[selectedJointId] : null;
-                if (!selected || !selected.parent) {
+                const effectiveAngleId = selected ? resolveEffectiveManipulationId(selected.id) : null;
+                const effective = effectiveAngleId ? state.joints[effectiveAngleId] : null;
+                if (!selected || !effective || !effective.parent) {
                   return (
                     <div className="mb-3 text-[10px] text-[#444]">
                       Select a joint to edit rotation.
@@ -5710,14 +7181,16 @@ export default function App() {
                   );
                 }
 
-                const angleDeg = toAngleDeg(selected.previewOffset);
+                const angleDeg = toAngleDeg(effective.previewOffset);
                 const actionId = `joint_angle:${selected.id}`;
+                const labelSuffix = selected.id === 'navel' && effectiveAngleId === 'sternum' ? ' (Sternum)' : '';
 
                 return (
                   <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
                     <div className="flex items-center justify-between mb-2">
                       <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                        {selected.label} Angle
+                        {selected.label}
+                        {labelSuffix} Angle
                       </div>
                       <div className="font-mono text-xs text-white">{angleDeg.toFixed(1)}°</div>
                     </div>
@@ -5743,7 +7216,7 @@ export default function App() {
                           return changed ? { ...prev } : prev;
                         })
                       }
-                      onChange={(e) => setJointAngleDeg(selected.id, parseFloat(e.target.value))}
+                      onChange={(e) => setJointAngleDeg(effectiveAngleId!, parseFloat(e.target.value))}
                       className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                     />
                   </div>
@@ -5754,7 +7227,14 @@ export default function App() {
                           <div key={`${item.type}-${item.joint.id}-${index}`}>
                             {item.type === 'joint' ? (
                               <div 
-                                onClick={() => setSelectedJointId(item.joint.id)}
+                                onMouseDown={(e) => {
+                                  if (e.detail === 3) {
+                                    e.stopPropagation();
+                                    toggleRoot(item.joint.id);
+                                    return;
+                                  }
+                                  setSelectedJointId(item.joint.id);
+                                }}
                                 className={`group flex items-center justify-between p-2 rounded-md transition-colors cursor-pointer ${
                                   draggingId === item.joint.id
                                     ? 'bg-white/10'
@@ -5770,9 +7250,9 @@ export default function App() {
                                 <button 
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    togglePin(item.joint.id);
+                                    toggleRoot(item.joint.id);
                                   }}
-                                  className={`p-1 rounded transition-colors ${state.activePins.includes(item.joint.id) ? 'text-[#ff8800]' : 'text-[#444] group-hover:text-[#888]'}`}
+                                  className={`p-1 rounded transition-colors ${state.activeRoots.includes(item.joint.id) ? 'text-[#00ff88]' : 'text-[#444] group-hover:text-[#888]'}`}
                                 >
                                   <Anchor size={12} />
                                 </button>
@@ -5789,75 +7269,7 @@ export default function App() {
                         ))}
                       </div>
                             </section>
-            </div>
-          </div>
-
-          <div className="p-6 pt-0">
-            <div className="mb-4">
-              <h3 className="text-xs font-bold uppercase tracking-widest text-[#666] mb-3">Pin Controls</h3>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] text-[#888]">Active Pins ({state.activePins.length})</span>
-                  <button
-                    onClick={() => {
-                      setStateWithHistory('clear_all_pins', (prev) => ({
-                        ...prev,
-                        activePins: [],
-                      }));
-                      pinTargetsRef.current = {};
-                    }}
-                    className="px-3 py-2 bg-[#333] hover:bg-[#444] rounded-lg text-[10px] font-bold transition-all"
-                    disabled={state.activePins.length === 0}
-                  >
-                    Clear All Pins
-                  </button>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => togglePin('l_ankle')}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                      state.activePins.includes('l_ankle') 
-                        ? 'bg-[#ff8800] text-white' 
-                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                    }`}
-                  >
-                    Pin L Ankle
-                  </button>
-                  <button
-                    onClick={() => togglePin('r_ankle')}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                      state.activePins.includes('r_ankle') 
-                        ? 'bg-[#ff8800] text-white' 
-                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                    }`}
-                  >
-                    Pin R Ankle
-                  </button>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => togglePin('l_wrist')}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                      state.activePins.includes('l_wrist') 
-                        ? 'bg-[#ff8800] text-white' 
-                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                    }`}
-                  >
-                    Pin L Wrist
-                  </button>
-                  <button
-                    onClick={() => togglePin('r_wrist')}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                      state.activePins.includes('r_wrist') 
-                        ? 'bg-[#ff8800] text-white' 
-                        : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                    }`}
-                  >
-                    Pin R Wrist
-                  </button>
-                </div>
+                </WidgetPortal>
               </div>
             </div>
           </div>
@@ -5899,19 +7311,10 @@ export default function App() {
             if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
           }}
 	          onDrop={(e) => {
-	            const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
-	            if (
-	              payload !== 'joint_masks' &&
-                payload !== 'bone_inspector' &&
-	              payload !== 'console' &&
-	              payload !== 'camera' &&
-	              payload !== 'procgen' &&
-	              payload !== 'atomic_units'
-	            ) {
-	              return;
-	            }
+	            const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
+	            if (!isWidgetId(payload)) return;
 	            e.preventDefault();
-	            spawnFloatingWidget(payload, e.clientX, e.clientY);
+	            popOutWidget(payload, e.clientX, e.clientY);
 	          }}
         >
           <div ref={cursorHudRef} className="editor-cursor-hud">
@@ -5933,6 +7336,11 @@ export default function App() {
             }}
             className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''}`}
           >
+            <defs>
+              <filter id="joint-soft-glow" x="-200%" y="-200%" width="400%" height="400%">
+                <feGaussianBlur stdDeviation="4" />
+              </filter>
+            </defs>
             <g transform={`translate(${state.viewOffset.x}, ${state.viewOffset.y}) scale(${state.viewScale})`}>
                       {/* Reference Layers */}
                       {state.scene.background.src && state.scene.background.visible && state.scene.background.mediaType === 'image' && (
@@ -6092,6 +7500,8 @@ export default function App() {
               {/* Engine Content */}
               {/* ... (Existing rendering logic like Onion Skin, Bones, etc.) ... */}
               {/* Note: I'm wrapping the rest of the SVG contents in this <g> */}
+
+              {renderProcgenGroundPlane()}
 
               {/* Bones & Connections */}
               {CONNECTIONS.map(renderConnection)}
@@ -6599,34 +8009,27 @@ export default function App() {
 
           {/* Floating Widgets */}
           {floatingWidgets.map((widget) => {
-            const title =
-              widget.kind === 'console'
-                ? 'Console'
-                : widget.kind === 'bone_inspector'
-                  ? 'Bone Inspector'
-                : widget.kind === 'camera'
-                  ? 'Camera'
-                  : widget.kind === 'procgen'
-                    ? 'Procedural Generation'
-                    : widget.kind === 'atomic_units'
-                      ? 'Atomic Units'
-	                      : 'Joint/Mask';
+            const title = WIDGETS[widget.id]?.title ?? widget.id;
             const headerH = 34;
             return (
               <div
                 key={widget.id}
                 className="absolute z-30 pointer-events-auto"
                 style={{ left: widget.x, top: widget.y, width: widget.w }}
-                onMouseDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  focusFloatingWidget(widget.id);
+                }}
               >
                 <div
-                  className="bg-[#121212]/90 backdrop-blur-md border border-[#222] rounded-xl shadow-xl overflow-hidden"
+                  className="relative bg-[#121212]/90 backdrop-blur-md border border-[#222] rounded-xl shadow-xl overflow-hidden"
                   style={{ height: widget.minimized ? headerH : widget.h }}
                 >
                   <div
                     className="h-[34px] px-3 flex items-center justify-between cursor-move select-none"
                     onMouseDown={(e) => {
                       e.stopPropagation();
+                      focusFloatingWidget(widget.id);
                       setWidgetDragging({
                         id: widget.id,
                         startClientX: e.clientX,
@@ -6637,15 +8040,15 @@ export default function App() {
                     }}
                   >
                     <div className="flex items-center gap-2">
-                      {widget.kind === 'console' ? (
+                      {widget.id === 'console' ? (
                         <Terminal size={14} className="text-[#666]" />
-                      ) : widget.kind === 'bone_inspector' ? (
+                      ) : widget.id === 'bone_inspector' ? (
                         <Layers size={14} className="text-[#666]" />
-                      ) : widget.kind === 'camera' ? (
+                      ) : widget.id === 'camera' ? (
                         <Maximize2 size={14} className="text-[#666]" />
-                      ) : widget.kind === 'procgen' ? (
+                      ) : widget.id === 'procgen' ? (
                         <Sparkles size={14} className="text-[#666]" />
-                      ) : widget.kind === 'atomic_units' ? (
+                      ) : widget.id === 'atomic_units' ? (
                         <Grid size={14} className="text-[#666]" />
                       ) : (
                         <Anchor size={14} className="text-[#666]" />
@@ -6669,493 +8072,43 @@ export default function App() {
                       <button
                         type="button"
                         onMouseDown={(e) => e.stopPropagation()}
-                        onClick={() => setFloatingWidgets((prev) => prev.filter((w) => w.id !== widget.id))}
+                        onClick={() => dockWidget(widget.id)}
                         className="p-1 rounded hover:bg-white/10 text-[#888]"
-                        title="Close"
+                        title="Dock"
                       >
                         <X size={10} className="text-[#666]" />
                       </button>
                     </div>
                   </div>
 
-          <div className="p-3 overflow-auto" style={{ height: widget.h - headerH }}>
-	            {widget.kind === 'console' ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {(['info', 'warning', 'error', 'success'] as const).map((lvl) => {
-                      const active = activeLogLevels.has(lvl);
-                      const color =
-                        lvl === 'error'
-                          ? 'text-orange-400'
-                          : lvl === 'warning'
-                            ? 'text-yellow-300'
-                            : lvl === 'success'
-                              ? 'text-green-400'
-                              : 'text-blue-300';
-                      return (
-                        <button
-                          key={lvl}
-                          type="button"
-                          onClick={() =>
-                            setActiveLogLevels((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(lvl)) next.delete(lvl);
-                              else next.add(lvl);
-                              return next;
-                            })
-                          }
-                          className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest border ${
-                            active ? 'bg-[#222] border-[#333]' : 'bg-transparent border-[#222] opacity-60'
-                          } ${color}`}
-                        >
-                          {lvl}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setConsoleLogs([])}
-                    className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                  >
-                    Clear
-                  </button>
-                </div>
-
-                <div className="space-y-1 font-mono text-[11px]">
-                  {filteredConsoleLogs.slice(-120).map((log) => (
-                    <div key={log.id} className="flex gap-2 items-start">
-                      <span className="text-[#555] shrink-0">
-                        {new Date(log.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                      </span>
-                      <span className="text-[#666] shrink-0">{log.level.toUpperCase()}</span>
-                      <span className="text-white break-words">{log.message}</span>
-                    </div>
-                  ))}
-                  {filteredConsoleLogs.length === 0 && (
-                    <div className="text-[#444]">No logs (filters may be hiding everything).</div>
+                  {!widget.minimized && (
+                    <>
+                      <div
+                        ref={(el) => registerWidgetPortalTarget(widget.id, el)}
+                        className="p-3 overflow-auto"
+                        style={{ height: widget.h - headerH }}
+                      />
+                      <div
+                        className="absolute right-1 bottom-1 h-4 w-4 cursor-se-resize rounded hover:bg-white/10"
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          focusFloatingWidget(widget.id);
+                          setWidgetResizing({
+                            id: widget.id,
+                            startClientX: e.clientX,
+                            startClientY: e.clientY,
+                            startW: widget.w,
+                            startH: widget.h,
+                          });
+                        }}
+                        title="Resize"
+                      />
+                    </>
                   )}
                 </div>
               </div>
-            ) : widget.kind === 'bone_inspector' ? (
-              <div className="space-y-3">
-                {(() => {
-                  const connKey = selectedConnectionKey;
-                  if (!connKey) {
-                    return <div className="text-[10px] text-[#444]">No bone selected. Use Tab/Shift+Tab, or press 2.</div>;
-                  }
-
-                  const [a, b] = connKey.split(':');
-                  const conn = CONNECTIONS.find((c) => canonicalConnKey(c.from, c.to) === connKey) ?? null;
-                  const override = state.connectionOverrides?.[connKey];
-                  const currentMode = override?.stretchMode ?? conn?.stretchMode ?? 'rigid';
-                  const label = conn?.label || `${a} ↔ ${b}`;
-
-                  const deriveFocusForJoint = (jointId: string): RigFocus | null => {
-                    const isRight = jointId.startsWith('r_');
-                    const isLeft = jointId.startsWith('l_');
-                    const side: RigSide | null = isRight ? 'front' : isLeft ? 'back' : null;
-
-                    const bodyIndex = (() => {
-                      if (jointId === 'head') return 0;
-                      if (jointId === 'collar') return 1;
-                      if (jointId === 'navel') return 2;
-                      if (jointId.endsWith('_hip')) return 3;
-                      if (jointId.endsWith('_knee')) return 4;
-                      if (jointId.endsWith('_ankle')) return 5;
-                      if (jointId.endsWith('_toe')) return 6;
-                      return null;
-                    })();
-
-                    if (bodyIndex !== null) {
-                      return {
-                        ...rigFocus,
-                        stage: 'bone',
-                        track: 'body',
-                        index: bodyIndex,
-                        side: side ?? rigFocus.side,
-                      };
-                    }
-
-                    const armsIndex = (() => {
-                      if (jointId.endsWith('_shoulder')) return 0;
-                      if (jointId.endsWith('_elbow')) return 1;
-                      if (jointId.endsWith('_wrist')) return 2;
-                      if (jointId.endsWith('_fingertip')) return 3;
-                      return null;
-                    })();
-
-                    if (armsIndex !== null && side) {
-                      return {
-                        ...rigFocus,
-                        stage: 'bone',
-                        track: 'arms',
-                        index: armsIndex,
-                        side,
-                      };
-                    }
-
-                    if (jointId === 'navel') {
-                      return { ...rigFocus, stage: 'bone', track: 'body', index: 2 };
-                    }
-
-                    return null;
-                  };
-
-                  const relatedKeys = (() => {
-                    const sidePrefix = rigFocus.side === 'front' ? 'r' : 'l';
-                    if (rigFocus.track === 'body') {
-                      return [
-                        canonicalConnKey('navel', 'sternum'),
-                        canonicalConnKey('sternum', 'collar'),
-                        canonicalConnKey('collar', 'neck_base'),
-                        canonicalConnKey('neck_base', 'head'),
-                        canonicalConnKey('navel', `${sidePrefix}_hip`),
-                        canonicalConnKey(`${sidePrefix}_hip`, `${sidePrefix}_knee`),
-                        canonicalConnKey(`${sidePrefix}_knee`, `${sidePrefix}_ankle`),
-                        canonicalConnKey(`${sidePrefix}_ankle`, `${sidePrefix}_toe`),
-                      ];
-                    }
-
-                    return [
-                      canonicalConnKey('collar', `${sidePrefix}_shoulder`),
-                      canonicalConnKey(`${sidePrefix}_shoulder`, `${sidePrefix}_elbow`),
-                      canonicalConnKey(`${sidePrefix}_elbow`, `${sidePrefix}_wrist`),
-                      canonicalConnKey(`${sidePrefix}_wrist`, `${sidePrefix}_fingertip`),
-                    ];
-                  })().filter((k) => {
-                    const parts = k.split(':');
-                    if (parts.length !== 2) return false;
-                    return parts[0] in state.joints && parts[1] in state.joints;
-                  });
-
-                  return (
-                    <>
-                      <div className="space-y-1">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Selected Bone</div>
-                        <div className="text-[11px] text-white font-mono">{label}</div>
-                        <div className="text-[10px] text-[#555] font-mono">{connKey}</div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Stretch Mode</div>
-                        <div className="flex bg-[#222] rounded-md p-0.5">
-                          {(['rigid', 'elastic', 'stretch'] as const).map((m) => (
-                            <button
-                              key={m}
-                              type="button"
-                              onClick={() => {
-                                setStateWithHistory(`conn_mode:${connKey}`, (prev) => ({
-                                  ...prev,
-                                  connectionOverrides: {
-                                    ...prev.connectionOverrides,
-                                    [connKey]: { ...(prev.connectionOverrides[connKey] ?? {}), stretchMode: m },
-                                  },
-                                }));
-                              }}
-                              className={`px-2 py-1 rounded text-[8px] font-bold uppercase transition-all ${
-                                currentMode === m ? 'bg-white text-black' : 'text-[#666] hover:text-white'
-                              }`}
-                            >
-                              {m}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="text-[10px] text-[#444] italic">
-                          Overrides persist in the project state (no global mutation).
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                          Related ({rigFocus.track} • {rigFocus.side})
-                        </div>
-                        <div className="space-y-1">
-                          {relatedKeys.map((k) => {
-                            const [ka, kb] = k.split(':');
-                            const c = CONNECTIONS.find((x) => canonicalConnKey(x.from, x.to) === k) ?? null;
-                            const name = c?.label || `${ka} ↔ ${kb}`;
-                            const active = k === connKey;
-                            return (
-                              <button
-                                key={k}
-                                type="button"
-                                onClick={() => {
-                                  const joints = stateLiveRef.current.joints;
-                                  const child =
-                                    joints[ka]?.parent === kb ? ka : joints[kb]?.parent === ka ? kb : (kb || ka);
-                                  const nextFocus = deriveFocusForJoint(child);
-                                  if (nextFocus) {
-                                    setRigFocus(nextFocus);
-                                    applyRigFocus(nextFocus);
-                                  } else {
-                                    setSelectedJointId(child);
-                                    setMaskJointId(child);
-                                    setSelectedConnectionKey(k);
-                                  }
-                                }}
-                                className={`w-full text-left px-2 py-1 rounded text-[10px] font-mono transition-colors ${
-                                  active ? 'bg-[#ff8800]/20 text-[#ff8800]' : 'bg-white/5 hover:bg-white/10 text-[#ddd]'
-                                }`}
-                              >
-                                {name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            ) : widget.kind === 'camera' ? (
-                          <div className="space-y-4">
-                            <div className="space-y-1">
-                              <label className="text-[10px] font-bold text-[#666] uppercase tracking-widest flex justify-between">
-                                <span>Zoom</span>
-                                <span>{state.viewScale.toFixed(2)}x</span>
-                              </label>
-                              <input 
-                                type="range"
-                                min="0.5"
-                                max="3.0"
-                                step="0.01"
-                                value={state.viewScale}
-                                onChange={(e) => {
-                                  const val = parseFloat(e.target.value);
-                                  setState(prev => ({ ...prev, viewScale: val }));
-                                }}
-                                className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                              />
-                            </div>
-                            
-                            <div className="grid grid-cols-2 gap-2">
-                              <button 
-                                onClick={() => {
-                                  setState(prev => ({ ...prev, viewOffset: { x: prev.viewOffset.x - 50, y: prev.viewOffset.y } }));
-                                }}
-                                className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
-                              >
-                                Left
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  setState(prev => ({ ...prev, viewOffset: { x: prev.viewOffset.x + 50, y: prev.viewOffset.y } }));
-                                }}
-                                className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
-                              >
-                                Right
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  setState(prev => ({ ...prev, viewOffset: { x: prev.viewOffset.x, y: prev.viewOffset.y - 50 } }));
-                                }}
-                                className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
-                              >
-                                Up
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  setState(prev => ({ ...prev, viewOffset: { x: prev.viewOffset.x, y: prev.viewOffset.y + 50 } }));
-                                }}
-                                className="py-1 bg-[#222] hover:bg-[#333] rounded text-[9px] font-bold uppercase border border-white/5"
-                              >
-                                Down
-                              </button>
-                            </div>
-
-                            <button 
-                              onClick={() => {
-                                setState(prev => ({ ...prev, viewScale: 1.0, viewOffset: { x: 0, y: 0 } }));
-                              }}
-                              className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
-                            >
-                              Reset View
-                            </button>
-
-                            <div className="space-y-2">
-                              <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
-                                <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">Debug Overlay</span>
-                                <input
-                                  type="checkbox"
-                                  checked={debugOverlayEnabled}
-                                  onChange={(e) => {
-                                    setDebugOverlayEnabled(e.target.checked);
-                                    if (e.target.checked) resetGridDriftBaseline();
-                                  }}
-                                />
-                              </label>
-
-                              <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
-                                <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">Freeze Grid</span>
-                                <input
-                                  type="checkbox"
-                                  checked={freezeGridCalibration}
-                                  onChange={(e) => setFreezeGridCalibration(e.target.checked)}
-                                />
-                              </label>
-
-                              <button
-                                type="button"
-                                onClick={resetGridDriftBaseline}
-                                className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
-                              >
-                                Reset Drift Baseline
-                              </button>
-                            </div>
-
-                            <div className="p-2 bg-white/5 rounded-md text-[9px] text-[#555] uppercase tracking-tight leading-relaxed">
-                              <span className="text-white/40">Pan:</span> MMB or Space+Drag
-                            </div>
-                          </div>
-	                    ) : widget.kind === 'procgen' ? (
-                        <div className="space-y-3">
-                          <div className="text-[10px] text-[#666]">Procedural Engine</div>
-
-                          <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
-                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">Enabled</span>
-                            <input
-                              type="checkbox"
-                              checked={state.procgen.enabled}
-                              onChange={(e) => {
-                                const nextEnabled = e.target.checked;
-                                if (nextEnabled) setTimelinePlaying(false);
-                                setStateWithHistory('procgen:enabled', (prev) => ({
-                                  ...prev,
-                                  procgen: {
-                                    ...prev.procgen,
-                                    enabled: nextEnabled,
-                                    neutralPose: nextEnabled
-                                      ? (prev.procgen.neutralPose ?? capturePoseSnapshot(prev.joints, 'preview'))
-                                      : prev.procgen.neutralPose,
-                                  },
-                                }));
-                              }}
-                              className="accent-white"
-                            />
-                          </label>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <div className="space-y-1">
-                              <label className="text-[10px] text-[#666]">Mode</label>
-                              <select
-                                value={state.procgen.mode}
-                                onChange={(e) =>
-                                  setStateWithHistory('procgen:mode', (prev) => ({
-                                    ...prev,
-                                    procgen: { ...prev.procgen, mode: e.target.value as any },
-                                  }))
-                                }
-                                className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                              >
-                                <option value="walk_in_place">Walk In Place</option>
-                                <option value="idle">Idle</option>
-                              </select>
-                            </div>
-                            <div className="space-y-1">
-                              <label className="text-[10px] text-[#666]">Strength</label>
-                              <input
-                                type="number"
-                                min={0}
-                                max={3}
-                                step={0.1}
-                                value={state.procgen.strength}
-                                onChange={(e) =>
-                                  setStateWithHistory('procgen:strength', (prev) => ({
-                                    ...prev,
-                                    procgen: { ...prev.procgen, strength: parseFloat(e.target.value) || 0 },
-                                  }))
-                                }
-                                className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                              />
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <label className="text-[10px] text-[#666]">Cycle Frames</label>
-                            <input
-                              type="number"
-                              min={2}
-                              max={600}
-                              step={1}
-                              value={state.procgen.bake.cycleFrames}
-                              onChange={(e) =>
-                                setStateWithHistory('procgen:bake:cycleFrames', (prev) => ({
-                                  ...prev,
-                                  procgen: {
-                                    ...prev.procgen,
-                                    bake: { ...prev.procgen.bake, cycleFrames: parseInt(e.target.value || '0', 10) || 2 },
-                                  },
-                                }))
-                              }
-                              className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                            />
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <button
-                              type="button"
-                              onClick={captureProcgenNeutralFromCurrent}
-                              className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-                            >
-                              Capture Neutral
-                            </button>
-                            <button
-                              type="button"
-                              onClick={resetProcgenNeutralToTPose}
-                              className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-                            >
-                              Neutral = T-Pose
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2">
-                            <button
-                              type="button"
-                              onClick={resetProcgenPhase}
-                              className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-                            >
-                              Reset Phase
-                            </button>
-                            <button
-                              type="button"
-                              onClick={requestProcgenBake}
-                              className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all bg-[#2b0057] hover:bg-[#3a007a] border border-[#333]"
-                            >
-                              Bake To Timeline
-                            </button>
-                          </div>
-                        </div>
-	                    ) : widget.kind === 'atomic_units' ? (
-	                      <AtomicUnitsControl
-	                        state={state}
-	                        setStateNoHistory={setStateNoHistory}
-	                        setStateWithHistory={setStateWithHistory}
-	                        beginHistoryAction={beginHistoryAction}
-	                        commitHistoryAction={commitHistoryAction}
-	                        addConsoleLog={addConsoleLog}
-	                      />
-	                    ) : (
-                      <JointMaskWidget
-                        state={state}
-                        setStateWithHistory={setStateWithHistory}
-                        maskJointId={maskJointId}
-                        setMaskJointId={setMaskJointId}
-                        maskEditArmed={maskEditArmed}
-                        setMaskEditArmed={setMaskEditArmed}
-                        maskDragMode={maskDragMode}
-                        setMaskDragMode={setMaskDragMode}
-                        uploadJointMaskFile={uploadJointMaskFile}
-                        uploadMaskFile={uploadMaskFile}
-                        copyJointMaskTo={copyJointMaskTo}
-                      />
-	            )}
-          </div>
-                </div>
-              </div>
             );
-	          })}
+          })}
 
 	          {/* HUD Overlay */}
           <div className="absolute bottom-8 left-8 flex gap-4 pointer-events-none">
@@ -7167,7 +8120,7 @@ export default function App() {
                 <span className="text-[#444]">Y_COORD</span>
                 <span className="text-white">{(state.joints.navel.currentOffset.y).toFixed(3)}</span>
                 <span className="text-[#444]">PINS_ACT</span>
-                <span className="text-white">{state.activePins.length}</span>
+                <span className="text-white">{state.activeRoots.length}</span>
               </div>
             </div>
 

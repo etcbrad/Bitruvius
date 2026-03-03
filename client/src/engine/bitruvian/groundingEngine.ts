@@ -13,11 +13,15 @@ export const applyFootGrounding = (
     gravityCenter: 'left' | 'center' | 'right',
     locomotionWeight: number,
     deltaTime: number,
+    floorYGlobalOverride?: number,
 ): GroundingResults => {
     const adjustedPose: Partial<WalkingEnginePose> = { ...rawPose };
     const tensions: Record<string, number> = {};
     
-    const floorYGlobal = BITRUVIAN_CONSTANTS.GROUNDING_PHYSICS.FLOOR_Y_OFFSET_GLOBAL_H_UNIT * baseUnitH; 
+    const floorYGlobal =
+      typeof floorYGlobalOverride === 'number' && Number.isFinite(floorYGlobalOverride)
+        ? floorYGlobalOverride
+        : BITRUVIAN_CONSTANTS.GROUNDING_PHYSICS.FLOOR_Y_OFFSET_GLOBAL_H_UNIT * baseUnitH; 
     
     const locomotionPinL = locomotionActivePins.includes('lAnkle') ? 1.0 : 0.0;
     const locomotionPinR = locomotionActivePins.includes('rAnkle') ? 1.0 : 0.0;
@@ -35,14 +39,14 @@ export const applyFootGrounding = (
         knee: adjustedPose.l_knee ?? 0, 
         foot: adjustedPose.l_foot ?? 0, 
         toe: adjustedPose.l_toe ?? 0 
-    }, props, baseUnitH, false);
+    }, props, baseUnitH, false, false);
 
     const rFootNatural = calculateFootTipGlobalPosition({ 
         hip: adjustedPose.r_hip ?? 0, 
         knee: adjustedPose.r_knee ?? 0, 
         foot: adjustedPose.r_foot ?? 0, 
         toe: adjustedPose.r_toe ?? 0 
-    }, props, baseUnitH, true);
+    }, props, baseUnitH, true, false);
 
     const idleGroundingBonus = locomotionWeight < 0.2 ? 1.5 : 1.0;
     const yCorrectionStrength = BITRUVIAN_CONSTANTS.GROUNDING_PHYSICS.GROUNDING_SPRING_FACTOR * (1 - physics.jointElasticity) * idleGroundingBonus;

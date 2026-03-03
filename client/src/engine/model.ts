@@ -1,7 +1,8 @@
 import type { Connection, Joint } from './types';
 
 export const INITIAL_JOINTS: Record<string, Joint> = {
-  navel: { id: 'navel', label: 'Navel', parent: null, baseOffset: { x: 0, y: 0 }, currentOffset: { x: 0, y: 0 }, targetOffset: { x: 0, y: 0 }, previewOffset: { x: 0, y: 0 }, rotation: 0 },
+  root: { id: 'root', label: 'Root', parent: null, baseOffset: { x: 0, y: 0 }, currentOffset: { x: 0, y: 0 }, targetOffset: { x: 0, y: 0 }, previewOffset: { x: 0, y: 0 }, rotation: 0 },
+  navel: { id: 'navel', label: 'Navel', parent: 'root', baseOffset: { x: 0, y: 0 }, currentOffset: { x: 0, y: 0 }, targetOffset: { x: 0, y: 0 }, previewOffset: { x: 0, y: 0 }, rotation: 0 },
   sternum: { id: 'sternum', label: 'Sternum', parent: 'navel', baseOffset: { x: 0, y: -4 }, currentOffset: { x: 0, y: -4 }, targetOffset: { x: 0, y: -4 }, previewOffset: { x: 0, y: -4 }, rotation: 0 },
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
@@ -53,14 +54,18 @@ export const CONNECTIONS: Connection[] = [
   { from: "l_ankle", to: "l_toe", type: "bone", label: "L_Foot", shape: 'tapered', stretchMode: 'rigid' },
   { from: "r_ankle", to: "r_toe", type: "bone", label: "R_Foot", shape: 'tapered', stretchMode: 'rigid' },
   // Core spine connections
-  { from: "navel", to: "sternum", type: "bone", label: "Upper Spine", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "sternum", to: "collar", type: "bone", label: "Collar Connect", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "navel", to: "sternum", type: "bone", label: "Torso", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "sternum", to: "collar", type: "bone", label: "Chest", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "collar", to: "neck_base", type: "bone", label: "Neck", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "neck_base", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
   
   // Wireframe connections for spatial structure (thin green lines)
-  { from: "l_hip", to: "r_hip", type: "bone", label: "Hip Wireframe", shape: 'wireframe', stretchMode: 'rigid' },
-  { from: "l_shoulder", to: "r_shoulder", type: "bone", label: "Shoulder Wireframe", shape: 'wireframe', stretchMode: 'rigid' },
-  { from: "l_shoulder", to: "navel", type: "bone", label: "L Shoulder Wireframe", shape: 'wireframe', stretchMode: 'rigid' },
-  { from: "r_shoulder", to: "navel", type: "bone", label: "R Shoulder Wireframe", shape: 'wireframe', stretchMode: 'rigid' },
+  // NOTE: These are non-hierarchical braces. They intentionally use a non-"bone" type so the physics solver
+  // treats them as soft distance constraints (helping the torso/pelvis behave more like a deformable mass).
+  { from: "l_hip", to: "r_hip", type: "structural_link", label: "Hip Brace", shape: 'wireframe', stretchMode: 'rigid' },
+  { from: "l_shoulder", to: "r_shoulder", type: "structural_link", label: "Shoulder Brace", shape: 'wireframe', stretchMode: 'rigid' },
+  { from: "l_shoulder", to: "navel", type: "structural_link", label: "L Torso Brace", shape: 'wireframe', stretchMode: 'rigid' },
+  { from: "r_shoulder", to: "navel", type: "structural_link", label: "R Torso Brace", shape: 'wireframe', stretchMode: 'rigid' },
+  { from: "l_shoulder", to: "r_hip", type: "structural_link", label: "Cross Brace", shape: 'wireframe', stretchMode: 'rigid' },
+  { from: "r_shoulder", to: "l_hip", type: "structural_link", label: "Cross Brace", shape: 'wireframe', stretchMode: 'rigid' },
 ];

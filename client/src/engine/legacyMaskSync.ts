@@ -132,7 +132,7 @@ export const syncLegacyMasksToCutouts = (state: SkeletonState): SkeletonState =>
       }
 
       const fromJointId =
-        state.joints[jointId]?.parent ?? INITIAL_JOINTS[jointId]?.parent ?? 'navel';
+        state.joints[jointId]?.parent ?? INITIAL_JOINTS[jointId]?.parent ?? 'root';
 
       const baseSlot: Omit<CutoutSlot, 'assetId' | 'visible' | 'opacity' | 'mode' | 'scale' | 'lengthScale' | 'volumePreserve' | 'offsetX' | 'offsetY' | 'rotation' | 'anchorX' | 'anchorY'> = {
         id: jointId,
@@ -170,7 +170,7 @@ export const syncLegacyMasksToCutouts = (state: SkeletonState): SkeletonState =>
           name: jointId,
           attachment: {
             type: 'bone',
-            fromJointId: state.joints[jointId]?.parent ?? INITIAL_JOINTS[jointId]?.parent ?? 'navel',
+            fromJointId: state.joints[jointId]?.parent ?? INITIAL_JOINTS[jointId]?.parent ?? 'root',
             toJointId: jointId,
           },
           zIndex: cutoutSlots[jointId]?.zIndex ?? 50,
