@@ -63,6 +63,7 @@ import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
+import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import type { TransitionIssue } from '@/lib/transitionIssues';
 
 const LOCAL_STORAGE_KEY = 'bitruvius_state';
@@ -338,7 +339,7 @@ const cleanupImageCache = () => {
   }
 };
 
-type WidgetKind = 'joint_masks' | 'bone_inspector' | 'console' | 'camera' | 'procgen' | 'atomic_units';
+type WidgetKind = 'joint_masks' | 'cutout_relationships' | 'bone_inspector' | 'console' | 'camera' | 'procgen' | 'atomic_units';
 
 type FloatingWidget = {
   id: string;
@@ -698,6 +699,7 @@ export default function App() {
 
   const widgetTitleForKind = useCallback((kind: WidgetKind): string => {
     if (kind === 'joint_masks') return 'Masks';
+    if (kind === 'cutout_relationships') return 'Cutout Relationships';
     if (kind === 'bone_inspector') return 'Rig Inspector';
     if (kind === 'console') return 'Console';
     if (kind === 'camera') return 'Camera';
@@ -3878,6 +3880,7 @@ export default function App() {
                 {(
 	                  [
 		                    { kind: 'joint_masks' as const, label: 'Masks' },
+	                      { kind: 'cutout_relationships' as const, label: 'Cutout Relationships' },
 	                      { kind: 'bone_inspector' as const, label: 'Rig' },
 	                    { kind: 'console' as const, label: 'Console' },
 	                    { kind: 'camera' as const, label: 'Camera' },
@@ -3979,6 +3982,13 @@ export default function App() {
                           uploadJointMaskFile={uploadJointMaskFile}
                           uploadMaskFile={uploadMaskFile}
                           copyJointMaskTo={copyJointMaskTo}
+                        />
+                      ) : activeDockedWidget === 'cutout_relationships' ? (
+                        <CutoutRelationshipVisualizer
+                          state={state}
+                          setStateWithHistory={setStateWithHistory}
+                          uploadJointMaskFile={uploadJointMaskFile}
+                          addConsoleLog={addConsoleLog}
                         />
                       ) : activeDockedWidget === 'console' ? (
                         <div className="space-y-3">
