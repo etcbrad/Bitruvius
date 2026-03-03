@@ -46,6 +46,10 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
 
   // Build relationship tree
   const jointRelationships = useMemo(() => {
+    if (!state.joints || !state.scene.jointMasks) {
+      return {};
+    }
+    
     const relationships: Record<string, JointRelationship> = {};
     
     // Initialize all joints
@@ -88,6 +92,9 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
 
   // Get root joints (no parent)
   const rootJoints = useMemo(() => {
+    if (!jointRelationships) {
+      return [];
+    }
     return Object.keys(jointRelationships).filter(jointId => 
       !jointRelationships[jointId].parentJointId
     );
@@ -106,6 +113,8 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
   };
 
   const toggleMaskVisibility = (jointId: string) => {
+    if (!state.scene.jointMasks?.[jointId]) return;
+    
     setStateWithHistory('toggle_mask_visibility', (prev) => ({
       ...prev,
       scene: {
@@ -140,15 +149,20 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
   };
 
   const copyMaskToChildren = (jointId: string) => {
-    const sourceMask = state.scene.jointMasks[jointId];
+    const sourceMask = state.scene.jointMasks?.[jointId];
     if (!sourceMask?.src) {
       addConsoleLog('error', `No mask found on ${jointId} to copy`);
       return;
     }
 
     const rel = jointRelationships[jointId];
+    if (!rel) {
+      addConsoleLog('error', `Joint ${jointId} not found in relationships`);
+      return;
+    }
+
     const childrenToUpdate = rel.childJointIds.filter(childId => 
-      !state.scene.jointMasks[childId]?.src
+      !state.scene.jointMasks?.[childId]?.src
     );
 
     if (childrenToUpdate.length === 0) {
@@ -399,17 +413,17 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
       <div className="grid grid-cols-3 gap-2 text-[10px]">
         <div className="p-2 bg-[#181818] rounded text-center">
           <div className="text-[#666]">Total Joints</div>
-          <div className="font-bold">{Object.keys(state.joints).length}</div>
+          <div className="font-bold">{state.joints ? Object.keys(state.joints).length : 0}</div>
         </div>
         <div className="p-2 bg-[#181818] rounded text-center">
           <div className="text-[#666]">With Masks</div>
           <div className="font-bold text-[#ff8800]">
-            {Object.values(state.scene.jointMasks).filter(m => m?.src).length}
+            {state.scene.jointMasks ? Object.values(state.scene.jointMasks).filter(m => m?.src).length : 0}
           </div>
         </div>
         <div className="p-2 bg-[#181818] rounded text-center">
           <div className="text-[#666]">Total Bones</div>
-          <div className="font-bold">{CONNECTIONS.length}</div>
+          <div className="font-bold">{CONNECTIONS ? CONNECTIONS.length : 0}</div>
         </div>
       </div>
     </div>
