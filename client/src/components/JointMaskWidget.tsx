@@ -514,13 +514,13 @@ export function JointMaskWidget({
               />
             </div>
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setMaskEditArmed((v) => !v)}
-                disabled={!canPlace}
-                className={`px-2 py-1 rounded text-[10px] transition-colors ${
-                  canPlace
-                    ? maskEditArmed
+	              <button
+	                type="button"
+	                onClick={() => setMaskEditArmed(!maskEditArmed)}
+	                disabled={!canPlace}
+	                className={`px-2 py-1 rounded text-[10px] transition-colors ${
+	                  canPlace
+	                    ? maskEditArmed
                       ? 'bg-[#2b0057] hover:bg-[#3a007a]'
                       : 'bg-[#222] hover:bg-[#333]'
                     : 'bg-[#181818] text-[#444] cursor-not-allowed'
@@ -942,4 +942,3 @@ export function JointMaskWidget({
     </div>
   );
 }
-

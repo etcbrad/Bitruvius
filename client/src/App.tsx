@@ -675,23 +675,61 @@ return makeDefaultState();
   }, []);
 
   const ensureFloatingWidgetOpen = useCallback((kind: WidgetKind) => {
-    let found = false;
+    const center = getCanvasCenterClient();
     setFloatingWidgets((prev) => {
       const idx = prev.findIndex((w) => w.kind === kind);
-      if (idx < 0) return prev;
-      found = true;
-      const w = prev[idx]!;
-      const next = prev.slice();
-      next.splice(idx, 1);
-      next.push({ ...w, minimized: false });
-      return next;
-    });
+      if (idx >= 0) {
+        const w = prev[idx]!;
+        const next = prev.slice();
+        next.splice(idx, 1);
+        next.push({ ...w, minimized: false });
+        return next;
+      }
 
-    if (!found) {
-      const c = getCanvasCenterClient();
-      spawnFloatingWidget(kind, c.x, c.y);
-    }
-  }, [getCanvasCenterClient, spawnFloatingWidget]);
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const x = rect ? center.x - rect.left : center.x;
+      const y = rect ? center.y - rect.top : center.y;
+
+      const w =
+        kind === 'console'
+          ? 420
+          : kind === 'camera'
+            ? 200
+            : kind === 'procgen'
+              ? 300
+              : kind === 'atomic_units'
+                ? 380
+                : kind === 'bone_inspector'
+                  ? 320
+                  : 360;
+      const h =
+        kind === 'console'
+          ? 280
+          : kind === 'camera'
+            ? 150
+            : kind === 'procgen'
+              ? 200
+              : kind === 'atomic_units'
+                ? 520
+                : kind === 'bone_inspector'
+                  ? 240
+                  : 420;
+
+      const id = kind + '-' + Math.random().toString(36).slice(2, 9);
+      return [
+        ...prev,
+        {
+          id,
+          kind,
+          minimized: false,
+          w,
+          h,
+          x: Math.max(12, Math.round(x - w * 0.5)),
+          y: Math.max(12, Math.round(y - 18)),
+        },
+      ];
+    });
+  }, [getCanvasCenterClient]);
 
   const applyRigFocus = useCallback((focus: RigFocus) => {
     const live = stateLiveRef.current;
@@ -5300,10 +5338,11 @@ return makeDefaultState();
           onDragOver={(e) => {
             if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
           }}
-          onDrop={(e) => {
+	          onDrop={(e) => {
 	            const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
 	            if (
 	              payload !== 'joint_masks' &&
+                payload !== 'bone_inspector' &&
 	              payload !== 'console' &&
 	              payload !== 'camera' &&
 	              payload !== 'procgen' &&
@@ -5688,6 +5727,52 @@ return makeDefaultState();
                   >
                     Delete Key
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPoseTracingEnabled((prev) => !prev)}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      poseTracingEnabled ? 'bg-[#3366cc] text-white' : 'bg-[#222] hover:bg-[#333]'
+                    }`}
+                    title="Pose Trace (P)"
+                  >
+                    Pose Trace
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => jumpToAdjacentKeyframe(-1)}
+                    disabled={!state.timeline.clip.keyframes.length}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                    title="Prev keyframe ([ or Shift+←)"
+                  >
+                    Prev Key
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => jumpToAdjacentKeyframe(1)}
+                    disabled={!state.timeline.clip.keyframes.length}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                    title="Next keyframe (] or Shift+→)"
+                  >
+                    Next Key
+                  </button>
+
+                  {state.scene.background.mediaType === 'video' && state.scene.background.src && (
+                    <button
+                      type="button"
+                      onClick={fitTimelineToBackgroundVideo}
+                      className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
+                      title="Match timeline length to background video"
+                    >
+                      Match Video
+                    </button>
+                  )}
 
                   <div className="ml-auto flex items-center gap-4">
                     <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
@@ -6406,11 +6491,19 @@ return makeDefaultState();
                           <button
                             key={m}
                             onClick={() => {
-                              (conn as any).stretchMode = m;
-                              setState(prev => ({...prev}));
+                              const key = canonicalConnKey(conn.from, conn.to);
+                              setStateWithHistory(`conn_mode:${key}`, (prev) => ({
+                                ...prev,
+                                connectionOverrides: {
+                                  ...prev.connectionOverrides,
+                                  [key]: { ...(prev.connectionOverrides[key] ?? {}), stretchMode: m },
+                                },
+                              }));
                             }}
                             className={`px-2 py-1 rounded text-[8px] font-bold uppercase transition-all ${
-                              conn.stretchMode === m ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                              (state.connectionOverrides[canonicalConnKey(conn.from, conn.to)]?.stretchMode ?? conn.stretchMode ?? 'rigid') === m
+                                ? 'bg-white text-black'
+                                : 'text-[#666] hover:text-white'
                             }`}
                           >
                             {m}
@@ -6508,6 +6601,52 @@ return makeDefaultState();
                   >
                     Delete Key
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPoseTracingEnabled((prev) => !prev)}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      poseTracingEnabled ? 'bg-[#3366cc] text-white' : 'bg-[#222] hover:bg-[#333]'
+                    }`}
+                    title="Pose Trace (P)"
+                  >
+                    Pose Trace
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => jumpToAdjacentKeyframe(-1)}
+                    disabled={!state.timeline.clip.keyframes.length}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                    title="Prev keyframe ([ or Shift+←)"
+                  >
+                    Prev Key
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => jumpToAdjacentKeyframe(1)}
+                    disabled={!state.timeline.clip.keyframes.length}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                    title="Next keyframe (] or Shift+→)"
+                  >
+                    Next Key
+                  </button>
+
+                  {state.scene.background.mediaType === 'video' && state.scene.background.src && (
+                    <button
+                      type="button"
+                      onClick={fitTimelineToBackgroundVideo}
+                      className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
+                      title="Match timeline length to background video"
+                    >
+                      Match Video
+                    </button>
+                  )}
 
                   <div className="ml-auto flex items-center gap-4">
                     <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
