@@ -3670,6 +3670,74 @@ export default function App() {
     });
   })();
 
+  // Build joint hierarchy for display
+  const buildJointHierarchy = () => {
+    const joints = state.joints;
+    const hierarchy: Array<{ joint: Joint; level: number; type: 'joint' | 'bone'; boneTo?: string }> = [];
+    
+    // Head to toe hierarchy
+    const headToToeOrder = [
+      'head', 'neck_base', 'collar', 'sternum', 'navel', 
+      'l_hip', 'l_knee', 'l_ankle', 'l_toe',
+      'r_hip', 'r_knee', 'r_ankle', 'r_toe'
+    ];
+    
+    // Arms hierarchy  
+    const armsOrder = [
+      'l_shoulder', 'l_elbow', 'l_wrist', 'l_fingertip',
+      'r_shoulder', 'r_elbow', 'r_wrist', 'r_fingertip'
+    ];
+    
+    // Additional joints
+    const additionalJoints = ['l_nipple', 'r_nipple'];
+    
+    // Add head to toe joints with bones between them
+    for (let i = 0; i < headToToeOrder.length; i++) {
+      const jointId = headToToeOrder[i];
+      const joint = joints[jointId];
+      if (joint) {
+        hierarchy.push({ joint, level: 0, type: 'joint' });
+        
+        // Add bone connection to next joint if it exists and is a child
+        if (i < headToToeOrder.length - 1) {
+          const nextJointId = headToToeOrder[i + 1];
+          const nextJoint = joints[nextJointId];
+          if (nextJoint && nextJoint.parent === jointId) {
+            hierarchy.push({ joint, level: 1, type: 'bone', boneTo: nextJointId });
+          }
+        }
+      }
+    }
+    
+    // Add arms with bones
+    for (let i = 0; i < armsOrder.length; i++) {
+      const jointId = armsOrder[i];
+      const joint = joints[jointId];
+      if (joint) {
+        hierarchy.push({ joint, level: 0, type: 'joint' });
+        
+        // Add bone connection to next joint if it exists and is a child
+        if (i < armsOrder.length - 1) {
+          const nextJointId = armsOrder[i + 1];
+          const nextJoint = joints[nextJointId];
+          if (nextJoint && nextJoint.parent === jointId) {
+            hierarchy.push({ joint, level: 1, type: 'bone', boneTo: nextJointId });
+          }
+        }
+      }
+    }
+    
+    // Add additional joints
+    for (const jointId of additionalJoints) {
+      const joint = joints[jointId];
+      if (joint) {
+        hierarchy.push({ joint, level: 0, type: 'joint' });
+      }
+    }
+    
+    return hierarchy;
+  };
+
   const jointsLayer = state.showJoints ? (() => {
   const regularJoints = Object.keys(state.joints)
     .filter(id => id !== 'sacrum' && !id.includes('rib'))
@@ -5672,31 +5740,41 @@ export default function App() {
                 );
               })()}
                       <div className="max-h-[300px] overflow-y-auto pr-2 space-y-1">
-                        {(Object.values(state.joints) as Joint[]).map((joint: Joint) => (
-                          <div 
-                            key={joint.id}
-                      onClick={() => setSelectedJointId(joint.id)}
-                            className={`group flex items-center justify-between p-2 rounded-md transition-colors cursor-pointer ${
-                        draggingId === joint.id
-                          ? 'bg-white/10'
-                          : selectedJointId === joint.id
-                            ? 'bg-white/5'
-                            : 'hover:bg-white/5'
-                      }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <div className={`w-1.5 h-1.5 rounded-full ${joint.isEndEffector ? 'bg-white' : 'bg-[#444]'}`} />
-                              <span className="text-xs font-medium">{joint.label}</span>
-                            </div>
-                            <button 
-                              onClick={(e) => {
-                          e.stopPropagation();
-                          togglePin(joint.id);
-                        }}
-                              className={`p-1 rounded transition-colors ${state.activePins.includes(joint.id) ? 'text-[#ff8800]' : 'text-[#444] group-hover:text-[#888]'}`}
-                            >
-                              <Anchor size={12} />
-                            </button>
+                        {buildJointHierarchy().map((item, index) => (
+                          <div key={`${item.type}-${item.joint.id}-${index}`}>
+                            {item.type === 'joint' ? (
+                              <div 
+                                onClick={() => setSelectedJointId(item.joint.id)}
+                                className={`group flex items-center justify-between p-2 rounded-md transition-colors cursor-pointer ${
+                                  draggingId === item.joint.id
+                                    ? 'bg-white/10'
+                                    : selectedJointId === item.joint.id
+                                      ? 'bg-white/5'
+                                      : 'hover:bg-white/5'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-1.5 h-1.5 rounded-full ${item.joint.isEndEffector ? 'bg-white' : 'bg-[#444]'}`} />
+                                  <span className="text-xs font-medium">{item.joint.label}</span>
+                                </div>
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    togglePin(item.joint.id);
+                                  }}
+                                  className={`p-1 rounded transition-colors ${state.activePins.includes(item.joint.id) ? 'text-[#ff8800]' : 'text-[#444] group-hover:text-[#888]'}`}
+                                >
+                                  <Anchor size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2 pl-4 py-1">
+                                <div className="w-8 h-0.5 bg-[#666] rounded"></div>
+                                <span className="text-xs text-[#666] italic">
+                                  → {item.boneTo && state.joints[item.boneTo] ? state.joints[item.boneTo].label : 'Bone'}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
