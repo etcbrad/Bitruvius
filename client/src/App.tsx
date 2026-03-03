@@ -5921,7 +5921,7 @@ export default function App() {
               if (e.button === 1) e.preventDefault(); // Prevent auto-scroll on middle click
               setSelectedJointId(null);
             }}
-            className={`w-full h-full skeleton-canvas ${state.lookMode === 'noir' ? 'grayscale contrast-125' : ''}`}
+            className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''}`}
           >
             <g transform={`translate(${state.viewOffset.x}, ${state.viewOffset.y}) scale(${state.viewScale})`}>
                       {/* Reference Layers */}
@@ -5930,8 +5930,9 @@ export default function App() {
                           href={state.scene.background.src}
                           x={state.scene.background.x}
                           y={state.scene.background.y}
-                          width={canvasSize.width * state.scene.background.scale}
-                          height={canvasSize.height * state.scene.background.scale}
+                          width={canvasSize.width}
+                          height={canvasSize.height}
+                          transform={`scale(${state.scene.background.scale})`}
                           preserveAspectRatio={
                             state.scene.background.fitMode === 'none' ? 'none' :
                             state.scene.background.fitMode === 'fill' ? 'none' :
@@ -5950,7 +5951,12 @@ export default function App() {
                           opacity={state.scene.background.opacity}
                           style={{ pointerEvents: 'none' }}
                         >
-                          <div style={{ width: '100%', height: '100%' }}>
+                          <div style={{ 
+                            width: '100%', 
+                            height: '100%',
+                            transform: `scale(${1 / state.scene.background.scale})`,
+                            transformOrigin: 'top left'
+                          }}>
                             {poseTracingEnabled ? (
                               <SyncedReferenceSequenceCanvas
                                 sequence={referenceSequencesRef.current.get(state.scene.background.sequence.id) ?? null}
@@ -5983,7 +5989,12 @@ export default function App() {
                           opacity={state.scene.background.opacity}
                           style={{ pointerEvents: 'none' }}
                         >
-                          <div style={{ width: '100%', height: '100%' }}>
+                          <div style={{ 
+                            width: '100%', 
+                            height: '100%',
+                            transform: `scale(${1 / state.scene.background.scale})`,
+                            transformOrigin: 'top left'
+                          }}>
                             {poseTracingEnabled ? (
                               <SyncedReferenceVideo
                                 ref={bgVideoRef}
@@ -6133,8 +6144,9 @@ export default function App() {
                                 href={state.scene.foreground.src}
                                 x={state.scene.foreground.x}
                                 y={state.scene.foreground.y}
-                                width={canvasSize.width * state.scene.foreground.scale}
-                                height={canvasSize.height * state.scene.foreground.scale}
+                                width={canvasSize.width}
+                                height={canvasSize.height}
+                                transform={`scale(${state.scene.foreground.scale})`}
                                 preserveAspectRatio={
                                   state.scene.foreground.fitMode === 'none' ? 'none' :
                                   state.scene.foreground.fitMode === 'fill' ? 'none' :
