@@ -1,8 +1,11 @@
 import React, { useMemo, useRef, useState } from 'react';
-import type { SkeletonState } from '@/engine/types';
+import type { JointMask, SkeletonState } from '@/engine/types';
 import { HelpTip } from '@/components/HelpTip';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
+
+export type MaskDragMode = 'move' | 'rotate' | 'scale' | 'stretch' | 'skew' | 'anchor';
 
 type Props = {
   state: SkeletonState;
@@ -10,7 +13,9 @@ type Props = {
   maskJointId: string;
   setMaskJointId: (id: string) => void;
   maskEditArmed: boolean;
-  setMaskEditArmed: (armed: boolean) => void;
+  setMaskEditArmed: React.Dispatch<React.SetStateAction<boolean>>;
+  maskDragMode: MaskDragMode;
+  setMaskDragMode: React.Dispatch<React.SetStateAction<MaskDragMode>>;
   uploadJointMaskFile: (file: File, jointId: string) => Promise<void>;
   uploadMaskFile: (file: File) => Promise<void>;
   copyJointMaskTo: (sourceJointId: string, targetJointId: string) => void;
@@ -68,6 +73,34 @@ function Thumb({
   );
 }
 
+function CompactThumb({
+  label,
+  src,
+  visible,
+}: {
+  label: string;
+  src: string | null | undefined;
+  visible: boolean | undefined;
+}) {
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <div className="w-8 h-8 rounded-md overflow-hidden bg-[#0a0a0a] border border-white/10 shrink-0">
+        {src ? (
+          <img src={src} alt={label} className={`w-full h-full object-contain ${visible ? '' : 'opacity-40'}`} />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-[9px] text-[#555] uppercase tracking-widest">
+            —
+          </div>
+        )}
+      </div>
+      <div className="min-w-0">
+        <div className="text-[10px] text-[#ddd] truncate">{label}</div>
+        <div className="text-[9px] text-[#555] truncate">{src ? (visible ? 'Visible' : 'Hidden') : 'No mask'}</div>
+      </div>
+    </div>
+  );
+}
+
 export function JointMaskWidget({
   state,
   setStateWithHistory,
@@ -75,20 +108,23 @@ export function JointMaskWidget({
   setMaskJointId,
   maskEditArmed,
   setMaskEditArmed,
+  maskDragMode,
+  setMaskDragMode,
   uploadJointMaskFile,
   uploadMaskFile,
   copyJointMaskTo,
 }: Props) {
   const [activeTab, setActiveTab] = useState<'joint' | 'head'>('joint');
+  const [jointPickerOpen, setJointPickerOpen] = useState(false);
   const headInputRef = useRef<HTMLInputElement>(null);
   const jointInputRef = useRef<HTMLInputElement>(null);
 
   const jointIds = useMemo(() => Object.keys(state.joints), [state.joints]);
   const selectedJoint = state.joints[maskJointId];
-  const jointMask = state.scene.jointMasks[maskJointId];
+  const jointMask: JointMask | undefined = state.scene.jointMasks[maskJointId];
   const canPlace = Boolean(jointMask?.src && jointMask.visible);
 
-  const setJointMask = (updates: Partial<typeof jointMask>) => {
+  const setJointMask = (updates: Partial<JointMask>) => {
     if (!jointMask) return;
     setStateWithHistory(`joint_mask_update:${maskJointId}`, (prev) => ({
       ...prev,
@@ -96,7 +132,7 @@ export function JointMaskWidget({
         ...prev.scene,
         jointMasks: {
           ...prev.scene.jointMasks,
-          [maskJointId]: { ...prev.scene.jointMasks[maskJointId], ...(updates as any) },
+          [maskJointId]: { ...prev.scene.jointMasks[maskJointId], ...updates },
         },
       },
     }));
@@ -236,7 +272,7 @@ export function JointMaskWidget({
                   </div>
                   <Slider
                     min={0.01}
-                    max={5}
+                    max={20}
                     step={0.01}
                     value={[state.scene.headMask.scale]}
                     onValueChange={([val]) =>
@@ -573,6 +609,37 @@ export function JointMaskWidget({
             </div>
           </div>
 
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Drag Mode</div>
+            <div className="flex bg-[#222] rounded-md p-0.5">
+              {(['move', 'rotate', 'scale', 'stretch', 'skew', 'anchor'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMaskDragMode(m)}
+                  className={`px-2 py-1 rounded text-[8px] font-bold uppercase transition-all ${
+                    maskDragMode === m ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                  }`}
+                  title={
+                    m === 'move'
+                      ? 'Drag to move'
+                      : m === 'rotate'
+                        ? 'Drag left/right to rotate'
+                        : m === 'scale'
+                          ? 'Drag up/down to scale'
+                          : m === 'stretch'
+                            ? 'Drag to stretch X/Y'
+                            : m === 'skew'
+                              ? 'Drag to skew X/Y'
+                              : 'Drag to move anchor'
+                  }
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <input
             ref={jointInputRef}
             type="file"
@@ -586,25 +653,62 @@ export function JointMaskWidget({
             }}
           />
 
-          <div className="grid grid-cols-5 gap-2">
-            {jointIds.map((id) => {
-              const m = state.scene.jointMasks[id];
-              const label = state.joints[id]?.label || id;
-              return (
-                <Thumb
-                  key={id}
-                  label={label}
-                  selected={id === maskJointId}
-                  src={m?.src}
-                  visible={m?.visible}
-                  onClick={() => setMaskJointId(id)}
-                  onUploadClick={() => {
-                    setMaskJointId(id);
-                    jointInputRef.current?.click();
-                  }}
-                />
-              );
-            })}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Piece</div>
+              <Popover open={jointPickerOpen} onOpenChange={setJointPickerOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex-1 flex items-center justify-between gap-2 px-2 py-1.5 bg-[#0a0a0a] border border-white/10 rounded-lg hover:bg-white/5 transition-colors"
+                    title="Select joint"
+                  >
+                    <CompactThumb
+                      label={selectedJoint?.label || maskJointId}
+                      src={jointMask?.src}
+                      visible={jointMask?.visible}
+                    />
+                    <div className="text-[10px] text-[#666] shrink-0">▼</div>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-[300px] p-2 bg-[#121212] border border-[#222]">
+                  <div className="max-h-[320px] overflow-auto space-y-1 pr-1">
+                    {jointIds.map((id) => {
+                      const m = state.scene.jointMasks[id];
+                      const label = state.joints[id]?.label || id;
+                      const active = id === maskJointId;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => {
+                            setMaskJointId(id);
+                            setJointPickerOpen(false);
+                          }}
+                          className={`w-full text-left p-2 rounded-md border transition-colors ${
+                            active ? 'bg-white/5 border-white/20' : 'bg-transparent border-transparent hover:bg-white/5'
+                          }`}
+                        >
+                          <CompactThumb label={label} src={m?.src} visible={m?.visible} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        jointInputRef.current?.click();
+                        setJointPickerOpen(false);
+                      }}
+                      className="flex-1 py-1.5 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
+                    >
+                      Upload to Selected
+                    </button>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
 
           {!selectedJoint || !jointMask ? (
@@ -679,7 +783,7 @@ export function JointMaskWidget({
                     </div>
                     <Slider
                       min={0.01}
-                      max={5}
+                      max={20}
                       step={0.01}
                       value={[jointMask.scale]}
                       onValueChange={([val]) => setJointMask({ scale: val })}
@@ -895,13 +999,6 @@ export function JointMaskWidget({
                   </div>
 
                   <div className="grid grid-cols-2 gap-2 items-end">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        copyJointMaskTo(maskJointId, '');
-                      }}
-                      className="hidden"
-                    />
                     <select
                       value=""
                       onChange={(e) => {

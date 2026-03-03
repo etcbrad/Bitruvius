@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'motion/react';
 import { Slider } from "@/components/ui/slider";
 import { SystemGrid } from "@/components/SystemGrid";
+import JSZip from 'jszip';
 import { 
   Activity, 
   Lock, 
@@ -51,6 +52,7 @@ import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './
 import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
+import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
 
 const LOCAL_STORAGE_KEY = 'bitruvius_state';
 const IMAGE_CACHE_KEY = 'bitruvius_image_cache';
@@ -60,6 +62,53 @@ const BUILD_ID = 'Bitruvius';
 const DND_WIDGET_MIME = 'text/bitruvius-widget';
 
 type ReferenceVideoMeta = { duration: number; width: number; height: number };
+type ReferenceSequenceKind = 'gif' | 'zip';
+type ReferenceSequenceData = {
+  id: string;
+  kind: ReferenceSequenceKind;
+  frames: any[];
+  width: number;
+  height: number;
+  fps: number;
+};
+
+const fitModeToObjectFit = (fitMode: string): React.CSSProperties['objectFit'] => {
+  if (fitMode === 'cover') return 'cover';
+  if (fitMode === 'fill') return 'fill';
+  if (fitMode === 'none') return 'none';
+  return 'contain';
+};
+
+const drawWithFitMode = (
+  ctx: CanvasRenderingContext2D,
+  source: any,
+  destW: number,
+  destH: number,
+  fitMode: string,
+) => {
+  const sw = Number(source?.videoWidth || source?.naturalWidth || source?.displayWidth || source?.codedWidth || source?.width || 0) || 0;
+  const sh = Number(source?.videoHeight || source?.naturalHeight || source?.displayHeight || source?.codedHeight || source?.height || 0) || 0;
+  if (!sw || !sh || !destW || !destH) return;
+
+  ctx.clearRect(0, 0, destW, destH);
+
+  if (fitMode === 'fill') {
+    ctx.drawImage(source, 0, 0, destW, destH);
+    return;
+  }
+
+  if (fitMode === 'none') {
+    ctx.drawImage(source, 0, 0, sw, sh);
+    return;
+  }
+
+  const scale = fitMode === 'cover' ? Math.max(destW / sw, destH / sh) : Math.min(destW / sw, destH / sh);
+  const dw = sw * scale;
+  const dh = sh * scale;
+  const dx = (destW - dw) / 2;
+  const dy = (destH - dh) / 2;
+  ctx.drawImage(source, dx, dy, dw, dh);
+};
 
 const setVideoTimeSafe = (video: HTMLVideoElement, desiredTime: number) => {
   if (!Number.isFinite(desiredTime)) return;
@@ -145,6 +194,67 @@ const SyncedReferenceVideo = React.forwardRef<
     />
   );
 });
+
+const SyncedReferenceSequenceCanvas = ({
+  sequence,
+  desiredTime,
+  playing,
+  fitMode,
+}: {
+  sequence: ReferenceSequenceData | null;
+  desiredTime: number;
+  playing: boolean;
+  fitMode: string;
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    if (!sequence || !sequence.frames.length) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+    const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    const frameCount = sequence.frames.length;
+    const fps = Math.max(1, Math.floor(sequence.fps || 24));
+    const t = Math.max(0, desiredTime);
+    const rawIndex = Math.floor(t * fps);
+    const frameIndex = sequence.kind === 'gif' ? ((rawIndex % frameCount) + frameCount) % frameCount : clamp(rawIndex, 0, frameCount - 1);
+    const frame = sequence.frames[frameIndex];
+    if (!frame) return;
+
+    drawWithFitMode(ctx, frame, canvas.width, canvas.height, fitMode);
+
+    if (playing) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        // Trigger a re-draw during play so changes in desiredTime are reflected smoothly.
+        // The actual desiredTime is driven by React state; this is a cheap fallback.
+        drawWithFitMode(ctx, frame, canvas.width, canvas.height, fitMode);
+      });
+    }
+  }, [desiredTime, fitMode, playing, sequence]);
+
+  return <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />;
+};
 
 // Image cache utilities for persisting uploads
 const convertBlobUrlToBase64 = async (blobUrl: string): Promise<string | null> => {
@@ -289,14 +399,14 @@ export default function App() {
         const restoredState = { ...sanitizedState };
         
                 // Restore cached images (videos are not cached in localStorage).
-                if (restoredState.scene.background.src && restoredState.scene.background.mediaType !== 'video') {
+                if (restoredState.scene.background.src && restoredState.scene.background.mediaType === 'image') {
                   const cachedBg = restoreImageFromCache('background');
                   if (cachedBg) {
                     restoredState.scene.background.src = cachedBg;
                   }
                 }
                 
-                if (restoredState.scene.foreground.src && restoredState.scene.foreground.mediaType !== 'video') {
+                if (restoredState.scene.foreground.src && restoredState.scene.foreground.mediaType === 'image') {
                   const cachedFg = restoreImageFromCache('foreground');
                   if (cachedFg) {
                     restoredState.scene.foreground.src = cachedFg;
@@ -414,15 +524,25 @@ return makeDefaultState();
   const [rubberbandPose, setRubberbandPose] = useState<SkeletonState | null>(null);
   const dragStartTimeRef = useRef<number>(0);
   const [maskEditArmed, setMaskEditArmed] = useState(false);
+  const [maskDragMode, setMaskDragMode] = useState<MaskDragMode>('move');
   const [maskDragging, setMaskDragging] = useState<null | {
     jointId: string;
     startClientX: number;
     startClientY: number;
     startOffsetX: number;
     startOffsetY: number;
+    startRotation: number;
+    startScale: number;
+    startStretchX: number;
+    startStretchY: number;
+    startSkewX: number;
+    startSkewY: number;
+    startAnchorX: number;
+    startAnchorY: number;
+    mode: MaskDragMode;
   }>(null);
   const maskDraggingLiveRef = useRef(false);
-  const [maskJointId, setMaskJointId] = useState<string>('head');
+  const [maskJointId, setMaskJointId] = useState<string>(() => Object.keys(INITIAL_JOINTS)[0] ?? 'navel');
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
   const [selectedConnectionKey, setSelectedConnectionKey] = useState<string | null>(null);
   const [rigFocus, setRigFocus] = useState<RigFocus>({ track: 'body', index: 0, side: 'front', stage: 'joint' });
@@ -434,13 +554,11 @@ return makeDefaultState();
   const fgVideoRef = useRef<HTMLVideoElement | null>(null);
   const [bgVideoMeta, setBgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
   const [fgVideoMeta, setFgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
+  const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const importStateInputRef = useRef<HTMLInputElement>(null);
-  const maskUploadInputRef = useRef<HTMLInputElement>(null);
-  const jointMaskUploadInputRef = useRef<HTMLInputElement>(null);
-  const maskJointIdRef = useRef<string>('head');
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [gridRingsBgData, setGridRingsBgData] = useState<GridRingsBackgroundData | null>(null);
           const [gridRingsEnabled, setGridRingsEnabled] = useState(true);
@@ -458,10 +576,6 @@ return makeDefaultState();
   }, [state]);
 
   useEffect(() => {
-    maskJointIdRef.current = maskJointId;
-  }, [maskJointId]);
-
-  useEffect(() => {
     try {
       localStorage.setItem(POSE_TRACE_KEY, poseTracingEnabled ? '1' : '0');
     } catch {
@@ -471,12 +585,12 @@ return makeDefaultState();
 
   const timelineFpsLive = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
   const bgVideoDesiredTime =
-    state.scene.background.mediaType === 'video'
+    (state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence')
       ? state.scene.background.videoStart +
         (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.background.videoRate : 0)
       : 0;
   const fgVideoDesiredTime =
-    state.scene.foreground.mediaType === 'video'
+    (state.scene.foreground.mediaType === 'video' || state.scene.foreground.mediaType === 'sequence')
       ? state.scene.foreground.videoStart +
         (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.foreground.videoRate : 0)
       : 0;
@@ -529,6 +643,135 @@ return makeDefaultState();
   }, []);
 
   const filteredConsoleLogs = consoleLogs.filter((log) => activeLogLevels.has(log.level));
+
+  const disposeSequenceData = useCallback((seq: ReferenceSequenceData) => {
+    for (const frame of seq.frames) {
+      try {
+        if (frame && typeof frame.close === 'function') frame.close();
+      } catch {
+        // Ignore.
+      }
+    }
+  }, []);
+
+  const dropReferenceSequence = useCallback(
+    (id: string) => {
+      const existing = referenceSequencesRef.current.get(id);
+      if (!existing) return;
+      disposeSequenceData(existing);
+      referenceSequencesRef.current.delete(id);
+    },
+    [disposeSequenceData],
+  );
+
+  const loadGifSequence = useCallback(
+    async (file: File, fps: number): Promise<ReferenceSequenceData> => {
+      const id = `gif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const ImageDecoderCtor = (globalThis as any).ImageDecoder as any;
+      if (!ImageDecoderCtor) {
+        throw new Error('Animated GIF decoding requires ImageDecoder (Chromium).');
+      }
+
+      const data = await file.arrayBuffer();
+      const decoder = new ImageDecoderCtor({ data, type: file.type || 'image/gif' });
+      if (decoder.tracks?.ready) await decoder.tracks.ready;
+
+      const frameCountRaw = decoder.tracks?.selectedTrack?.frameCount ?? 1;
+      const frameCount = clamp(Math.floor(frameCountRaw), 1, 5000);
+      const frames: any[] = [];
+
+      for (let i = 0; i < frameCount; i += 1) {
+        const result = await decoder.decode({ frameIndex: i });
+        const image = result?.image;
+        if (image) frames.push(image);
+      }
+
+      const first = frames[0];
+      const width = Number(first?.displayWidth || first?.codedWidth || first?.width || 0) || 0;
+      const height = Number(first?.displayHeight || first?.codedHeight || first?.height || 0) || 0;
+
+      return {
+        id,
+        kind: 'gif',
+        frames,
+        width,
+        height,
+        fps: clamp(Math.floor(fps), 1, 60),
+      };
+    },
+    [],
+  );
+
+  const loadZipSequence = useCallback(
+    async (file: File, fps: number): Promise<ReferenceSequenceData> => {
+      const id = `zip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const zip = await JSZip.loadAsync(file);
+
+      const files = Object.values(zip.files)
+        .filter((f) => !f.dir)
+        .map((f) => f.name)
+        .filter((name) => {
+          const lower = name.toLowerCase();
+          return (
+            lower.endsWith('.png') ||
+            lower.endsWith('.jpg') ||
+            lower.endsWith('.jpeg') ||
+            lower.endsWith('.webp') ||
+            lower.endsWith('.gif')
+          );
+        })
+        .sort((a, b) => a.localeCompare(b));
+
+      if (files.length === 0) throw new Error('ZIP contains no supported images (.png/.jpg/.webp/.gif).');
+
+      const maxFrames = 10_000;
+      if (files.length > maxFrames) {
+        addConsoleLog('warning', `ZIP has ${files.length} frames; only loading first ${maxFrames}.`);
+      }
+
+      const selected = files.slice(0, maxFrames);
+      const frames: any[] = [];
+      let width = 0;
+      let height = 0;
+
+      for (let i = 0; i < selected.length; i += 1) {
+        const name = selected[i]!;
+        const entry = zip.file(name);
+        if (!entry) continue;
+        const blob = await entry.async('blob');
+        const bitmap = await createImageBitmap(blob);
+        if (!width || !height) {
+          width = bitmap.width || 0;
+          height = bitmap.height || 0;
+        }
+        frames.push(bitmap);
+      }
+
+      return {
+        id,
+        kind: 'zip',
+        frames,
+        width,
+        height,
+        fps: clamp(Math.floor(fps), 1, 60),
+      };
+    },
+    [addConsoleLog],
+  );
+
+  const loadReferenceSequenceFromFile = useCallback(
+    async (file: File, fps: number): Promise<ReferenceSequenceData> => {
+      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+      const isZip =
+        file.type === 'application/zip' ||
+        file.type === 'application/x-zip-compressed' ||
+        file.name.toLowerCase().endsWith('.zip');
+      if (isGif) return loadGifSequence(file, fps);
+      if (isZip) return loadZipSequence(file, fps);
+      throw new Error('Unsupported sequence type (expected .gif or .zip).');
+    },
+    [loadGifSequence, loadZipSequence],
+  );
 
 	    const spawnFloatingWidget = useCallback(
 	    (kind: WidgetKind, clientX: number, clientY: number) => {
@@ -934,6 +1177,10 @@ return makeDefaultState();
     if (!canvasSize.width || !canvasSize.height) return;
     if (!state.timeline.enabled) {
       alert('Timeline must be enabled to export video');
+      return;
+    }
+    if (state.scene.background.mediaType === 'sequence' || state.scene.foreground.mediaType === 'sequence') {
+      alert('Video export does not support GIF/ZIP sequences yet. Please use a real video file for reference layers, or turn off sequence reference layers before exporting.');
       return;
     }
 
@@ -1825,6 +2072,15 @@ return makeDefaultState();
       startClientY: e.clientY,
       startOffsetX: mask.offsetX ?? 0,
       startOffsetY: mask.offsetY ?? 0,
+      startRotation: mask.rotation ?? 0,
+      startScale: mask.scale ?? 1,
+      startStretchX: mask.stretchX ?? 1,
+      startStretchY: mask.stretchY ?? 1,
+      startSkewX: mask.skewX ?? 0,
+      startSkewY: mask.skewY ?? 0,
+      startAnchorX: mask.anchorX ?? 0.5,
+      startAnchorY: mask.anchorY ?? 0.5,
+      mode: maskDragMode,
     });
   };
 
@@ -1854,16 +2110,57 @@ return makeDefaultState();
 
         if (maskDragging) {
           maskDraggingLiveRef.current = true;
-          // `offsetX/offsetY` are stored in *screen pixels* so mask movement feels consistent
-          // regardless of the current zoom (`viewScale` is applied to the whole SVG group).
           const dx = e.clientX - maskDragging.startClientX;
           const dy = e.clientY - maskDragging.startClientY;
           const jointId = maskDragging.jointId;
           setState((prev) => {
             const mask = prev.scene.jointMasks[jointId];
             if (!mask) return prev;
-            const nextOffsetX = maskDragging.startOffsetX + dx;
-            const nextOffsetY = maskDragging.startOffsetY + dy;
+            // `offsetX/offsetY` are stored in *screen pixels* so mask movement feels consistent
+            // regardless of the current zoom (`viewScale` is applied to the whole SVG group).
+            const next = (() => {
+              switch (maskDragging.mode) {
+                case 'move': {
+                  return {
+                    offsetX: Number.isFinite(maskDragging.startOffsetX + dx) ? maskDragging.startOffsetX + dx : 0,
+                    offsetY: Number.isFinite(maskDragging.startOffsetY + dy) ? maskDragging.startOffsetY + dy : 0,
+                  };
+                }
+                case 'rotate': {
+                  const nextRotation = maskDragging.startRotation + dx * 0.5;
+                  return { rotation: Math.max(-360, Math.min(360, nextRotation)) };
+                }
+                case 'scale': {
+                  const factor = 1 + dy / 200;
+                  const nextScale = maskDragging.startScale * factor;
+                  return { scale: Math.max(0.01, Math.min(20, nextScale)) };
+                }
+                case 'stretch': {
+                  const fx = 1 + dx / 200;
+                  const fy = 1 + dy / 200;
+                  return {
+                    stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
+                    stretchY: Math.max(0.1, Math.min(10, maskDragging.startStretchY * fy)),
+                  };
+                }
+                case 'skew': {
+                  const nextSkewX = maskDragging.startSkewX + dx * 0.1;
+                  const nextSkewY = maskDragging.startSkewY + dy * 0.1;
+                  return {
+                    skewX: Math.max(-45, Math.min(45, nextSkewX)),
+                    skewY: Math.max(-45, Math.min(45, nextSkewY)),
+                  };
+                }
+                case 'anchor': {
+                  const nextAnchorX = maskDragging.startAnchorX + dx / 300;
+                  const nextAnchorY = maskDragging.startAnchorY + dy / 300;
+                  return {
+                    anchorX: Math.max(0, Math.min(1, nextAnchorX)),
+                    anchorY: Math.max(0, Math.min(1, nextAnchorY)),
+                  };
+                }
+              }
+            })();
             return {
               ...prev,
               scene: {
@@ -1872,8 +2169,7 @@ return makeDefaultState();
                   ...prev.scene.jointMasks,
                   [jointId]: {
                     ...mask,
-                    offsetX: Number.isFinite(nextOffsetX) ? nextOffsetX : 0,
-                    offsetY: Number.isFinite(nextOffsetY) ? nextOffsetY : 0,
+                    ...next,
                   },
                 },
               },
@@ -2054,13 +2350,8 @@ return makeDefaultState();
   );
 
   const fitTimelineToBackgroundVideo = useCallback(() => {
-    if (state.scene.background.mediaType !== 'video' || !state.scene.background.src) {
-      alert('Set a background video first.');
-      return;
-    }
-    const duration = bgVideoMeta?.duration ?? 0;
-    if (!Number.isFinite(duration) || duration <= 0) {
-      alert('Background video metadata not loaded yet. Try toggling the background visibility or Pose Trace on/off.');
+    if (!state.scene.background.src) {
+      alert('Set a background reference first.');
       return;
     }
 
@@ -2068,13 +2359,39 @@ return makeDefaultState();
     timelineFrameRef.current = 0;
     setTimelineFrame(0);
 
-    setStateWithHistory('timeline_fit_to_bg_video', (prev) => {
-      const baseFps = clamp(Math.floor(prev.timeline.clip.fps || 24), 1, 60);
-      const videoStart = clamp(prev.scene.background.videoStart, 0, Math.max(0, duration));
-      const videoRate = clamp(prev.scene.background.videoRate, 0.05, 4);
-      const totalTimelineSeconds = Math.max(0, (duration - videoStart) / Math.max(0.0001, videoRate));
-
+    setStateWithHistory('timeline_fit_to_bg_ref', (prev) => {
       const maxFrames = 600;
+      const videoRate = clamp(prev.scene.background.videoRate, 0.05, 4);
+
+      const resolveDurationSeconds = (): number => {
+        if (prev.scene.background.mediaType === 'video') {
+          const duration = bgVideoMeta?.duration ?? 0;
+          return Number.isFinite(duration) ? duration : 0;
+        }
+        if (prev.scene.background.mediaType === 'sequence') {
+          const id = prev.scene.background.sequence?.id;
+          const seq = id ? referenceSequencesRef.current.get(id) : null;
+          if (!seq) return 0;
+          const fps = clamp(Math.floor(seq.fps || 24), 1, 60);
+          return seq.frames.length / fps;
+        }
+        return 0;
+      };
+
+      const durationSeconds = resolveDurationSeconds();
+      if (!durationSeconds) {
+        alert('Background reference metadata not loaded yet. Try toggling the background visibility or Pose Trace on/off.');
+        return prev;
+      }
+
+      const baseFps =
+        prev.scene.background.mediaType === 'sequence'
+          ? clamp(Math.floor(prev.scene.background.sequence?.fps || prev.timeline.clip.fps || 24), 1, 60)
+          : clamp(Math.floor(prev.timeline.clip.fps || 24), 1, 60);
+
+      const startSeconds = clamp(prev.scene.background.videoStart, 0, Math.max(0, durationSeconds));
+      const totalTimelineSeconds = Math.max(0, (durationSeconds - startSeconds) / Math.max(0.0001, videoRate));
+
       let fps = baseFps;
       let frameCount = Math.ceil(totalTimelineSeconds * fps);
 
@@ -2102,7 +2419,6 @@ return makeDefaultState();
   }, [
     bgVideoMeta?.duration,
     setStateWithHistory,
-    state.scene.background.mediaType,
     state.scene.background.src,
   ]);
 
@@ -2656,13 +2972,13 @@ return makeDefaultState();
             height={height}
             opacity={mask.opacity}
             onMouseDown={handleMaskMouseDown(jointId)}
-            style={{
-              transformOrigin: `${anchorWorldX + (mask.offsetX / state.viewScale)}px ${anchorWorldY + (mask.offsetY / state.viewScale)}px`,
-              transform: `rotate(${finalAngle}deg)`,
-              pointerEvents: maskEditArmed ? 'auto' : 'none',
-              cursor: maskEditArmed ? 'grab' : 'default',
-            }}
-          />
+	            style={{
+	              transformOrigin: `${anchorWorldX + (mask.offsetX / state.viewScale)}px ${anchorWorldY + (mask.offsetY / state.viewScale)}px`,
+	              transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
+	              pointerEvents: maskEditArmed ? 'auto' : 'none',
+	              cursor: maskEditArmed ? 'grab' : 'default',
+	            }}
+	          />
         );
       });
     })();
@@ -2719,12 +3035,12 @@ return makeDefaultState();
           width={width}
           height={height}
           opacity={state.scene.headMask.opacity}
-          style={{
-            transformOrigin: `${anchorWorldX + (state.scene.headMask.offsetX / state.viewScale)}px ${anchorWorldY + (state.scene.headMask.offsetY / state.viewScale)}px`,
-            transform: `rotate(${finalAngle}deg)`,
-            pointerEvents: 'none',
-          }}
-        />
+	          style={{
+	            transformOrigin: `${anchorWorldX + (state.scene.headMask.offsetX / state.viewScale)}px ${anchorWorldY + (state.scene.headMask.offsetY / state.viewScale)}px`,
+	            transform: `rotate(${finalAngle}deg) skewX(${state.scene.headMask.skewX ?? 0}deg) skewY(${state.scene.headMask.skewY ?? 0}deg) scale(${state.scene.headMask.stretchX ?? 1}, ${state.scene.headMask.stretchY ?? 1})`,
+	            pointerEvents: 'none',
+	          }}
+	        />
       );
     })();
 
@@ -2808,8 +3124,8 @@ return makeDefaultState();
               <div className="grid grid-cols-2 gap-2">
                 {(
 	                  [
-	                    { kind: 'joint_masks' as const, label: 'Joint Masks' },
-                      { kind: 'bone_inspector' as const, label: 'Bone Inspector' },
+		                    { kind: 'joint_masks' as const, label: 'Joint/Mask' },
+	                      { kind: 'bone_inspector' as const, label: 'Bone Inspector' },
 	                    { kind: 'console' as const, label: 'Console' },
 	                    { kind: 'camera' as const, label: 'Camera' },
 	                  { kind: 'procgen' as const, label: 'Procedural' },
@@ -3511,14 +3827,82 @@ return makeDefaultState();
                   <input
                     id="bg-upload"
                     type="file"
-                    accept="image/*,video/*"
+                    accept="image/*,video/*,.zip,application/zip,application/x-zip-compressed"
                     className="hidden"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
+                      e.target.value = '';
+
                       const isVideo = file.type.startsWith('video/');
+                      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+                      const isZip =
+                        file.type === 'application/zip' ||
+                        file.type === 'application/x-zip-compressed' ||
+                        file.name.toLowerCase().endsWith('.zip');
+
+                      const prevSeqId = state.scene.background.sequence?.id;
+                      if (prevSeqId) dropReferenceSequence(prevSeqId);
+
+                      if (isVideo) {
+                        const url = URL.createObjectURL(file);
+                        setStateWithHistory('upload_background_video', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            background: {
+                              ...prev.scene.background,
+                              src: url,
+                              visible: true,
+                              mediaType: 'video',
+                              videoStart: 0,
+                              videoRate: 1,
+                              sequence: null,
+                            },
+                          },
+                        }));
+                        return;
+                      }
+
+                      if (isGif || isZip) {
+                        try {
+                          addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for background...`);
+                          const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
+                          const seq = await loadReferenceSequenceFromFile(file, fps);
+                          referenceSequencesRef.current.set(seq.id, seq);
+
+                          const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
+                          setStateWithHistory('upload_background_sequence', (prev) => ({
+                            ...prev,
+                            scene: {
+                              ...prev.scene,
+                              background: {
+                                ...prev.scene.background,
+                                src,
+                                visible: true,
+                                mediaType: 'sequence',
+                                videoStart: 0,
+                                videoRate: 1,
+                                sequence: {
+                                  id: seq.id,
+                                  kind: seq.kind,
+                                  frameCount: seq.frames.length,
+                                  fps: seq.fps,
+                                },
+                              },
+                            },
+                          }));
+                          addConsoleLog('success', `Background sequence loaded (${seq.frames.length} frames).`);
+                        } catch (err) {
+                          const message = err instanceof Error ? err.message : 'Failed to load sequence';
+                          addConsoleLog('error', `Background sequence failed: ${message}`);
+                          alert(`Background sequence failed: ${message}`);
+                        }
+                        return;
+                      }
+
                       const url = URL.createObjectURL(file);
-                      setStateWithHistory('upload_background', (prev) => ({
+                      setStateWithHistory('upload_background_image', (prev) => ({
                         ...prev,
                         scene: {
                           ...prev.scene,
@@ -3526,15 +3910,15 @@ return makeDefaultState();
                             ...prev.scene.background,
                             src: url,
                             visible: true,
-                            mediaType: isVideo ? 'video' : 'image',
+                            mediaType: 'image',
                             videoStart: 0,
                             videoRate: 1,
+                            sequence: null,
                           },
-                        }
+                        },
                       }));
-                      
-                      // Cache images for persistence (videos are typically too large for localStorage).
-                      if (!isVideo) await cacheImageFromUrl(url, 'background');
+
+                      await cacheImageFromUrl(url, 'background');
                     }}
                   />
                 </div>
@@ -3669,9 +4053,9 @@ return makeDefaultState();
                               <option value="none">None</option>
                             </select>
 
-                            {state.scene.background.mediaType === 'video' && (
+                            {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && (
                               <div className="space-y-2 p-2 rounded-md bg-white/5 border border-white/10">
-                                <div className="text-[9px] font-bold uppercase tracking-widest text-[#777]">Video</div>
+                                <div className="text-[9px] font-bold uppercase tracking-widest text-[#777]">Timing</div>
                                 <div className="grid grid-cols-2 gap-2">
                                   <div>
                                     <label className="text-[10px] text-[#666]">Start (s)</label>
@@ -3713,22 +4097,26 @@ return makeDefaultState();
                                     />
                                   </div>
                                 </div>
-                                <div className="text-[9px] text-[#666]">
-                                  PNG/SVG exports don&apos;t embed videos yet (use WebM export).
-                                </div>
+                                {state.scene.background.mediaType === 'video' && (
+                                  <div className="text-[9px] text-[#666]">
+                                    PNG/SVG exports don&apos;t embed videos yet (use WebM export).
+                                  </div>
+                                )}
                               </div>
                             )}
                             
                             <button
-                              onClick={() =>
+                              onClick={() => {
+                                const seqId = state.scene.background.sequence?.id;
+                                if (seqId) dropReferenceSequence(seqId);
                                 setStateWithHistory('clear_background', (prev) => ({
                                   ...prev,
-                          scene: {
-                            ...prev.scene,
-                            background: { ...prev.scene.background, src: null, visible: false }
-                          }
-                        }))
-                      }
+                                  scene: {
+                                    ...prev.scene,
+                                    background: { ...prev.scene.background, src: null, visible: false, mediaType: 'image', sequence: null },
+                                  },
+                                }));
+                              }}
                       className="w-full py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
                     >
                       Clear
@@ -3750,14 +4138,82 @@ return makeDefaultState();
                           <input
                             id="fg-upload"
                             type="file"
-                            accept="image/*,video/*"
+                            accept="image/*,video/*,.zip,application/zip,application/x-zip-compressed"
                             className="hidden"
                             onChange={async (e) => {
                               const file = e.target.files?.[0];
                               if (!file) return;
+                              e.target.value = '';
+
                               const isVideo = file.type.startsWith('video/');
+                              const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+                              const isZip =
+                                file.type === 'application/zip' ||
+                                file.type === 'application/x-zip-compressed' ||
+                                file.name.toLowerCase().endsWith('.zip');
+
+                              const prevSeqId = state.scene.foreground.sequence?.id;
+                              if (prevSeqId) dropReferenceSequence(prevSeqId);
+
+                              if (isVideo) {
+                                const url = URL.createObjectURL(file);
+                                setStateWithHistory('upload_foreground_video', (prev) => ({
+                                  ...prev,
+                                  scene: {
+                                    ...prev.scene,
+                                    foreground: {
+                                      ...prev.scene.foreground,
+                                      src: url,
+                                      visible: true,
+                                      mediaType: 'video',
+                                      videoStart: 0,
+                                      videoRate: 1,
+                                      sequence: null,
+                                    },
+                                  },
+                                }));
+                                return;
+                              }
+
+                              if (isGif || isZip) {
+                                try {
+                                  addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for foreground...`);
+                                  const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
+                                  const seq = await loadReferenceSequenceFromFile(file, fps);
+                                  referenceSequencesRef.current.set(seq.id, seq);
+
+                                  const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
+                                  setStateWithHistory('upload_foreground_sequence', (prev) => ({
+                                    ...prev,
+                                    scene: {
+                                      ...prev.scene,
+                                      foreground: {
+                                        ...prev.scene.foreground,
+                                        src,
+                                        visible: true,
+                                        mediaType: 'sequence',
+                                        videoStart: 0,
+                                        videoRate: 1,
+                                        sequence: {
+                                          id: seq.id,
+                                          kind: seq.kind,
+                                          frameCount: seq.frames.length,
+                                          fps: seq.fps,
+                                        },
+                                      },
+                                    },
+                                  }));
+                                  addConsoleLog('success', `Foreground sequence loaded (${seq.frames.length} frames).`);
+                                } catch (err) {
+                                  const message = err instanceof Error ? err.message : 'Failed to load sequence';
+                                  addConsoleLog('error', `Foreground sequence failed: ${message}`);
+                                  alert(`Foreground sequence failed: ${message}`);
+                                }
+                                return;
+                              }
+
                               const url = URL.createObjectURL(file);
-                              setStateWithHistory('upload_foreground', (prev) => ({
+                              setStateWithHistory('upload_foreground_image', (prev) => ({
                                 ...prev,
                                 scene: {
                                   ...prev.scene,
@@ -3765,15 +4221,15 @@ return makeDefaultState();
                                     ...prev.scene.foreground,
                                     src: url,
                                     visible: true,
-                                    mediaType: isVideo ? 'video' : 'image',
+                                    mediaType: 'image',
                                     videoStart: 0,
                                     videoRate: 1,
+                                    sequence: null,
                                   },
-                                }
+                                },
                               }));
-                              
-                              // Cache images for persistence (videos are typically too large for localStorage).
-                              if (!isVideo) await cacheImageFromUrl(url, 'foreground');
+
+                              await cacheImageFromUrl(url, 'foreground');
                             }}
                           />
                         </div>
@@ -3908,9 +4364,9 @@ return makeDefaultState();
                               <option value="none">None</option>
                             </select>
 
-                            {state.scene.foreground.mediaType === 'video' && (
+                            {(state.scene.foreground.mediaType === 'video' || state.scene.foreground.mediaType === 'sequence') && (
                               <div className="space-y-2 p-2 rounded-md bg-white/5 border border-white/10">
-                                <div className="text-[9px] font-bold uppercase tracking-widest text-[#777]">Video</div>
+                                <div className="text-[9px] font-bold uppercase tracking-widest text-[#777]">Timing</div>
                                 <div className="grid grid-cols-2 gap-2">
                                   <div>
                                     <label className="text-[10px] text-[#666]">Start (s)</label>
@@ -3952,22 +4408,26 @@ return makeDefaultState();
                                     />
                                   </div>
                                 </div>
-                                <div className="text-[9px] text-[#666]">
-                                  PNG/SVG exports don&apos;t embed videos yet (use WebM export).
-                                </div>
+                                {state.scene.foreground.mediaType === 'video' && (
+                                  <div className="text-[9px] text-[#666]">
+                                    PNG/SVG exports don&apos;t embed videos yet (use WebM export).
+                                  </div>
+                                )}
                               </div>
                             )}
                             
                             <button
-                              onClick={() =>
+                              onClick={() => {
+                                const seqId = state.scene.foreground.sequence?.id;
+                                if (seqId) dropReferenceSequence(seqId);
                                 setStateWithHistory('clear_foreground', (prev) => ({
                                   ...prev,
-                          scene: {
-                            ...prev.scene,
-                            foreground: { ...prev.scene.foreground, src: null, visible: false }
-                          }
-                        }))
-                      }
+                                  scene: {
+                                    ...prev.scene,
+                                    foreground: { ...prev.scene.foreground, src: null, visible: false, mediaType: 'image', sequence: null },
+                                  },
+                                }));
+                              }}
                       className="w-full py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
                     >
                       Clear
@@ -4224,928 +4684,13 @@ return makeDefaultState();
                         )}
                       </div>
 
-                      {/* Head Mask */}
-                      <div className="mb-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Head Mask</span>
-                    <HelpTip
-                      text={
-                        <>
-                          <div className="font-bold mb-1">Head mask</div>
-                          <div className="text-[#ddd]">
-                            Works like a joint mask, but anchored to the head. Use <span className="font-bold">Roto</span> when you want manual rotation (rotoscope-style tracking).
-                          </div>
-                        </>
-                      }
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => maskUploadInputRef.current?.click()}
-                    className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-                  >
-                    Upload
-                  </button>
-                </div>
-
-                <input
-                  ref={maskUploadInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    e.target.value = '';
-                    if (!file) return;
-                    await uploadMaskFile(file);
-                  }}
-                />
-
-                {state.scene.headMask.src ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="flex items-center gap-2 text-[10px]">
-                        <input
-                          type="checkbox"
-                          checked={state.scene.headMask.visible}
-                          onChange={(e) =>
-                            setStateWithHistory('head_mask_visible', (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                headMask: { ...prev.scene.headMask, visible: e.target.checked },
-                              },
-                            }))
-                          }
-                          className="rounded"
-                        />
-                        Visible
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setStateWithHistory('head_mask_clear', (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              headMask: { ...prev.scene.headMask, src: null, visible: false },
-                            },
-                          }))
-                        }
-                        className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
-                      >
-                        Clear
-                      </button>
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[10px]">
-                        <span>Opacity</span>
-                        <span>{(state.scene.headMask.opacity * 100).toFixed(0)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={state.scene.headMask.opacity}
-                        onChange={(e) =>
-                          setStateWithHistory('head_mask_opacity', (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              headMask: { ...prev.scene.headMask, opacity: parseFloat(e.target.value) },
-                            },
-                          }))
-                        }
-                        className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[10px]">
-                        <span>Scale</span>
-                        <span>{state.scene.headMask.scale.toFixed(2)}×</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0.01"
-                        max="20"
-                        step="0.01"
-                        value={state.scene.headMask.scale}
-                        onChange={(e) =>
-                          setStateWithHistory('head_mask_scale', (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              headMask: { ...prev.scene.headMask, scale: parseFloat(e.target.value) },
-                            },
-                          }))
-                        }
-                        className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[10px]">
-                        <span>Mode</span>
-                        <span className="text-[#666]">{(state.scene.headMask.mode || 'cutout').toUpperCase()}</span>
-                      </div>
-                      <select
-                        value={state.scene.headMask.mode || 'cutout'}
-                        onChange={(e) =>
-                          setStateWithHistory('head_mask_mode', (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              headMask: { ...prev.scene.headMask, mode: e.target.value as any },
-                            },
-                          }))
-                        }
-                        className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                      >
-                        <option value="cutout">Cutout (Rigid)</option>
-                        <option value="rubberhose">Rubberhose (Stretch)</option>
-                        <option value="roto">Roto (Manual Rotation)</option>
-                      </select>
-                    </div>
-
-                    {(state.scene.headMask.mode || 'cutout') === 'rubberhose' && (
-                      <>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-[10px]">
-                            <span>Length Scale</span>
-                            <span className="text-[#666]">{(state.scene.headMask.lengthScale || 1).toFixed(2)}×</span>
-                          </div>
-                          <input
-                            type="range"
-                            min="0.05"
-                            max="3"
-                            step="0.01"
-                            value={state.scene.headMask.lengthScale || 1}
-                            onChange={(e) =>
-                              setStateWithHistory('head_mask_length_scale', (prev) => ({
-                                ...prev,
-                                scene: {
-                                  ...prev.scene,
-                                  headMask: { ...prev.scene.headMask, lengthScale: parseFloat(e.target.value) },
-                                },
-                              }))
-                            }
-                            className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                          />
-                        </div>
-                        <label className="flex items-center justify-between gap-2 text-[10px]">
-                          <span className="text-[#666]">Volume Preserve</span>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(state.scene.headMask.volumePreserve)}
-                            onChange={(e) =>
-                              setStateWithHistory('head_mask_volume_preserve', (prev) => ({
-                                ...prev,
-                                scene: {
-                                  ...prev.scene,
-                                  headMask: { ...prev.scene.headMask, volumePreserve: e.target.checked },
-                                },
-                              }))
-                            }
-                            className="rounded accent-white"
-                          />
-                        </label>
-                      </>
-                    )}
-
-                            <div className="space-y-1">
-                              <div className="flex justify-between text-[10px]">
-                                <span>Rotation</span>
-                                <span>{state.scene.headMask.rotation.toFixed(0)}°</span>
-                              </div>
-                              <RotationWheelControl
-                                value={state.scene.headMask.rotation}
-                                min={-360}
-                                max={360}
-                                step={1}
-                                onChange={(val) =>
-                                  setStateWithHistory('head_mask_rotation', (prev) => ({
-                                    ...prev,
-                                    scene: {
-                                      ...prev.scene,
-                                      headMask: { ...prev.scene.headMask, rotation: val },
-                                    },
-                                  }))
-                                }
-                                isDisabled={!state.scene.headMask.src}
-                              />
-                            </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[10px] text-[#666]">Offset X</label>
-                        <input
-                          type="number"
-                          value={state.scene.headMask.offsetX}
-                          onChange={(e) =>
-                            setStateWithHistory('head_mask_offset_x', (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                headMask: { ...prev.scene.headMask, offsetX: parseFloat(e.target.value) || 0 },
-                              },
-                            }))
-                          }
-                          className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] text-[#666]">Offset Y</label>
-                        <input
-                          type="number"
-                          value={state.scene.headMask.offsetY}
-                          onChange={(e) =>
-                            setStateWithHistory('head_mask_offset_y', (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                headMask: { ...prev.scene.headMask, offsetY: parseFloat(e.target.value) || 0 },
-                              },
-                            }))
-                          }
-                          className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[9px] text-[#666]">
-                        <span>Anchor X (Pin)</span>
-                        <span>{Math.round(state.scene.headMask.anchorX * 100)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        value={state.scene.headMask.anchorX}
-                        onChange={(e) =>
-                          setStateWithHistory('head_mask_anchor_x', (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              headMask: { ...prev.scene.headMask, anchorX: parseFloat(e.target.value) },
-                            },
-                          }))
-                        }
-                        className="w-full h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-white"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[9px] text-[#666]">
-                        <span>Anchor Y (Pin)</span>
-                        <span>{Math.round(state.scene.headMask.anchorY * 100)}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        value={state.scene.headMask.anchorY}
-                        onChange={(e) =>
-                          setStateWithHistory('head_mask_anchor_y', (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              headMask: { ...prev.scene.headMask, anchorY: parseFloat(e.target.value) },
-                            },
-                          }))
-                        }
-                        className="w-full h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-white"
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-[10px] text-[#444]">No head mask uploaded.</div>
-                )}
-              </div>
-
-              {/* Joint Masks */}
-              <div className="mb-4">
-                {(() => {
-                  const mask = state.scene.jointMasks[maskJointId];
-                  if (!mask) {
-                    return (
-                      <div className="text-[10px] text-[#444]">
-                        Joint mask state missing (try Reset Engine).
-                      </div>
-                    );
-                  }
-
-                  const canPlace = Boolean(mask.src && mask.visible);
-
-                  return (
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Joint Masks</span>
-                          <HelpTip
-                            text={
-                              <>
-                                <div className="font-bold mb-1">Mask modes</div>
-                                <div className="text-[#ddd]">
-                                  <span className="font-bold">Cutout</span>: rigid sticker that rotates with the bone.
-                                </div>
-                                <div className="text-[#ddd]">
-                                  <span className="font-bold">Rubberhose</span>: stretches along the parent bone (use Length Scale / Volume Preserve).
-                                </div>
-                                <div className="text-[#ddd]">
-                                  <span className="font-bold">Roto</span>: follows position but rotation is manual (no auto bone rotation).
-                                </div>
-                                <div className="mt-2 text-[#ddd]">
-                                  Tip: click <span className="font-bold">Place</span>, then drag the mask once to set offsets.
-                                </div>
-                              </>
-                            }
-                          />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setStateWithHistory('clear_all_masks', (prev) => {
-                                const newMasks = { ...prev.scene.jointMasks };
-                                for (const id in newMasks) {
-                                  newMasks[id] = {
-                                    ...newMasks[id],
-                                    src: null,
-                                    visible: false,
-                                    opacity: 1,
-                                    scale: 1,
-                                    offsetX: 0,
-                                    offsetY: 0,
-                                    relatedJoints: [],
-                                  };
-                                }
-                                return {
-                                  ...prev,
-                                  scene: {
-                                    ...prev.scene,
-                                    jointMasks: newMasks,
-                                  },
-                                };
-                              });
-                            }}
-                            className="px-2 py-1 bg-[#331111] hover:bg-[#551111] rounded text-[10px] transition-colors"
-                            title="Clear all masks"
-                          >
-                            Clear All
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setMaskEditArmed((v) => !v)}
-                            disabled={!canPlace}
-                            className={`px-2 py-1 rounded text-[10px] transition-colors ${
-                              canPlace
-                                ? maskEditArmed
-                                  ? 'bg-[#2b0057] hover:bg-[#3a007a]'
-                                  : 'bg-[#222] hover:bg-[#333]'
-                                : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                            }`}
-                            title={canPlace ? 'Click + drag the mask once to place it' : 'Upload a mask and enable Visible to place'}
-                          >
-                            {maskEditArmed ? 'Placing…' : 'Place'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => jointMaskUploadInputRef.current?.click()}
-                            className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-                          >
-                            Upload
-                          </button>
+                      <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Masks</div>
+                        <div className="mt-2 text-[10px] text-[#444]">
+                          Mask uploads + adjustments live in the Joint/Mask widget.
                         </div>
                       </div>
 
-                      <input
-                        ref={jointMaskUploadInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          e.target.value = '';
-                          if (!file) return;
-                          await uploadJointMaskFile(file, maskJointIdRef.current);
-                        }}
-                      />
-
-                      <div>
-                        <label className="text-[10px] text-[#666]">Joint</label>
-                        <select
-                          value={maskJointId}
-                          onChange={(e) => setMaskJointId(e.target.value)}
-                          className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                        >
-                          {Object.keys(state.joints).map((id) => (
-                            <option key={id} value={id}>
-                              {state.joints[id].label || id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {mask.src && (
-                        <div className="space-y-4 pt-2">
-                          <div className="space-y-3">
-                            <div className="flex justify-between text-[10px]">
-                              <span className="text-[#666]">Opacity</span>
-                              <span>{(mask.opacity * 100).toFixed(0)}%</span>
-                            </div>
-                            <Slider
-                              min={0}
-                              max={1}
-                              step={0.01}
-                              value={[mask.opacity]}
-                              onValueChange={([val]) =>
-                                setStateWithHistory(`mask_opacity:${maskJointId}`, (prev) => ({
-                                  ...prev,
-                                  scene: {
-                                    ...prev.scene,
-                                    jointMasks: {
-                                      ...prev.scene.jointMasks,
-                                      [maskJointId]: { ...mask, opacity: val }
-                                    }
-                                  }
-                                }))
-                              }
-                            />
-                          </div>
-
-                          <div className="space-y-3">
-                            <div className="flex justify-between text-[10px]">
-                              <span className="text-[#666]">Scale</span>
-                              <span>{mask.scale.toFixed(2)}x</span>
-                            </div>
-                            <Slider
-                              min={0.01}
-                              max={5}
-                              step={0.01}
-                              value={[mask.scale]}
-                              onValueChange={([val]) =>
-                                setStateWithHistory(`mask_scale:${maskJointId}`, (prev) => ({
-                                  ...prev,
-                                  scene: {
-                                    ...prev.scene,
-                                    jointMasks: {
-                                      ...prev.scene.jointMasks,
-                                      [maskJointId]: { ...mask, scale: val }
-                                    }
-                                  }
-                                }))
-                              }
-                            />
-                          </div>
-
-                                  {/* Rotation wheel is available in the detailed controls below. */}
-                                </div>
-                              )}
-
-                      <div className="flex gap-2">
-                        <select
-                          value=""
-                          onChange={handleCopyMaskChange}
-                          className="flex-1 px-2 py-1 bg-[#222] rounded text-[10px]"
-                          disabled={!mask.src}
-                        >
-                          <option value="" disabled>
-                            Copy graphic to: {mask.src ? 'select joint' : 'upload first'}
-                          </option>
-                          {Object.keys(state.joints)
-                            .filter(id => id !== maskJointId)
-                            .map((id) => (
-                              <option key={id} value={id}>
-                                {state.joints[id].label || id}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-[9px] text-[#666]">
-                          <span>Anchor X (Pin)</span>
-                          <span>{Math.round(mask.anchorX * 100)}%</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                          value={mask.anchorX}
-                          onChange={(e) =>
-                            setStateWithHistory(`mask_anchor_x:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: { ...prev.scene.jointMasks[maskJointId], anchorX: parseFloat(e.target.value) },
-                                },
-                              },
-                            }))
-                          }
-                          className="w-full h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-white"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-[9px] text-[#666]">
-                          <span>Anchor Y (Pin)</span>
-                          <span>{Math.round(mask.anchorY * 100)}%</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                          value={mask.anchorY}
-                          onChange={(e) =>
-                            setStateWithHistory(`mask_anchor_y:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: { ...prev.scene.jointMasks[maskJointId], anchorY: parseFloat(e.target.value) },
-                                },
-                              },
-                            }))
-                          }
-                          className="w-full h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-white"
-                        />
-                      </div>
-
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="flex items-center gap-2 text-[10px]">
-                          <input
-                            type="checkbox"
-                            checked={mask.visible}
-                            onChange={(e) =>
-                              setStateWithHistory(`mask_visible:${maskJointId}`, (prev) => ({
-                                ...prev,
-                                scene: {
-                                  ...prev.scene,
-                                  jointMasks: {
-                                    ...prev.scene.jointMasks,
-                                    [maskJointId]: { ...prev.scene.jointMasks[maskJointId], visible: e.target.checked },
-                                  },
-                                },
-                              }))
-                            }
-                            className="rounded"
-                          />
-                          Visible
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setStateWithHistory(`mask_clear:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: {
-                                    ...prev.scene.jointMasks[maskJointId],
-                                    src: null,
-                                    visible: false,
-                                    opacity: 1,
-                                    scale: 1,
-                                    offsetX: 0,
-                                    offsetY: 0,
-                                    relatedJoints: [],
-                                  },
-                                },
-                              },
-                            }))
-                          }
-                          className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
-                        >
-                          Clear
-                        </button>
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-[10px]">
-                          <span>Opacity</span>
-                          <span>{(mask.opacity * 100).toFixed(0)}%</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0"
-                          max="1"
-                          step="0.05"
-                          value={mask.opacity}
-                          onChange={(e) =>
-                            setStateWithHistory(`mask_opacity:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: { ...prev.scene.jointMasks[maskJointId], opacity: parseFloat(e.target.value) },
-                                },
-                              },
-                            }))
-                          }
-                          className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-[10px]">
-                          <span>Scale</span>
-                          <span>{mask.scale.toFixed(2)}×</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0.01"
-                          max="20"
-                          step="0.01"
-                          value={mask.scale}
-                          onChange={(e) =>
-                            setStateWithHistory(`mask_scale:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: { ...prev.scene.jointMasks[maskJointId], scale: parseFloat(e.target.value) },
-                                },
-                              },
-                            }))
-                          }
-                          className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-[10px]">
-                          <span>Mode</span>
-                          <span className="text-[#666]">{(mask.mode || 'cutout').toUpperCase()}</span>
-                        </div>
-                        <select
-                          value={mask.mode || 'cutout'}
-                          onChange={(e) =>
-                            setStateWithHistory(`mask_mode:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: { ...prev.scene.jointMasks[maskJointId], mode: e.target.value as any },
-                                },
-                              },
-                            }))
-                          }
-                          className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                        >
-                          <option value="cutout">Cutout (Rigid)</option>
-                          <option value="rubberhose">Rubberhose (Stretch)</option>
-                          <option value="roto">Roto (Manual Rotation)</option>
-                        </select>
-                      </div>
-
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span>Relationship Joints</span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setStateWithHistory(`mask_related_joints_clear:${maskJointId}`, (prev) => ({
-                                ...prev,
-                                scene: {
-                                  ...prev.scene,
-                                  jointMasks: {
-                                    ...prev.scene.jointMasks,
-                                    [maskJointId]: { ...prev.scene.jointMasks[maskJointId], relatedJoints: [] },
-                                  },
-                                },
-                              }))
-                            }
-                            className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-                            title="Clear relationship joints (use parent bone instead)"
-                          >
-                            Use Parent
-                          </button>
-                        </div>
-                        <select
-                          multiple
-                          value={(mask.relatedJoints || []).filter((id) => id !== maskJointId)}
-                          onChange={(e) => {
-                            const next = Array.from(e.target.selectedOptions)
-                              .map((o) => o.value)
-                              .filter((id) => id && id !== maskJointId);
-
-                            setStateWithHistory(`mask_related_joints:${maskJointId}`, (prev) => ({
-                              ...prev,
-                              scene: {
-                                ...prev.scene,
-                                jointMasks: {
-                                  ...prev.scene.jointMasks,
-                                  [maskJointId]: { ...prev.scene.jointMasks[maskJointId], relatedJoints: next },
-                                },
-                              },
-                            }));
-                          }}
-                          className="w-full px-2 py-1 bg-[#222] rounded text-[10px] h-24"
-                        >
-                          {Object.keys(state.joints)
-                            .filter((id) => id !== maskJointId)
-                            .map((id) => (
-                              <option key={id} value={id}>
-                                {state.joints[id].label || id}
-                              </option>
-                            ))}
-                        </select>
-                        <div className="text-[9px] text-[#666]">
-                          Select one or more joints to drive placement/orientation. Empty uses the joint&apos;s parent bone.
-                        </div>
-                      </div>
-
-                      {(mask.mode || 'cutout') === 'rubberhose' && (
-                        <>
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-[10px]">
-                              <span>Length Scale</span>
-                              <span className="text-[#666]">{(mask.lengthScale || 1).toFixed(2)}×</span>
-                            </div>
-                            <input
-                              type="range"
-                              min="0.05"
-                              max="3"
-                              step="0.01"
-                              value={mask.lengthScale || 1}
-                              onChange={(e) =>
-                                setStateWithHistory(`mask_length_scale:${maskJointId}`, (prev) => ({
-                                  ...prev,
-                                  scene: {
-                                    ...prev.scene,
-                                    jointMasks: {
-                                      ...prev.scene.jointMasks,
-                                      [maskJointId]: {
-                                        ...prev.scene.jointMasks[maskJointId],
-                                        lengthScale: parseFloat(e.target.value),
-                                      },
-                                    },
-                                  },
-                                }))
-                              }
-                              className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                            />
-                          </div>
-
-                          <label className="flex items-center justify-between gap-2 text-[10px]">
-                            <span className="text-[#666]">Volume Preserve</span>
-                            <input
-                              type="checkbox"
-                              checked={Boolean(mask.volumePreserve)}
-                              onChange={(e) =>
-                                setStateWithHistory(`mask_volume_preserve:${maskJointId}`, (prev) => ({
-                                  ...prev,
-                                  scene: {
-                                    ...prev.scene,
-                                    jointMasks: {
-                                      ...prev.scene.jointMasks,
-                                      [maskJointId]: {
-                                        ...prev.scene.jointMasks[maskJointId],
-                                        volumePreserve: e.target.checked,
-                                      },
-                                    },
-                                  },
-                                }))
-                              }
-                              className="rounded accent-white"
-                            />
-                          </label>
-                        </>
-                      )}
-
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-[10px]">
-                                  <span>Rotation</span>
-                                  <span>{mask.rotation.toFixed(0)}°</span>
-                                </div>
-                                <RotationWheelControl
-                                  value={mask.rotation}
-                                  min={-360}
-                                  max={360}
-                                  step={1}
-                                  onChange={(val) =>
-                                    setStateWithHistory(`mask_rotation:${maskJointId}`, (prev) => ({
-                                      ...prev,
-                                      scene: {
-                                        ...prev.scene,
-                                        jointMasks: {
-                                          ...prev.scene.jointMasks,
-                                          [maskJointId]: { ...prev.scene.jointMasks[maskJointId], rotation: val },
-                                        },
-                                      },
-                                    }))
-                                  }
-                                  isDisabled={!mask.src}
-                                />
-                              </div>
-
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-[10px] text-[#666]">Offset X</label>
-                          <input
-                            type="number"
-                            value={mask.offsetX}
-                            onChange={(e) =>
-                              setStateWithHistory(`mask_offset_x:${maskJointId}`, (prev) => ({
-                                ...prev,
-                                scene: {
-                                  ...prev.scene,
-                                  jointMasks: {
-                                    ...prev.scene.jointMasks,
-                                    [maskJointId]: { ...prev.scene.jointMasks[maskJointId], offsetX: parseFloat(e.target.value) || 0 },
-                                  },
-                                },
-                              }))
-                            }
-                            className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[10px] text-[#666]">Offset Y</label>
-                          <input
-                            type="number"
-                            value={mask.offsetY}
-                            onChange={(e) =>
-                              setStateWithHistory(`mask_offset_y:${maskJointId}`, (prev) => ({
-                                ...prev,
-                                scene: {
-                                  ...prev.scene,
-                                  jointMasks: {
-                                    ...prev.scene.jointMasks,
-                                    [maskJointId]: { ...prev.scene.jointMasks[maskJointId], offsetY: parseFloat(e.target.value) || 0 },
-                                  },
-                                },
-                              }))
-                            }
-                            className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                          />
-                        </div>
-                      </div>
-
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-[10px]">
-                                  <span>Rotation</span>
-                                  <span>{mask.rotation.toFixed(0)}°</span>
-                                </div>
-                                <RotationWheelControl
-                                  value={mask.rotation}
-                                  min={-180}
-                                  max={180}
-                                  step={1}
-                                  onChange={(val) =>
-                                    setStateWithHistory(`mask_rotation:${maskJointId}`, (prev) => ({
-                                      ...prev,
-                                      scene: {
-                                        ...prev.scene,
-                                        jointMasks: {
-                                          ...prev.scene.jointMasks,
-                                          [maskJointId]: { ...prev.scene.jointMasks[maskJointId], rotation: val },
-                                        },
-                                      },
-                                    }))
-                                  }
-                                  isDisabled={!mask.src}
-                                />
-                              </div>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setStateWithHistory(`mask_center:${maskJointId}`, (prev) => ({
-                            ...prev,
-                            scene: {
-                              ...prev.scene,
-                              jointMasks: {
-                                ...prev.scene.jointMasks,
-                                [maskJointId]: { ...prev.scene.jointMasks[maskJointId], offsetX: 0, offsetY: 0 },
-                              },
-                            },
-                          }))
-                        }
-                        className="w-full py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-                      >
-                        Center on joint
-                      </button>
-                    </div>
-                  );
-	          })()}
-              </div>
             </section>
 
                     <section>
@@ -5384,6 +4929,39 @@ return makeDefaultState();
                           opacity={state.scene.background.opacity}
                         />
                       )}
+                      {state.scene.background.visible && state.scene.background.mediaType === 'sequence' && state.scene.background.sequence?.id && (
+                        <foreignObject
+                          x={state.scene.background.x}
+                          y={state.scene.background.y}
+                          width={canvasSize.width * state.scene.background.scale}
+                          height={canvasSize.height * state.scene.background.scale}
+                          opacity={state.scene.background.opacity}
+                          style={{ pointerEvents: 'none' }}
+                        >
+                          <div style={{ width: '100%', height: '100%' }}>
+                            {poseTracingEnabled ? (
+                              <SyncedReferenceSequenceCanvas
+                                sequence={referenceSequencesRef.current.get(state.scene.background.sequence.id) ?? null}
+                                desiredTime={bgVideoDesiredTime}
+                                playing={Boolean(state.timeline.enabled && timelinePlaying)}
+                                fitMode={state.scene.background.fitMode}
+                              />
+                            ) : state.scene.background.sequence.kind === 'gif' && state.scene.background.src ? (
+                              <img
+                                src={state.scene.background.src}
+                                style={{ width: '100%', height: '100%', objectFit: fitModeToObjectFit(state.scene.background.fitMode) }}
+                              />
+                            ) : (
+                              <SyncedReferenceSequenceCanvas
+                                sequence={referenceSequencesRef.current.get(state.scene.background.sequence.id) ?? null}
+                                desiredTime={0}
+                                playing={false}
+                                fitMode={state.scene.background.fitMode}
+                              />
+                            )}
+                          </div>
+                        </foreignObject>
+                      )}
                       {state.scene.background.src && state.scene.background.visible && state.scene.background.mediaType === 'video' && (
                         <foreignObject
                           x={state.scene.background.x}
@@ -5557,6 +5135,39 @@ return makeDefaultState();
                                 }
                                 opacity={state.scene.foreground.opacity}
                               />
+                            )}
+                            {state.scene.foreground.visible && state.scene.foreground.mediaType === 'sequence' && state.scene.foreground.sequence?.id && (
+                              <foreignObject
+                                x={state.scene.foreground.x}
+                                y={state.scene.foreground.y}
+                                width={canvasSize.width * state.scene.foreground.scale}
+                                height={canvasSize.height * state.scene.foreground.scale}
+                                opacity={state.scene.foreground.opacity}
+                                style={{ pointerEvents: 'none' }}
+                              >
+                                <div style={{ width: '100%', height: '100%' }}>
+                                  {poseTracingEnabled ? (
+                                    <SyncedReferenceSequenceCanvas
+                                      sequence={referenceSequencesRef.current.get(state.scene.foreground.sequence.id) ?? null}
+                                      desiredTime={fgVideoDesiredTime}
+                                      playing={Boolean(state.timeline.enabled && timelinePlaying)}
+                                      fitMode={state.scene.foreground.fitMode}
+                                    />
+                                  ) : state.scene.foreground.sequence.kind === 'gif' && state.scene.foreground.src ? (
+                                    <img
+                                      src={state.scene.foreground.src}
+                                      style={{ width: '100%', height: '100%', objectFit: fitModeToObjectFit(state.scene.foreground.fitMode) }}
+                                    />
+                                  ) : (
+                                    <SyncedReferenceSequenceCanvas
+                                      sequence={referenceSequencesRef.current.get(state.scene.foreground.sequence.id) ?? null}
+                                      desiredTime={0}
+                                      playing={false}
+                                      fitMode={state.scene.foreground.fitMode}
+                                    />
+                                  )}
+                                </div>
+                              </foreignObject>
                             )}
                             {state.scene.foreground.src && state.scene.foreground.visible && state.scene.foreground.mediaType === 'video' && (
                               <foreignObject
@@ -5763,14 +5374,14 @@ return makeDefaultState();
                     Next Key
                   </button>
 
-                  {state.scene.background.mediaType === 'video' && state.scene.background.src && (
+                  {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && state.scene.background.src && (
                     <button
                       type="button"
                       onClick={fitTimelineToBackgroundVideo}
                       className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                      title="Match timeline length to background video"
+                      title="Match timeline length to background reference"
                     >
-                      Match Video
+                      Match Ref
                     </button>
                   )}
 
@@ -5969,7 +5580,7 @@ return makeDefaultState();
                     ? 'Procedural Generation'
                     : widget.kind === 'atomic_units'
                       ? 'Atomic Units'
-                      : 'Joint Masks';
+	                      : 'Joint/Mask';
             const headerH = 34;
             return (
               <div
@@ -6476,48 +6087,20 @@ return makeDefaultState();
 	                        addConsoleLog={addConsoleLog}
 	                      />
 	                    ) : (
-              <div className="space-y-4">
-                <div className="text-[10px] text-[#666]">
-                  Bone Dynamics (Rigid / Elastic / Stretch)
-                </div>
-                <div className="space-y-2">
-                  {CONNECTIONS.filter(c => c.type === 'bone').map((conn, idx) => (
-                    <div key={`bone-dyn-${idx}`} className="flex items-center justify-between gap-2 p-2 bg-white/5 rounded-lg">
-                      <span className="text-[10px] font-bold text-white uppercase truncate max-w-[80px]">
-                        {conn.label || `${conn.from}->${conn.to}`}
-                      </span>
-                      <div className="flex bg-[#222] rounded-md p-0.5">
-                        {(['rigid', 'elastic', 'stretch'] as const).map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => {
-                              const key = canonicalConnKey(conn.from, conn.to);
-                              setStateWithHistory(`conn_mode:${key}`, (prev) => ({
-                                ...prev,
-                                connectionOverrides: {
-                                  ...prev.connectionOverrides,
-                                  [key]: { ...(prev.connectionOverrides[key] ?? {}), stretchMode: m },
-                                },
-                              }));
-                            }}
-                            className={`px-2 py-1 rounded text-[8px] font-bold uppercase transition-all ${
-                              (state.connectionOverrides[canonicalConnKey(conn.from, conn.to)]?.stretchMode ?? conn.stretchMode ?? 'rigid') === m
-                                ? 'bg-white text-black'
-                                : 'text-[#666] hover:text-white'
-                            }`}
-                          >
-                            {m}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="text-[10px] text-[#444] mt-2 italic">
-                  Rigid: Fixed length. Elastic: Soft bounce. Stretch: Fully deformable.
-                </div>
-              </div>
-            )}
+                      <JointMaskWidget
+                        state={state}
+                        setStateWithHistory={setStateWithHistory}
+                        maskJointId={maskJointId}
+                        setMaskJointId={setMaskJointId}
+                        maskEditArmed={maskEditArmed}
+                        setMaskEditArmed={setMaskEditArmed}
+                        maskDragMode={maskDragMode}
+                        setMaskDragMode={setMaskDragMode}
+                        uploadJointMaskFile={uploadJointMaskFile}
+                        uploadMaskFile={uploadMaskFile}
+                        copyJointMaskTo={copyJointMaskTo}
+                      />
+	            )}
           </div>
                 </div>
               </div>
@@ -6637,14 +6220,14 @@ return makeDefaultState();
                     Next Key
                   </button>
 
-                  {state.scene.background.mediaType === 'video' && state.scene.background.src && (
+                  {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && state.scene.background.src && (
                     <button
                       type="button"
                       onClick={fitTimelineToBackgroundVideo}
                       className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                      title="Match timeline length to background video"
+                      title="Match timeline length to background reference"
                     >
-                      Match Video
+                      Match Ref
                     </button>
                   )}
 

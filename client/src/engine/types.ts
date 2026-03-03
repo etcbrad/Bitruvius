@@ -208,9 +208,19 @@ export type ReferenceLayer = {
   scale: number;
   rotation: number;
   fitMode: string;
-  mediaType: 'image' | 'video';
+  mediaType: 'image' | 'video' | 'sequence';
   videoStart: number;
   videoRate: number;
+  /**
+   * Optional in-editor only reference to an image sequence (GIF decode or ZIP frames).
+   * The frame data itself is stored outside the engine state (e.g. in React memory).
+   */
+  sequence?: null | {
+    id: string;
+    kind: 'gif' | 'zip';
+    frameCount: number;
+    fps: number;
+  };
 };
 
 export type Vector2D = { x: number; y: number; };
