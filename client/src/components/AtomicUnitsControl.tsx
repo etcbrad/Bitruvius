@@ -125,11 +125,13 @@ export const AtomicUnitsControl: React.FC<AtomicUnitsControlProps> = ({
           max={max}
           step={step}
           value={value}
-          onPointerDown={() => {
+          onPointerDown={(e) => {
+            e.stopPropagation();
             beginHistoryAction(`atomic_scaling:${segment}`);
             dragRef.current = { segment, lastValue: value };
           }}
-          onPointerUp={() => {
+          onPointerUp={(e) => {
+            e.stopPropagation();
             const drag = dragRef.current;
             if (!drag || drag.segment !== segment) return;
             dragRef.current = null;
@@ -137,7 +139,8 @@ export const AtomicUnitsControl: React.FC<AtomicUnitsControlProps> = ({
             const factor = drag.lastValue / 100;
             addConsoleLog('info', `Atomic scaling: ${segment} = ${drag.lastValue}% (×${factor.toFixed(2)})`);
           }}
-          onPointerCancel={() => {
+          onPointerCancel={(e) => {
+            e.stopPropagation();
             dragRef.current = null;
             commitHistoryAction();
           }}

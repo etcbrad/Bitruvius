@@ -59,13 +59,31 @@ export const computeTouchdownYWorld = (
   return Math.max(...ys);
 };
 
+export const computeFootTouchdownYWorld = (
+  joints: Record<string, Joint>,
+  baseJoints: Record<string, Joint>,
+  mode: 'current' | 'target' | 'preview' = 'preview',
+): number => {
+  // "Foot touchdown line" is defined by the lowest available foot contact point (toe or ankle).
+  const ids = ['l_toe', 'r_toe', 'l_ankle', 'r_ankle'] as const;
+  const ys: number[] = [];
+  for (const id of ids) {
+    if (!(id in joints) && !(id in baseJoints)) continue;
+    const p = getWorldPosition(id, joints, baseJoints, mode);
+    if (!isFinitePoint(p)) continue;
+    ys.push(p.y);
+  }
+  if (!ys.length) return 0;
+  return Math.max(...ys);
+};
+
 export const computeGroundPivotWorld = (
   joints: Record<string, Joint>,
   baseJoints: Record<string, Joint>,
   mode: 'current' | 'target' | 'preview' = 'preview',
 ): Point => {
   const cog = computeCogWorld(joints, baseJoints, mode);
-  const y = computeTouchdownYWorld(joints, baseJoints, mode);
+  const y = computeFootTouchdownYWorld(joints, baseJoints, mode);
   return { x: cog.x, y };
 };
 
@@ -74,20 +92,37 @@ export const applyGroundRootCorrectionToJoints = (args: {
   baseJoints: Record<string, Joint>;
   activeRoots: string[];
   groundRootTarget: Point;
+  cogWorldOverride?: Point;
+  touchdownYWorldOverride?: number;
+  enableX?: boolean;
+  enableY?: boolean;
 }): Record<string, Joint> => {
-  const { joints, baseJoints, activeRoots, groundRootTarget } = args;
+  const {
+    joints,
+    baseJoints,
+    activeRoots,
+    groundRootTarget,
+    cogWorldOverride,
+    touchdownYWorldOverride,
+    enableX = true,
+    enableY = true,
+  } = args;
   if (activeRoots.length > 0) return joints;
+  if (!enableX && !enableY) return joints;
   const root = joints.root ?? baseJoints.root;
   if (!root) return joints;
   if (!isFinitePoint(groundRootTarget)) return joints;
 
-  const cog = computeCogWorld(joints, baseJoints, 'preview');
+  const cog = cogWorldOverride ?? computeCogWorld(joints, baseJoints, 'preview');
   if (!isFinitePoint(cog)) return joints;
-  const touchdownY = computeTouchdownYWorld(joints, baseJoints, 'preview');
+  const touchdownY = touchdownYWorldOverride ?? computeFootTouchdownYWorld(joints, baseJoints, 'preview');
   if (!Number.isFinite(touchdownY)) return joints;
 
-  // Ground root anchors the CoG horizontally, and anchors the ankle touchdown line vertically.
-  const delta = { x: groundRootTarget.x - cog.x, y: groundRootTarget.y - touchdownY };
+  // Ground root anchors the CoG horizontally, and anchors the foot touchdown line vertically.
+  const delta = {
+    x: enableX ? groundRootTarget.x - cog.x : 0,
+    y: enableY ? groundRootTarget.y - touchdownY : 0,
+  };
   if (!isFinitePoint(delta)) return joints;
 
   const mag = Math.abs(delta.x) + Math.abs(delta.y);

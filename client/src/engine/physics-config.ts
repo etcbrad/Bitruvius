@@ -43,7 +43,7 @@ export const applyPhysicsMode = (state: SkeletonState, rigidityValue: number): S
     bendEnabled = false;
     stretchEnabled = false;
     hardStop = true;
-    controlMode = 'Cardboard';
+    // Keep controlMode as-is so users can do rigid IK posing (planted feet) without the dial forcing FK.
   } else if (isFullyFluid) {
     rigidity = 'rubberhose';
     bendEnabled = true;
@@ -75,4 +75,3 @@ export const applyPhysicsMode = (state: SkeletonState, rigidityValue: number): S
     physicsRigidity: v,
   };
 };
-

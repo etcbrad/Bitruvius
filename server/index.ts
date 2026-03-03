@@ -32,7 +32,7 @@ async function listenWithFallback(initialPort: number) {
         );
       }
       console.log(`Server running on port ${port}`);
-      return;
+      return port;
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e.code === "EADDRINUSE" && allowPortFallback && attempt < maxAttempts - 1) {
@@ -41,6 +41,8 @@ async function listenWithFallback(initialPort: number) {
       throw err;
     }
   }
+
+  throw new Error("Failed to find an available port");
 }
 
 // Middleware
@@ -57,10 +59,12 @@ app.use('/storage', storageRoutes);
     app.get(/.*/, (req, res) => {
       res.sendFile(path.join(process.cwd(), 'dist/public/index.html'));
     });
-  } else {
-    const { setupVite } = await import('./vite');
-    await setupVite(server, app);
   }
 
-  await listenWithFallback(requestedPort);
+  const port = await listenWithFallback(requestedPort);
+
+  if (process.env.NODE_ENV !== 'production') {
+    const { setupVite } = await import('./vite');
+    await setupVite(server, app, port);
+  }
 })();

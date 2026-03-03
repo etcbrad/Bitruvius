@@ -650,6 +650,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       max="1"
                       step="0.01"
                       value={state.scene.headMask.opacity}
+                      onPointerDownCapture={(e) => e.stopPropagation()}
+                      onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_opacity', (prev) => ({
                           ...prev,
@@ -675,6 +677,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       max="10"
                       step="0.1"
                       value={state.scene.headMask.stretchX}
+                      onPointerDownCapture={(e) => e.stopPropagation()}
+                      onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_stretch_x', (prev) => ({
                           ...prev,
@@ -699,6 +703,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       max="10"
                       step="0.1"
                       value={state.scene.headMask.stretchY}
+                      onPointerDownCapture={(e) => e.stopPropagation()}
+                      onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_stretch_y', (prev) => ({
                           ...prev,
@@ -724,6 +730,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       max="45"
                       step="1"
                       value={state.scene.headMask.skewX}
+                      onPointerDownCapture={(e) => e.stopPropagation()}
+                      onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_skew_x', (prev) => ({
                           ...prev,
@@ -748,6 +756,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       max="45"
                       step="1"
                       value={state.scene.headMask.skewY}
+                      onPointerDownCapture={(e) => e.stopPropagation()}
+                      onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_skew_y', (prev) => ({
                           ...prev,
@@ -863,6 +873,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                             max="1"
                             step="0.01"
                             value={mask.opacity}
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onMouseDownCapture={(e) => e.stopPropagation()}
                             onChange={(e) =>
                               setStateWithHistory(`joint_mask_opacity:${maskJointId}`, (prev) => ({
                                 ...prev,
@@ -1097,6 +1109,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                             max="10"
                             step="0.1"
                             value={mask.stretchX}
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onMouseDownCapture={(e) => e.stopPropagation()}
                             onChange={(e) =>
                               setStateWithHistory(`joint_mask_stretch_x:${maskJointId}`, (prev) => ({
                                 ...prev,
@@ -1124,6 +1138,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                             max="10"
                             step="0.1"
                             value={mask.stretchY}
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onMouseDownCapture={(e) => e.stopPropagation()}
                             onChange={(e) =>
                               setStateWithHistory(`joint_mask_stretch_y:${maskJointId}`, (prev) => ({
                                 ...prev,
@@ -1152,6 +1168,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                             max="45"
                             step="1"
                             value={mask.skewX}
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onMouseDownCapture={(e) => e.stopPropagation()}
                             onChange={(e) =>
                               setStateWithHistory(`joint_mask_skew_x:${maskJointId}`, (prev) => ({
                                 ...prev,
@@ -1179,6 +1197,8 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                             max="45"
                             step="1"
                             value={mask.skewY}
+                            onPointerDownCapture={(e) => e.stopPropagation()}
+                            onMouseDownCapture={(e) => e.stopPropagation()}
                             onChange={(e) =>
                               setStateWithHistory(`joint_mask_skew_y:${maskJointId}`, (prev) => ({
                                 ...prev,

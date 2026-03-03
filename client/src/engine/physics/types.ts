@@ -17,6 +17,23 @@ export type PinConstraint = {
   compliance: number; // 0 = hard pin
 };
 
+export type AxisSpringConstraint = {
+  kind: 'axisSpring';
+  id: string;
+  axis: 'x' | 'y';
+  target: number;
+  compliance: number; // 0 = hard
+};
+
+export type AxisLimitConstraint = {
+  kind: 'axisLimit';
+  id: string;
+  axis: 'x' | 'y';
+  min?: number;
+  max?: number;
+  compliance: number; // 0 = hard
+};
+
 export type HingeLimitConstraint = {
   kind: 'hingeLimit';
   a: string; // parent segment start
@@ -39,6 +56,8 @@ export type HingeSoftConstraint = {
 export type XpbdConstraint =
   | DistanceConstraint
   | PinConstraint
+  | AxisSpringConstraint
+  | AxisLimitConstraint
   | HingeLimitConstraint
   | HingeSoftConstraint;
 
@@ -49,4 +68,3 @@ export type XpbdConfig = {
 };
 
 export type HingeSignMap = Record<string, number>;
-

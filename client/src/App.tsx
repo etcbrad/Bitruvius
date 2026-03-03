@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Slider } from "@/components/ui/slider";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { SystemGrid } from "@/components/SystemGrid";
-import JSZip from 'jszip';
 import { 
   Activity, 
   RotateCcw, 
@@ -68,754 +68,46 @@ import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import type { TransitionIssue } from '@/lib/transitionIssues';
-
-const LOCAL_STORAGE_KEY = 'bitruvius_state';
-const IMAGE_CACHE_KEY = 'bitruvius_image_cache';
-const BACKGROUND_COLOR_KEY = 'bitruvius_background_color';
-const POSE_TRACE_KEY = 'bitruvius_pose_trace_enabled';
-const CONTROL_SETTINGS_KEY = 'bitruvius_control_settings_v1';
-const BUILD_ID = 'Bitruvius';
-const DND_WIDGET_MIME = 'text/bitruvius-widget';
-// Temporarily disable widget drag/pop-out until the DnD flow is fixed.
-const WIDGET_DND_ENABLED = false;
-
-const BONE_PALETTE = {
-  violet: '#2b0057',
-  magenta: '#ff2bbd',
-} as const;
-
-type ControlSettingsGroup = 'fk' | 'ik';
-type ControlSettingsSnapshot = Pick<SkeletonState, 'bendEnabled' | 'stretchEnabled' | 'leadEnabled' | 'hardStop' | 'snappiness'>;
-type ControlSettingsCache = Record<ControlSettingsGroup, ControlSettingsSnapshot>;
-
-const controlGroupForMode = (mode: ControlMode): ControlSettingsGroup => (mode === 'Cardboard' ? 'fk' : 'ik');
-
-const snapshotControlSettings = (s: SkeletonState): ControlSettingsSnapshot => ({
-  bendEnabled: Boolean(s.bendEnabled),
-  stretchEnabled: Boolean(s.stretchEnabled),
-  leadEnabled: Boolean(s.leadEnabled),
-  hardStop: Boolean(s.hardStop),
-  snappiness: Number.isFinite(s.snappiness) ? clamp(s.snappiness, 0.05, 1.0) : 1.0,
-});
-
-const coerceControlSettingsSnapshot = (raw: any, fallback: ControlSettingsSnapshot): ControlSettingsSnapshot => ({
-  bendEnabled: typeof raw?.bendEnabled === 'boolean' ? raw.bendEnabled : fallback.bendEnabled,
-  stretchEnabled: typeof raw?.stretchEnabled === 'boolean' ? raw.stretchEnabled : fallback.stretchEnabled,
-  leadEnabled: typeof raw?.leadEnabled === 'boolean' ? raw.leadEnabled : fallback.leadEnabled,
-  hardStop: typeof raw?.hardStop === 'boolean' ? raw.hardStop : fallback.hardStop,
-  snappiness: Number.isFinite(raw?.snappiness) ? clamp(raw.snappiness, 0.05, 1.0) : fallback.snappiness,
-});
-
-const loadControlSettingsCache = (fallback: ControlSettingsSnapshot): ControlSettingsCache => {
-  try {
-    const txt = localStorage.getItem(CONTROL_SETTINGS_KEY);
-    if (!txt) return { fk: fallback, ik: fallback };
-    const parsed = JSON.parse(txt);
-    return {
-      fk: coerceControlSettingsSnapshot(parsed?.fk, fallback),
-      ik: coerceControlSettingsSnapshot(parsed?.ik, fallback),
-    };
-  } catch {
-    return { fk: fallback, ik: fallback };
-  }
-};
-
-const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
-  const h = hex.trim().replace(/^#/, '');
-  if (h.length !== 6) return null;
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  if (![r, g, b].every((n) => Number.isFinite(n))) return null;
-  return { r, g, b };
-};
-
-const rgbToHex = (r: number, g: number, b: number): string => {
-  const to = (n: number) => clamp(Math.round(n), 0, 255).toString(16).padStart(2, '0');
-  return `#${to(r)}${to(g)}${to(b)}`;
-};
-
-const mixHex = (a: string, b: string, t: number): string => {
-  const ra = hexToRgb(a);
-  const rb = hexToRgb(b);
-  if (!ra || !rb) return a;
-  const tt = clamp(t, 0, 1);
-  return rgbToHex(
-    lerp(ra.r, rb.r, tt),
-    lerp(ra.g, rb.g, tt),
-    lerp(ra.b, rb.b, tt),
-  );
-};
-
-const applyLightness = (hex: string, lightness: number): string => {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return hex;
-  const l = clamp(lightness, -1, 1);
-  const target = l >= 0 ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 };
-  const t = Math.abs(l);
-  return rgbToHex(
-    lerp(rgb.r, target.r, t),
-    lerp(rgb.g, target.g, t),
-    lerp(rgb.b, target.b, t),
-  );
-};
-
-const rgbCss = (hex: string, alpha = 1): string => {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return hex;
-  const a = clamp(alpha, 0, 1);
-  return `rgb(${rgb.r} ${rgb.g} ${rgb.b} / ${a})`;
-};
-
-const getBoneHex = (boneStyle: SkeletonState['boneStyle'] | null | undefined): string => {
-  const hueT = clamp(boneStyle?.hueT ?? 0, 0, 1);
-  const lightness = clamp(boneStyle?.lightness ?? 0, -1, 1);
-  return applyLightness(mixHex(BONE_PALETTE.violet, BONE_PALETTE.magenta, hueT), lightness);
-};
-
-const collectSubtreeJointIds = (rootId: string, joints: Record<string, Joint>): string[] => {
-  if (!rootId || !joints[rootId]) return [];
-
-  const childrenByParent: Record<string, string[]> = {};
-  for (const [id, j] of Object.entries(joints)) {
-    if (!j?.parent) continue;
-    (childrenByParent[j.parent] ??= []).push(id);
-  }
-
-  const out: string[] = [];
-  const q: string[] = [rootId];
-  const seen = new Set<string>();
-  while (q.length && out.length < 256) {
-    const id = q.shift()!;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    if (!joints[id]) continue;
-    out.push(id);
-    const kids = childrenByParent[id];
-    if (kids) q.push(...kids);
-  }
-  return out;
-};
-
-const applyRigidTransformToJointSubset = (args: {
-  joints: Record<string, Joint>;
-  baseJoints: Record<string, Joint>;
-  subsetIds: string[];
-  pivotWorld: Point;
-  rotateRad: number;
-  translateWorld: Point;
-}): Record<string, Joint> => {
-  const { joints, baseJoints, subsetIds, pivotWorld, rotateRad, translateWorld } = args;
-  if (!subsetIds.length) return joints;
-
-  const c = Math.cos(rotateRad);
-  const s = Math.sin(rotateRad);
-
-  const world: Record<string, Point> = {};
-  for (const id of Object.keys(joints)) {
-    world[id] = getWorldPosition(id, joints, baseJoints, 'preview');
-  }
-
-  const subset = new Set(subsetIds);
-  const transformedWorld: Record<string, Point> = {};
-  for (const id of subsetIds) {
-    const p = world[id];
-    if (!p) continue;
-    const rx = (p.x - pivotWorld.x) * c - (p.y - pivotWorld.y) * s;
-    const ry = (p.x - pivotWorld.x) * s + (p.y - pivotWorld.y) * c;
-    transformedWorld[id] = {
-      x: pivotWorld.x + rx + translateWorld.x,
-      y: pivotWorld.y + ry + translateWorld.y,
-    };
-  }
-
-  const nextJoints: Record<string, Joint> = { ...joints };
-  for (const id of subsetIds) {
-    const j = nextJoints[id] ?? baseJoints[id];
-    const p = transformedWorld[id];
-    if (!j || !p) continue;
-
-    if (!j.parent) {
-      const off = { x: p.x, y: p.y };
-      nextJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
-      continue;
-    }
-
-    const parentWorld = subset.has(j.parent) ? transformedWorld[j.parent] : world[j.parent];
-    if (!parentWorld) continue;
-    const off = { x: p.x - parentWorld.x, y: p.y - parentWorld.y };
-    nextJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
-  }
-
-  return nextJoints;
-};
-
-type ReferenceVideoMeta = { duration: number; width: number; height: number };
-type ReferenceSequenceKind = 'gif' | 'zip';
-type ReferenceSequenceData = {
-  id: string;
-  kind: ReferenceSequenceKind;
-  frames: any[];
-  width: number;
-  height: number;
-  fps: number;
-};
-
-const fitModeToObjectFit = (fitMode: string): React.CSSProperties['objectFit'] => {
-  if (fitMode === 'cover') return 'cover';
-  if (fitMode === 'fill') return 'fill';
-  if (fitMode === 'none') return 'none';
-  return 'contain';
-};
-
-const drawWithFitMode = (
-  ctx: CanvasRenderingContext2D,
-  source: any,
-  destW: number,
-  destH: number,
-  fitMode: string,
-) => {
-  const sw = Number(source?.videoWidth || source?.naturalWidth || source?.displayWidth || source?.codedWidth || source?.width || 0) || 0;
-  const sh = Number(source?.videoHeight || source?.naturalHeight || source?.displayHeight || source?.codedHeight || source?.height || 0) || 0;
-  if (!sw || !sh || !destW || !destH) return;
-
-  ctx.clearRect(0, 0, destW, destH);
-
-  if (fitMode === 'fill') {
-    ctx.drawImage(source, 0, 0, destW, destH);
-    return;
-  }
-
-  if (fitMode === 'none') {
-    ctx.drawImage(source, 0, 0, sw, sh);
-    return;
-  }
-
-  const scale = fitMode === 'cover' ? Math.max(destW / sw, destH / sh) : Math.min(destW / sw, destH / sh);
-  const dw = sw * scale;
-  const dh = sh * scale;
-  const dx = (destW - dw) / 2;
-  const dy = (destH - dh) / 2;
-  ctx.drawImage(source, dx, dy, dw, dh);
-};
-
-const setVideoTimeSafe = (video: HTMLVideoElement, desiredTime: number) => {
-  if (!Number.isFinite(desiredTime)) return;
-  const duration = Number.isFinite(video.duration) ? video.duration : null;
-  const safeTime = duration !== null ? clamp(desiredTime, 0, Math.max(0, duration - 0.001)) : Math.max(0, desiredTime);
-  try {
-    if (Math.abs((video.currentTime || 0) - safeTime) > 1 / 240) {
-      video.currentTime = safeTime;
-    }
-  } catch {
-    // Seeking can fail if metadata isn't loaded yet; ignore and retry on next effect/event.
-  }
-};
-
-const SyncedReferenceVideo = React.forwardRef<
-  HTMLVideoElement,
-  {
-    src: string;
-    desiredTime: number;
-    playing: boolean;
-    playbackRate: number;
-    objectFit: React.CSSProperties['objectFit'];
-    onMeta?: (meta: ReferenceVideoMeta) => void;
-  }
->(({ src, desiredTime, playing, playbackRate, objectFit, onMeta }, ref) => {
-  const innerRef = useRef<HTMLVideoElement | null>(null);
-  const lastDesiredRef = useRef<number>(Number.NaN);
-
-  React.useImperativeHandle(ref, () => innerRef.current as HTMLVideoElement);
-
-  useEffect(() => {
-    const video = innerRef.current;
-    if (!video) return;
-    video.playbackRate = Number.isFinite(playbackRate) ? playbackRate : 1;
-  }, [playbackRate]);
-
-  useEffect(() => {
-    const video = innerRef.current;
-    if (!video) return;
-
-    if (!playing) {
-      video.pause();
-      setVideoTimeSafe(video, desiredTime);
-      lastDesiredRef.current = desiredTime;
-      return;
-    }
-
-    // When entering play, align start time then allow natural playback.
-    const drift = Math.abs((video.currentTime || 0) - desiredTime);
-    const jumped = !Number.isFinite(lastDesiredRef.current) || Math.abs(lastDesiredRef.current - desiredTime) > 0.25;
-    if (jumped || drift > 0.15) setVideoTimeSafe(video, desiredTime);
-    lastDesiredRef.current = desiredTime;
-
-    const p = video.play();
-    if (p && typeof (p as Promise<void>).catch === 'function') {
-      (p as Promise<void>).catch(() => {
-        // Autoplay policies / decode hiccups; ignore.
-      });
-    }
-  }, [desiredTime, playing]);
-
-  return (
-    <video
-      ref={innerRef}
-      src={src}
-      muted
-      playsInline
-      preload="auto"
-      onLoadedMetadata={(e) => {
-        const video = e.currentTarget;
-        onMeta?.({
-          duration: Number.isFinite(video.duration) ? video.duration : 0,
-          width: video.videoWidth || 0,
-          height: video.videoHeight || 0,
-        });
-        setVideoTimeSafe(video, desiredTime);
-      }}
-      style={{
-        width: '100%',
-        height: '100%',
-        objectFit,
-      }}
-    />
-	  );
-	});
-
-const SyncedReferenceSequenceCanvas = ({
-  sequence,
-  desiredTime,
-  playing,
-  fitMode,
-}: {
-  sequence: ReferenceSequenceData | null;
-  desiredTime: number;
-  playing: boolean;
-  fitMode: string;
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const rafRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    if (!sequence || !sequence.frames.length) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
-
-    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-    const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
-    const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-
-    const frameCount = sequence.frames.length;
-    const fps = Math.max(1, Math.floor(sequence.fps || 24));
-    const t = Math.max(0, desiredTime);
-    const rawIndex = Math.floor(t * fps);
-    const frameIndex = sequence.kind === 'gif' ? ((rawIndex % frameCount) + frameCount) % frameCount : clamp(rawIndex, 0, frameCount - 1);
-    const frame = sequence.frames[frameIndex];
-    if (!frame) return;
-
-    drawWithFitMode(ctx, frame, canvas.width, canvas.height, fitMode);
-
-    if (playing) {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(() => {
-        // Trigger a re-draw during play so changes in desiredTime are reflected smoothly.
-        // The actual desiredTime is driven by React state; this is a cheap fallback.
-        drawWithFitMode(ctx, frame, canvas.width, canvas.height, fitMode);
-      });
-    }
-  }, [desiredTime, fitMode, playing, sequence]);
-
-  return <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />;
-};
-
-// Image cache utilities for persisting uploads
-const convertBlobUrlToBase64 = async (blobUrl: string): Promise<string | null> => {
-  try {
-    const response = await fetch(blobUrl);
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (error) {
-    console.warn('Failed to convert blob URL to base64:', error);
-    return null;
-  }
-};
-
-const cacheImageFromUrl = async (url: string, cacheKey: string): Promise<void> => {
-  if (!url || !url.startsWith('blob:')) return;
-  
-  try {
-    const base64 = await convertBlobUrlToBase64(url);
-    if (base64) {
-      const cache = JSON.parse(localStorage.getItem(IMAGE_CACHE_KEY) || '{}');
-      cache[cacheKey] = base64;
-      localStorage.setItem(IMAGE_CACHE_KEY, JSON.stringify(cache));
-    }
-  } catch (error) {
-    console.warn('Failed to cache image:', error);
-  }
-};
-
-const restoreImageFromCache = (cacheKey: string): string | null => {
-  try {
-    const cache = JSON.parse(localStorage.getItem(IMAGE_CACHE_KEY) || '{}');
-    const base64 = cache[cacheKey];
-    return base64 || null;
-  } catch (error) {
-    console.warn('Failed to restore image from cache:', error);
-    return null;
-  }
-};
-
-// Clean up old cache entries to prevent localStorage bloat
-const cleanupImageCache = () => {
-  try {
-    const cache = JSON.parse(localStorage.getItem(IMAGE_CACHE_KEY) || '{}');
-    const currentCacheKeys = new Set([
-      'background',
-      'foreground', 
-      'head_mask',
-      ...Object.keys(INITIAL_JOINTS).map(id => `joint_mask_${id}`)
-    ]);
-    
-    // Remove entries that are no longer needed
-    let hasChanges = false;
-    for (const key of Object.keys(cache)) {
-      if (!currentCacheKeys.has(key)) {
-        delete cache[key];
-        hasChanges = true;
-      }
-    }
-    
-    if (hasChanges) {
-      localStorage.setItem(IMAGE_CACHE_KEY, JSON.stringify(cache));
-    }
-  } catch (error) {
-    console.warn('Failed to cleanup image cache:', error);
-  }
-};
-
-type SidebarTab = 'character' | 'physics' | 'animation' | 'global';
-
-type WidgetId =
-  | 'tools'
-  | 'edit'
-  | 'joint_hierarchy'
-  | 'joint_masks'
-  | 'cutout_relationships'
-  | 'bone_inspector'
-  | 'rig_controls'
-  | 'responsiveness'
-  | 'atomic_units'
-  | 'animation'
-  | 'procgen'
-  | 'camera'
-  | 'look'
-  | 'views'
-  | 'pixel_fonts'
-  | 'background'
-  | 'scene'
-  | 'project'
-  | 'export'
-  | 'pose_capture'
-  | 'console';
-
-type WidgetMode = 'docked' | 'floating';
-
-type FloatingWidget = {
-  id: WidgetId;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  minimized: boolean;
-};
-
-const isWidgetId = (value: unknown): value is WidgetId => {
-  return (
-    value === 'tools' ||
-    value === 'edit' ||
-    value === 'joint_hierarchy' ||
-    value === 'joint_masks' ||
-    value === 'cutout_relationships' ||
-    value === 'bone_inspector' ||
-    value === 'rig_controls' ||
-    value === 'responsiveness' ||
-    value === 'atomic_units' ||
-    value === 'animation' ||
-    value === 'procgen' ||
-    value === 'camera' ||
-    value === 'look' ||
-    value === 'views' ||
-    value === 'pixel_fonts' ||
-    value === 'background' ||
-    value === 'scene' ||
-    value === 'project' ||
-    value === 'export' ||
-    value === 'pose_capture' ||
-    value === 'console'
-  );
-};
-
-const WIDGETS: Record<
-  WidgetId,
-  {
-    title: string;
-    tabGroup: SidebarTab | null;
-    isGlobal: boolean;
-    docs: React.ReactNode;
-    defaultFloatSize: { w: number; h: number };
-    minFloatSize: { w: number; h: number };
-  }
-> = {
-  tools: {
-    title: 'Tools',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: (
-      <div className="space-y-2">
-        <div className="text-[11px] text-[#ddd]">
-          Widgets live in the side console by default to keep the canvas clean.
-        </div>
-	        <ul className="list-disc pl-4 text-[11px] text-[#bbb] space-y-1">
-	          <li>Click a widget to activate it here.</li>
-	          {WIDGET_DND_ENABLED ? (
-	            <>
-	              <li>Drag a widget onto the canvas to pop it out.</li>
-	              <li>Drag a widget back onto the sidebar to dock it.</li>
-	            </>
-	          ) : (
-	            <li>Pop-out dragging is temporarily disabled (widgets stay docked).</li>
-	          )}
-	        </ul>
-      </div>
-    ),
-    defaultFloatSize: { w: 360, h: 240 },
-    minFloatSize: { w: 220, h: 140 },
-  },
-  edit: {
-    title: 'Edit',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Undo/redo and editor utilities.</div>,
-    defaultFloatSize: { w: 360, h: 190 },
-    minFloatSize: { w: 220, h: 140 },
-  },
-  joint_hierarchy: {
-    title: 'Joint Hierarchy',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Quick navigation through joints and bones.</div>,
-    defaultFloatSize: { w: 360, h: 540 },
-    minFloatSize: { w: 240, h: 200 },
-  },
-  joint_masks: {
-    title: 'Masks',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Edit cutout masks and masking behavior.</div>,
-    defaultFloatSize: { w: 360, h: 420 },
-    minFloatSize: { w: 240, h: 200 },
-  },
-  cutout_relationships: {
-    title: 'Cutout Relationships',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Visualize and debug cutout overlaps and ordering.</div>,
-    defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  bone_inspector: {
-    title: 'Rig Inspector',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Inspect bones, joints, and stretch behavior.</div>,
-    defaultFloatSize: { w: 360, h: 300 },
-    minFloatSize: { w: 240, h: 180 },
-  },
-  rig_controls: {
-    title: 'Rig Controls',
-    tabGroup: 'physics',
-    isGlobal: false,
-    docs: (
-      <div className="space-y-2 text-[11px] text-[#bbb]">
-        <div>
-          Use <span className="font-bold text-white">Rigidity</span> to choose how stiff the rig behaves overall.
-        </div>
-        <div>
-          <span className="font-bold text-white">Control mode</span> changes how dragging works (rigid vs elastic vs pinned posing).
-        </div>
-      </div>
-    ),
-    defaultFloatSize: { w: 420, h: 520 },
-    minFloatSize: { w: 260, h: 220 },
-  },
-  responsiveness: {
-    title: 'Responsiveness',
-    tabGroup: 'physics',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Fine-tune smoothing, damping, and feel.</div>,
-    defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  atomic_units: {
-    title: 'Advanced Controls',
-    tabGroup: 'physics',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Low-level rig settings and debugging utilities.</div>,
-    defaultFloatSize: { w: 420, h: 560 },
-    minFloatSize: { w: 280, h: 220 },
-  },
-  animation: {
-    title: 'Animation',
-    tabGroup: 'animation',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Timeline and keyframe tools.</div>,
-    defaultFloatSize: { w: 420, h: 340 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  procgen: {
-    title: 'Auto Motion',
-    tabGroup: 'animation',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Procedural motion and loop baking.</div>,
-    defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  camera: {
-    title: 'Camera',
-    tabGroup: 'animation',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Viewport and export framing controls.</div>,
-    defaultFloatSize: { w: 320, h: 220 },
-    minFloatSize: { w: 220, h: 160 },
-  },
-  look: {
-    title: 'Look',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Display style and look presets.</div>,
-    defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  views: {
-    title: 'Views',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Save and switch camera / view presets.</div>,
-    defaultFloatSize: { w: 420, h: 520 },
-    minFloatSize: { w: 260, h: 220 },
-  },
-  pixel_fonts: {
-    title: 'Pixel Fonts',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Choose the UI title font style.</div>,
-    defaultFloatSize: { w: 420, h: 260 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  background: {
-    title: 'Background',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Canvas background color and defaults.</div>,
-    defaultFloatSize: { w: 420, h: 320 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  scene: {
-    title: 'Scene',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Reference layers, titles, and scene overlays.</div>,
-    defaultFloatSize: { w: 520, h: 640 },
-    minFloatSize: { w: 300, h: 240 },
-  },
-  project: {
-    title: 'Project',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Save and open project files.</div>,
-    defaultFloatSize: { w: 420, h: 260 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  export: {
-    title: 'Export',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Export SVG/PNG/WebM outputs.</div>,
-    defaultFloatSize: { w: 420, h: 280 },
-    minFloatSize: { w: 260, h: 200 },
-  },
-  pose_capture: {
-    title: 'Pose Capture',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Capture pose snapshots and bake recordings.</div>,
-    defaultFloatSize: { w: 520, h: 560 },
-    minFloatSize: { w: 300, h: 240 },
-  },
-  console: {
-    title: 'Console',
-    tabGroup: 'global',
-    isGlobal: true,
-    docs: <div className="text-[11px] text-[#bbb]">Engine and workflow logs.</div>,
-    defaultFloatSize: { w: 520, h: 340 },
-    minFloatSize: { w: 280, h: 200 },
-  },
-};
-
-const WIDGET_GLOBAL_ORDER: WidgetId[] = [
-  'look',
-  'views',
-  'pixel_fonts',
-  'background',
-  'scene',
-  'project',
-  'export',
-  'pose_capture',
-  'console',
-];
-
-const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
-  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'cutout_relationships', 'bone_inspector'],
-  physics: ['rig_controls', 'responsiveness', 'atomic_units'],
-  animation: ['animation', 'procgen', 'camera'],
-  global: WIDGET_GLOBAL_ORDER,
-};
-
-type RigTrack = 'body' | 'arms';
-type RigSide = 'front' | 'back'; // front=right, back=left
-type RigStage = 'joint' | 'bone' | 'mask';
-
-type RigFocus = {
-  track: RigTrack;
-  index: number;
-  side: RigSide;
-  stage: RigStage;
-};
-
-const canonicalConnKey = (a: string, b: string): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
+import {
+  BACKGROUND_COLOR_KEY,
+  BONE_PALETTE,
+  BUILD_ID,
+  CONTROL_SETTINGS_KEY,
+  DND_WIDGET_MIME,
+  LOCAL_STORAGE_KEY,
+  POSE_TRACE_KEY,
+  WIDGET_DND_ENABLED,
+} from './app/constants';
+import { applyLightness, getBoneHex, rgbCss } from './app/color';
+import {
+  controlGroupForMode,
+  loadControlSettingsCache,
+  snapshotControlSettings,
+  type ControlSettingsCache,
+} from './app/controlSettings';
+import { applyRigidTransformToJointSubset, collectSubtreeJointIds } from './app/jointTransforms';
+import { cacheImageFromUrl, cleanupImageCache } from './app/imageCache';
+import {
+  fitModeToObjectFit,
+  SyncedReferenceSequenceCanvas,
+  SyncedReferenceVideo,
+  type ReferenceSequenceData,
+  type ReferenceVideoMeta,
+} from './app/referenceMedia';
+import {
+  isWidgetId,
+  WIDGETS,
+  WIDGET_TAB_ORDER,
+  type FloatingWidget,
+  type SidebarTab,
+  type WidgetId,
+} from './app/widgets/registry';
+import { canonicalConnKey } from './app/connectionKey';
+import type { RigFocus, RigSide, RigStage } from './app/rigFocus';
+import {
+  disposeReferenceSequenceData,
+  loadReferenceSequenceFromFile as loadReferenceSequenceFromFileImpl,
+} from './app/referenceSequences';
 
 type ConsoleLogLevel = 'info' | 'warning' | 'error' | 'success';
 
@@ -855,11 +147,27 @@ export default function App() {
   const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
 
   const [state, setState] = useState<SkeletonState>(() => {
-    // Clear any saved state to start with clean T-pose
     try {
-      localStorage.removeItem(LOCAL_STORAGE_KEY);
-    } catch (error) {
-      // Ignore storage errors
+      const url = new URL(window.location.href);
+      const forceReset = url.searchParams.get('reset') === '1';
+
+      if (forceReset) {
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
+        return makeDefaultState();
+      }
+
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (saved) {
+        const parsed = deserializeEngineState(saved);
+        if (parsed.ok !== false) {
+          const sanitized = sanitizeStateWithReport(parsed.rawState);
+          const reconciled = reconcileSkeletonState(sanitized.state);
+          initialSanitizeIssuesRef.current = [...sanitized.issues, ...reconciled.issues];
+          return reconciled.state;
+        }
+      }
+    } catch {
+      // Ignore storage/parse errors and fall back to defaults.
     }
     return makeDefaultState();
   });
@@ -963,6 +271,10 @@ export default function App() {
   const hingeSignsRef = useRef<Record<string, number>>({});
   const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
   const physicsHandshakeRef = useRef<{ key: string; blend: number }>({ key: '', blend: 1 });
+  const headDragMomentumRef = useRef<{ dx: number; dy: number } | null>(null);
+  const balanceDragTargetSmootherRef = useRef<
+    Record<string, { tMs: number; x: number; y: number }>
+  >({});
   
   // Rubberband mode state
   const [longPressTimer, setLongPressTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
@@ -1013,8 +325,16 @@ export default function App() {
   const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
+  const sidebarWidgetDockRef = useRef<HTMLDivElement | null>(null);
+  const [widgetDockMinimized, setWidgetDockMinimized] = useState(false);
+  const [widgetDockHeightPx, setWidgetDockHeightPx] = useState(220);
+  const widgetDockResizeRef = useRef<null | { startClientY: number; startHeight: number }>(null);
+  const [rootControlsMinimized, setRootControlsMinimized] = useState(false);
+  const [rootMenuMinimized, setRootMenuMinimized] = useState(false);
   const [canvasRotationDeg, setCanvasRotationDeg] = useState(0);
   const canvasRotationDegLiveRef = useRef(0);
+  const rootPickerInputRef = useRef<HTMLInputElement | null>(null);
+  const rootPickerIds = useMemo(() => Object.keys(INITIAL_JOINTS).filter((id) => id !== 'root').sort(), []);
   const [rigidRootDragEnabled, setRigidRootDragEnabled] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -1022,6 +342,7 @@ export default function App() {
   const cursorReticleRef = useRef<HTMLDivElement | null>(null);
   const cursorLabelRef = useRef<HTMLDivElement | null>(null);
   const cursorTargetRef = useRef<HTMLDivElement | null>(null);
+  const coordHudRef = useRef<HTMLDivElement | null>(null);
   const precisionAnchorRef = useRef<null | { raw: Point; applied: Point }>(null);
   const lastEffectiveMouseWorldRef = useRef<Point | null>(null);
   const importStateInputRef = useRef<HTMLInputElement>(null);
@@ -1255,6 +576,41 @@ export default function App() {
     }
   }, [sidebarTab, activeWidgetId]);
 
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const drag = widgetDockResizeRef.current;
+      if (!drag) return;
+      const host = sidebarWidgetDockRef.current;
+      if (!host) return;
+      const available = host.getBoundingClientRect().height;
+      const minWindow = available / 3;
+      const minDock = widgetDockMinimized ? 44 : 140;
+      const maxDock = Math.max(minDock, available - minWindow);
+      const delta = drag.startClientY - e.clientY; // drag up => increase dock height
+      const next = clamp(drag.startHeight + delta, minDock, maxDock);
+      setWidgetDockHeightPx(next);
+    };
+    const onUp = () => {
+      widgetDockResizeRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [widgetDockMinimized]);
+
+  const beginWidgetDockResize = useCallback(
+    (e: React.MouseEvent) => {
+      if (widgetDockMinimized) return;
+      e.preventDefault();
+      e.stopPropagation();
+      widgetDockResizeRef.current = { startClientY: e.clientY, startHeight: widgetDockHeightPx };
+    },
+    [widgetDockHeightPx, widgetDockMinimized],
+  );
+
   const addConsoleLog = useCallback((level: ConsoleLogLevel, message: string, data?: unknown) => {
     const id = Math.random().toString(36).slice(2, 10);
     setConsoleLogs((prev) => [
@@ -1271,15 +627,7 @@ export default function App() {
 
   const filteredConsoleLogs = consoleLogs.filter((log) => activeLogLevels.has(log.level));
 
-  const disposeSequenceData = useCallback((seq: ReferenceSequenceData) => {
-    for (const frame of seq.frames) {
-      try {
-        if (frame && typeof frame.close === 'function') frame.close();
-      } catch {
-        // Ignore.
-      }
-    }
-  }, []);
+  const disposeSequenceData = useCallback(disposeReferenceSequenceData, []);
 
   const dropReferenceSequence = useCallback(
     (id: string) => {
@@ -1291,113 +639,13 @@ export default function App() {
     [disposeSequenceData],
   );
 
-  const loadGifSequence = useCallback(
-    async (file: File, fps: number): Promise<ReferenceSequenceData> => {
-      const id = `gif_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const ImageDecoderCtor = (globalThis as any).ImageDecoder as any;
-      if (!ImageDecoderCtor) {
-        throw new Error('Animated GIF decoding requires ImageDecoder (Chromium).');
-      }
-
-      const data = await file.arrayBuffer();
-      const decoder = new ImageDecoderCtor({ data, type: file.type || 'image/gif' });
-      if (decoder.tracks?.ready) await decoder.tracks.ready;
-
-      const frameCountRaw = decoder.tracks?.selectedTrack?.frameCount ?? 1;
-      const frameCount = clamp(Math.floor(frameCountRaw), 1, 5000);
-      const frames: any[] = [];
-
-      for (let i = 0; i < frameCount; i += 1) {
-        const result = await decoder.decode({ frameIndex: i });
-        const image = result?.image;
-        if (image) frames.push(image);
-      }
-
-      const first = frames[0];
-      const width = Number(first?.displayWidth || first?.codedWidth || first?.width || 0) || 0;
-      const height = Number(first?.displayHeight || first?.codedHeight || first?.height || 0) || 0;
-
-      return {
-        id,
-        kind: 'gif',
-        frames,
-        width,
-        height,
-        fps: clamp(Math.floor(fps), 1, 60),
-      };
-    },
-    [],
-  );
-
-  const loadZipSequence = useCallback(
-    async (file: File, fps: number): Promise<ReferenceSequenceData> => {
-      const id = `zip_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const zip = await JSZip.loadAsync(file);
-
-      const files = Object.values(zip.files)
-        .filter((f) => !f.dir)
-        .map((f) => f.name)
-        .filter((name) => {
-          const lower = name.toLowerCase();
-          return (
-            lower.endsWith('.png') ||
-            lower.endsWith('.jpg') ||
-            lower.endsWith('.jpeg') ||
-            lower.endsWith('.webp') ||
-            lower.endsWith('.gif')
-          );
-        })
-        .sort((a, b) => a.localeCompare(b));
-
-      if (files.length === 0) throw new Error('ZIP contains no supported images (.png/.jpg/.webp/.gif).');
-
-      const maxFrames = 10_000;
-      if (files.length > maxFrames) {
-        addConsoleLog('warning', `ZIP has ${files.length} frames; only loading first ${maxFrames}.`);
-      }
-
-      const selected = files.slice(0, maxFrames);
-      const frames: any[] = [];
-      let width = 0;
-      let height = 0;
-
-      for (let i = 0; i < selected.length; i += 1) {
-        const name = selected[i]!;
-        const entry = zip.file(name);
-        if (!entry) continue;
-        const blob = await entry.async('blob');
-        const bitmap = await createImageBitmap(blob);
-        if (!width || !height) {
-          width = bitmap.width || 0;
-          height = bitmap.height || 0;
-        }
-        frames.push(bitmap);
-      }
-
-      return {
-        id,
-        kind: 'zip',
-        frames,
-        width,
-        height,
-        fps: clamp(Math.floor(fps), 1, 60),
-      };
-    },
-    [addConsoleLog],
-  );
-
   const loadReferenceSequenceFromFile = useCallback(
     async (file: File, fps: number): Promise<ReferenceSequenceData> => {
-      const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
-      const isZip =
-        file.type === 'application/zip' ||
-        file.type === 'application/x-zip-compressed' ||
-        file.name.toLowerCase().endsWith('.zip');
-      if (isGif) return loadGifSequence(file, fps);
-      if (isZip) return loadZipSequence(file, fps);
-      throw new Error('Unsupported sequence type (expected .gif or .zip).');
+      return loadReferenceSequenceFromFileImpl(file, fps, {
+        onWarning: (message) => addConsoleLog('warning', message),
+      });
     },
-    [loadGifSequence, loadZipSequence],
+    [addConsoleLog],
   );
 
   const snapToGrid = useCallback(
@@ -1428,7 +676,11 @@ export default function App() {
 
       const isFloating = floatingWidgets.some((w) => w.id === id);
       setActiveWidgetId(id);
+      setWidgetDockMinimized(false);
+      setRootMenuMinimized(true);
+      setRootControlsMinimized(true);
       if (isFloating) {
+        focusFloatingWidget(id);
         setFloatingWidgets((prev) => {
           const idx = prev.findIndex((w) => w.id === id);
           if (idx < 0) return prev;
@@ -1441,7 +693,7 @@ export default function App() {
         return;
       }
     },
-    [floatingWidgets],
+    [floatingWidgets, focusFloatingWidget],
   );
 
   const popOutWidget = useCallback(
@@ -1774,6 +1026,34 @@ export default function App() {
     localStorage.setItem(BACKGROUND_COLOR_KEY, backgroundColor);
   }, [backgroundColor]);
 
+  // Autosave core editor state to localStorage (throttled) so the editor resumes where you left off.
+  // Important: do NOT autosave in the per-frame physics loop; only queue autosaves from user-intent transitions.
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autosaveLatestRef = useRef<SkeletonState | null>(null);
+  const queueAutosave = useCallback((next: SkeletonState) => {
+    autosaveLatestRef.current = next;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      const latest = autosaveLatestRef.current;
+      autosaveLatestRef.current = null;
+      if (!latest) return;
+      try {
+        const json = serializeEngineState(latest, { pretty: false });
+        localStorage.setItem(LOCAL_STORAGE_KEY, json);
+      } catch {
+        // ignore
+      }
+    }, 350);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+      autosaveLatestRef.current = null;
+    };
+  }, []);
+
   // Handle Nosferatu mode styling - only set background if user hasn't changed it
   useEffect(() => {
     if (state.lookMode === 'nosferatu') {
@@ -1795,6 +1075,7 @@ export default function App() {
         if (!Object.is(next, prev)) {
           historyCtrlRef.current.pushUndo(actionId, prev);
         }
+        queueMicrotask(() => queueAutosave(next));
         return next;
       });
     },
@@ -1912,6 +1193,7 @@ export default function App() {
         if (push && !Object.is(next, prev)) {
           historyCtrlRef.current.pushUndo(actionId, prev);
         }
+        queueMicrotask(() => queueAutosave(next));
         return next;
       });
     },
@@ -2056,7 +1338,9 @@ export default function App() {
   const commitHistoryAction = useCallback(() => {
     setState((prev) => {
       const changed = historyCtrlRef.current.commitAction(prev);
-      return changed ? { ...prev } : prev;
+      const next = changed ? { ...prev } : prev;
+      if (changed) queueMicrotask(() => queueAutosave(next));
+      return next;
     });
   }, []);
 
@@ -2890,12 +2174,79 @@ export default function App() {
 	            activePinTargets[dragInput.id] = dragInput.target;
 	          }
 
+            // When dragging the head, keep the collar motion smooth and let shoulders follow with light momentum.
+            // This avoids collar "twitch" from competing shoulder/collar constraints.
+            const extraConstraints = (() => {
+              const d = dragInput;
+              if (!d || (d.id !== 'head' && d.id !== 'neck_base')) {
+                headDragMomentumRef.current = null;
+                return undefined;
+              }
+
+              const alpha = 1 - Math.pow(1 - 0.35, dt * 60); // stable smoothing across FPS
+              const headWorld = getWorldPosition(d.id, jointsForFrame, INITIAL_JOINTS, 'preview');
+              const desiredDelta = { x: d.target.x - headWorld.x, y: d.target.y - headWorld.y };
+              if (!Number.isFinite(desiredDelta.x) || !Number.isFinite(desiredDelta.y)) return undefined;
+
+              const prevMom = headDragMomentumRef.current ?? { dx: 0, dy: 0 };
+              const nextMom = {
+                dx: lerp(prevMom.dx, desiredDelta.x, alpha),
+                dy: lerp(prevMom.dy, desiredDelta.y, alpha),
+              };
+              headDragMomentumRef.current = nextMom;
+
+              const collarWorld = getWorldPosition('collar', jointsForFrame, INITIAL_JOINTS, 'preview');
+              const lShoulderWorld = getWorldPosition('l_shoulder', jointsForFrame, INITIAL_JOINTS, 'preview');
+              const rShoulderWorld = getWorldPosition('r_shoulder', jointsForFrame, INITIAL_JOINTS, 'preview');
+              if (
+                !Number.isFinite(collarWorld.x) ||
+                !Number.isFinite(collarWorld.y) ||
+                !Number.isFinite(lShoulderWorld.x) ||
+                !Number.isFinite(lShoulderWorld.y) ||
+                !Number.isFinite(rShoulderWorld.x) ||
+                !Number.isFinite(rShoulderWorld.y)
+              ) {
+                return undefined;
+              }
+
+              const collarFollow = 0.42;
+              const shoulderFollow = 0.18;
+
+              return [
+                {
+                  kind: 'pin',
+                  id: 'collar',
+                  target: { x: collarWorld.x + nextMom.dx * collarFollow, y: collarWorld.y + nextMom.dy * collarFollow },
+                  compliance: 0.003,
+                },
+                {
+                  kind: 'pin',
+                  id: 'l_shoulder',
+                  target: {
+                    x: lShoulderWorld.x + nextMom.dx * shoulderFollow,
+                    y: lShoulderWorld.y + nextMom.dy * shoulderFollow,
+                  },
+                  compliance: 0.01,
+                },
+                {
+                  kind: 'pin',
+                  id: 'r_shoulder',
+                  target: {
+                    x: rShoulderWorld.x + nextMom.dx * shoulderFollow,
+                    y: rShoulderWorld.y + nextMom.dy * shoulderFollow,
+                  },
+                  compliance: 0.01,
+                },
+              ] as any;
+            })();
+
 	          const result = stepPosePhysics({
 	            joints: jointsForFrame,
 	            activeRoots,
 	            rootTargets: activePinTargets,
 	            drag: dragIsPinned ? null : dragInput,
 	            connectionOverrides: prev.connectionOverrides,
+              extraConstraints,
 	            options: {
 	              dt: isRigidDragMode ? Math.min(dt, 1 / 60) : dt,
 	              iterations: isRigidDragMode ? 28 : 16,
@@ -3379,6 +2730,8 @@ export default function App() {
   const hideCursorHud = () => {
     if (cursorHudRef.current) cursorHudRef.current.style.opacity = '0';
     if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
+    if (cursorLabelRef.current) cursorLabelRef.current.style.opacity = '0';
+    if (coordHudRef.current) coordHudRef.current.style.opacity = '0';
   };
 
   const updateCursorHud = (args: {
@@ -3394,6 +2747,7 @@ export default function App() {
     const reticle = cursorReticleRef.current;
     const label = cursorLabelRef.current;
     const target = cursorTargetRef.current;
+    const coordHud = coordHudRef.current;
     if (!hud || !reticle || !label || !target) return;
 
     const canvasPos = getMouseCanvasPx(args.clientX, args.clientY);
@@ -3422,15 +2776,20 @@ export default function App() {
     reticle.style.setProperty('--cursor-color', color);
     reticle.style.setProperty('--cursor-glow', glow);
 
-    label.style.left = `${canvasPos.x}px`;
-    label.style.top = `${canvasPos.y}px`;
-
-    const rawTxt = `${args.rawWorld.x.toFixed(3)}, ${args.rawWorld.y.toFixed(3)}`;
-    const effTxt = `${args.effectiveWorld.x.toFixed(3)}, ${args.effectiveWorld.y.toFixed(3)}`;
-    const modeParts: string[] = [];
-    if (args.altKey) modeParts.push(`PREC ${PRECISION_DRAG_SCALE}x`);
-    if (args.shiftKey) modeParts.push(`SNAP 1px`);
-    label.textContent = args.showTarget ? `W ${rawTxt}  T ${effTxt}${modeParts.length ? `  ${modeParts.join('  ')}` : ''}` : `W ${rawTxt}${modeParts.length ? `  ${modeParts.join('  ')}` : ''}`;
+    // Coords should not follow the cursor; show them in a fixed HUD near the top.
+    // Keep the old cursor label hidden (it caused visual bloat and obscured the canvas).
+    label.style.opacity = '0';
+    if (coordHud) {
+      const rawTxt = `${args.rawWorld.x.toFixed(3)}, ${args.rawWorld.y.toFixed(3)}`;
+      const effTxt = `${args.effectiveWorld.x.toFixed(3)}, ${args.effectiveWorld.y.toFixed(3)}`;
+      const modeParts: string[] = [];
+      if (args.altKey) modeParts.push(`PREC ${PRECISION_DRAG_SCALE}x`);
+      if (args.shiftKey) modeParts.push(`SNAP 1px`);
+      coordHud.textContent = args.showTarget
+        ? `W ${rawTxt}  T ${effTxt}${modeParts.length ? `  ${modeParts.join('  ')}` : ''}`
+        : `W ${rawTxt}${modeParts.length ? `  ${modeParts.join('  ')}` : ''}`;
+      coordHud.style.opacity = gridOverlayEnabled ? '1' : '0';
+    }
 
     target.style.setProperty('--cursor-color', color);
     target.style.setProperty('--cursor-glow', glow);
@@ -3449,11 +2808,14 @@ export default function App() {
     }
   };
 
-  const handleCanvasRootRotateMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    setTimelinePlaying(false);
-    setSelectedJointId(null);
+	  const isRootRotateGesture = (e: React.MouseEvent) => e.button === 0 && e.shiftKey;
+
+	  const handleCanvasRootRotateMouseDown = (e: React.MouseEvent) => {
+	    // Root-rotate is a power gesture; don't enter it on normal canvas clicks/drags.
+	    if (!isRootRotateGesture(e)) return;
+	    e.stopPropagation();
+	    setTimelinePlaying(false);
+	    setSelectedJointId(null);
 
     const mouseWorld = getMouseWorld(e.clientX, e.clientY);
     const pivot =
@@ -3668,25 +3030,31 @@ export default function App() {
           const delta = nextA - drag.lastAngle;
           if (!Number.isFinite(delta) || Math.abs(delta) < 1e-9) return;
 
-          const deltaDeg = (delta * 180) / Math.PI;
-          setCanvasRotationDeg((prev) => {
-            const next = Math.max(-360, Math.min(360, prev + deltaDeg));
-            canvasRotationDegLiveRef.current = next;
-            return next;
-          });
+	          const deltaDeg = (delta * 180) / Math.PI;
+	          let appliedDeltaRad = delta;
+	          setCanvasRotationDeg((prev) => {
+	            // Wrap instead of clamp so the slider stays synced after multiple full rotations.
+	            const raw = prev + deltaDeg;
+	            let next = raw % 720;
+	            if (next > 360) next -= 720;
+	            if (next < -360) next += 720;
+	            appliedDeltaRad = ((next - prev) * Math.PI) / 180;
+	            canvasRotationDegLiveRef.current = next;
+	            return next;
+	          });
 
           setState((prev) => {
             const ids = Object.keys(prev.joints);
-            const nextJoints = applyRigidTransformToJointSubset({
-              joints: prev.joints,
-              baseJoints: INITIAL_JOINTS,
-              subsetIds: ids,
-              pivotWorld: drag.pivot,
-              rotateRad: delta,
-              translateWorld: { x: 0, y: 0 },
-            });
-            return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
-          });
+	            const nextJoints = applyRigidTransformToJointSubset({
+	              joints: prev.joints,
+	              baseJoints: INITIAL_JOINTS,
+	              subsetIds: ids,
+	              pivotWorld: drag.pivot,
+	              rotateRad: appliedDeltaRad,
+	              translateWorld: { x: 0, y: 0 },
+	            });
+	            return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
+	          });
 
           const updated = { ...drag, lastAngle: nextA };
           rootRotateDraggingLiveRef.current = updated;
@@ -3742,7 +3110,9 @@ export default function App() {
             const nx = dx / mag;
             const ny = dy / mag;
 
-            const len = vectorLength(prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) || vectorLength(joint.previewOffset);
+            const len =
+              vectorLength(prev.controlMode === 'Cardboard' ? joint.baseOffset : prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) ||
+              vectorLength(joint.previewOffset);
             if (!Number.isFinite(len) || len < 1e-6) return prev;
 
             // Lever rotates the bone around the rooted joint: parent ends up in the direction of the lever.
@@ -3869,7 +3239,9 @@ export default function App() {
 	            const nx = dx / mag;
 	            const ny = dy / mag;
 
-            const len = vectorLength(prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) || vectorLength(joint.previewOffset);
+            const len =
+              vectorLength(prev.controlMode === 'Cardboard' ? joint.baseOffset : prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) ||
+              vectorLength(joint.previewOffset);
             if (!Number.isFinite(len) || len < 1e-6) return prev;
 
             const nextOffset = { x: -nx * len, y: -ny * len };
@@ -3882,6 +3254,7 @@ export default function App() {
 
         const pinWorld = pinWorldRef.current;
         const hasRootedFeet = Boolean(pinWorld && (pinWorld.l_ankle || pinWorld.r_ankle));
+        const isFluidBalanceMode = state.controlMode === 'IK' || state.controlMode === 'Rubberband';
 	        const isBalanceHandle =
 	          effectiveId === 'head' ||
 	          effectiveId === 'neck_base' ||
@@ -3890,8 +3263,27 @@ export default function App() {
 	          effectiveId === 'l_hip' ||
 	          effectiveId === 'r_hip';
 
-	        if (hasRootedFeet && isBalanceHandle && pinWorld) {
-	          setState((prev) => applyBalanceDragToState(prev, effectiveId, { x: targetX, y: targetY }, pinWorld));
+	        if (isFluidBalanceMode && hasRootedFeet && isBalanceHandle && pinWorld) {
+            // Smooth top-handle balance targets to avoid micro-jitter when the solver is constrained by pinned feet.
+            // (Keep FK crisp; this only applies to fluid balance handles.)
+            const rawTarget = { x: targetX, y: targetY };
+            const smoothedTarget = (() => {
+              if (effectiveId !== 'head' && effectiveId !== 'neck_base') return rawTarget;
+              const now = performance.now();
+              const prevS = balanceDragTargetSmootherRef.current[effectiveId];
+              if (!prevS) {
+                balanceDragTargetSmootherRef.current[effectiveId] = { tMs: now, x: rawTarget.x, y: rawTarget.y };
+                return rawTarget;
+              }
+              const dtSec = clamp((now - prevS.tMs) / 1000, 0, 0.05);
+              const alpha = 1 - Math.pow(1 - 0.35, dtSec * 60);
+              const x = lerp(prevS.x, rawTarget.x, alpha);
+              const y = lerp(prevS.y, rawTarget.y, alpha);
+              balanceDragTargetSmootherRef.current[effectiveId] = { tMs: now, x, y };
+              return { x, y };
+            })();
+
+	          setState((prev) => applyBalanceDragToState(prev, effectiveId, smoothedTarget, pinWorld));
 	          return;
 	        }
 
@@ -3927,6 +3319,7 @@ export default function App() {
 	    precisionAnchorRef.current = null;
 	    lastEffectiveMouseWorldRef.current = null;
 	    dragProxyOffsetWorldRef.current = null;
+      balanceDragTargetSmootherRef.current = {};
 	    if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
 
     const finalizedRecording = autoPoseRecordingRef.current;
@@ -4043,8 +3436,10 @@ export default function App() {
         const dr = desiredLen - currentOffsetLen;
         const translateWorld = { x: desiredDir.x * dr, y: desiredDir.y * dr };
 
-        const subsetIds = collectSubtreeJointIds(id, draft.joints);
-        if (!subsetIds.length) return draft;
+	        const subtree = collectSubtreeJointIds(id, draft.joints, { maxNodes: 2048 });
+	        const subsetIds = subtree.nodes;
+	        if (!subsetIds.length) return draft;
+	        if (subtree.truncated) console.warn('[rig] subtree traversal truncated; increase maxNodes if needed');
 
         const nextJoints = applyRigidTransformToJointSubset({
           joints: draft.joints,
@@ -5114,12 +4509,37 @@ export default function App() {
     return <>{children}</>;
   };
 
+  // Safeguard against stale localStorage / invalid widget ids causing runtime crashes.
+  const activeWidgetMeta = WIDGETS[activeWidgetId] ?? WIDGETS.tools;
+
+  const activeDockedWidgetFocusRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const id = activeWidgetId;
+    if (floatingWidgetIds.has(id)) {
+      focusFloatingWidget(id);
+      return;
+    }
+    // Focus the docked widget container so keyboard interactions go to the active widget,
+    // and scroll it into view (helpful when switching tabs with a long sidebar).
+    const el = activeDockedWidgetFocusRef.current;
+    if (!el) return;
+    queueMicrotask(() => {
+      try {
+        el.scrollIntoView({ block: 'nearest' });
+        el.focus({ preventScroll: true });
+      } catch {
+        // no-op
+      }
+    });
+  }, [activeWidgetId, floatingWidgetIds, focusFloatingWidget]);
+
   return (
-    <div
-      className="flex h-screen w-full text-[#e0e0e0] font-sans selection:bg-white/20"
-      style={{ backgroundColor }}
-      data-build-id={BUILD_ID}
-    >
+    <TooltipProvider delayDuration={200}>
+      <div
+        className="flex h-screen w-full text-[#e0e0e0] font-sans selection:bg-white/20"
+        style={{ backgroundColor }}
+        data-build-id={BUILD_ID}
+      >
       {/* Sidebar */}
       <motion.aside 
         initial={false}
@@ -5159,8 +4579,21 @@ export default function App() {
             <div className="mt-4 mb-3 flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">Roots</div>
-                <div className="text-[9px] font-mono text-[#444]">{state.activeRoots.length} active</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-[9px] font-mono text-[#444]">{state.activeRoots.length} active</div>
+                  <button
+                    type="button"
+                    onClick={() => setRootMenuMinimized((v) => !v)}
+                    className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                    title={rootMenuMinimized ? 'Expand Roots' : 'Minimize Roots'}
+                  >
+                    {rootMenuMinimized ? 'Expand' : 'Minimize'}
+                  </button>
+                </div>
               </div>
+
+              {rootMenuMinimized ? null : (
+              <>
               <div className="flex gap-1">
                 {(['l_ankle', 'r_ankle', 'l_wrist', 'r_wrist'] as const).map((id) => {
                   const active = state.activeRoots.includes(id);
@@ -5192,13 +4625,56 @@ export default function App() {
                   className="px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#181818] hover:bg-[#222] text-[#888]"
                   title="Clear roots (use Ground Root)"
                 >
-                  Clear
-                </button>
-              </div>
+	                  Clear
+	                </button>
+	              </div>
 
-              <div className="flex items-center gap-3">
-                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666] shrink-0">Rotate</div>
-                <input
+	              <div className="flex items-center gap-2">
+	                <input
+	                  ref={rootPickerInputRef}
+	                  list="root-picker-datalist"
+	                  placeholder="Pick a root…"
+	                  onPointerDown={(e) => e.stopPropagation()}
+	                  onKeyDown={(e) => {
+	                    if (e.key !== 'Enter') return;
+	                    e.preventDefault();
+	                    const raw = rootPickerInputRef.current?.value ?? '';
+	                    const id = raw.trim();
+	                    if (!id) return;
+	                    if (!(id in state.joints)) return;
+	                    toggleRoot(id);
+	                    if (rootPickerInputRef.current) rootPickerInputRef.current.value = '';
+	                  }}
+	                  className="flex-1 px-2 py-1.5 rounded-lg text-[10px] bg-[#181818] border border-white/5 text-[#ddd] placeholder:text-[#555]"
+	                  title="Type a joint id and press Enter"
+	                />
+	                <button
+	                  type="button"
+	                  onPointerDown={(e) => e.stopPropagation()}
+	                  onClick={(e) => {
+	                    e.stopPropagation();
+	                    const raw = rootPickerInputRef.current?.value ?? '';
+	                    const id = raw.trim();
+	                    if (!id) return;
+	                    if (!(id in state.joints)) return;
+	                    toggleRoot(id);
+	                    if (rootPickerInputRef.current) rootPickerInputRef.current.value = '';
+	                  }}
+	                  className="px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#222] hover:bg-[#333] text-[#bbb]"
+	                  title="Toggle the typed root"
+	                >
+	                  Toggle
+	                </button>
+	              </div>
+	              <datalist id="root-picker-datalist">
+	                {rootPickerIds.map((id) => (
+	                  <option key={`rootpick:${id}`} value={id} />
+	                ))}
+	              </datalist>
+	
+	              <div className="flex items-center gap-3">
+	                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666] shrink-0">Rotate</div>
+	                <input
                   type="range"
                   min={-360}
                   max={360}
@@ -5279,7 +4755,9 @@ export default function App() {
                 }
               >
                 Rigid Root Drag: {rigidRootDragEnabled ? 'On' : 'Off'}
-              </button>
+	              </button>
+	              </>
+	              )}
             </div>
 
             <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
@@ -5308,78 +4786,46 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 flex flex-col px-6 pb-6">
-            <section className="shrink-0 pt-2">
-              <div className="flex items-center gap-2 mb-3 text-[#666]">
-                <Anchor size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Widgets</h2>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                {WIDGET_TAB_ORDER[sidebarTab].map((id) => {
-                  const isFloating = floatingWidgetIds.has(id);
-                  const active = activeWidgetId === id && !isFloating;
-                  return (
-	                    <button
-	                      key={`widget:${id}`}
-	                      type="button"
-	                      draggable={WIDGET_DND_ENABLED}
-	                      onDragStart={
-	                        WIDGET_DND_ENABLED
-	                          ? (e) => {
-	                              e.dataTransfer.setData(DND_WIDGET_MIME, id);
-	                              e.dataTransfer.effectAllowed = 'copy';
-	                            }
-	                          : undefined
-	                      }
-	                      onClick={() => activateWidget(id)}
-	                      className={`relative py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${
-	                        active ? 'bg-white text-black border-white' : 'bg-[#222] hover:bg-[#333] border-[#222] text-white'
-	                      }`}
-	                      title={
-	                        isFloating
-	                          ? 'Floating (click to focus)'
-	                          : WIDGET_DND_ENABLED
-	                            ? 'Click to activate; drag to pop out'
-	                            : 'Click to activate'
-	                      }
-	                    >
-                      <span className="truncate">{WIDGETS[id].title}</span>
-                      {isFloating && (
-                        <span
-                          className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[#00ff88]"
-                          aria-label="Floating"
-                        />
-                      )}
+          <div ref={sidebarWidgetDockRef} className="flex-1 min-h-0 flex flex-col px-6 pb-6">
+            <div className="flex-1 min-h-0 flex flex-col" style={{ minHeight: '33%' }}>
+              <section className="shrink-0 mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">{activeWidgetMeta.title}</div>
+                    <div className="pointer-events-auto">
+                      <HelpTip text={activeWidgetMeta.docs} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-[9px] font-mono text-[#444]">
+                      {floatingWidgetIds.has(activeWidgetId) ? 'FLOATING' : 'DOCKED'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (floatingWidgetIds.has(activeWidgetId)) {
+                          dockWidget(activeWidgetId);
+                          return;
+                        }
+                        const rect = canvasRef.current?.getBoundingClientRect();
+                        const clientX = rect ? rect.left + rect.width * 0.5 : window.innerWidth * 0.5;
+                        const clientY = rect ? rect.top + rect.height * 0.5 : window.innerHeight * 0.5;
+                        popOutWidget(activeWidgetId, clientX, clientY);
+                      }}
+                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                      title={floatingWidgetIds.has(activeWidgetId) ? 'Dock widget' : 'Undock widget'}
+                    >
+                      {floatingWidgetIds.has(activeWidgetId) ? 'Dock' : 'Undock'}
                     </button>
-                  );
-                })}
-              </div>
-
-	              <div className="mt-3 text-[10px] text-[#444]">
-	                {WIDGET_DND_ENABLED ? (
-	                  <>
-	                    Drag onto the canvas to pop out. Hold <span className="font-mono text-[#666]">Alt</span> while dragging/resizing to disable snapping.
-	                  </>
-	                ) : (
-		                  <>Pop-out dragging is temporarily disabled (widgets stay docked in the sidebar).</>
-		                )}
-	              </div>
-            </section>
-
-            <section className="shrink-0 mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                  {WIDGETS[activeWidgetId].title}
+                  </div>
                 </div>
-                <div className="text-[9px] font-mono text-[#444]">
-                  {floatingWidgetIds.has(activeWidgetId) ? 'FLOATING' : 'DOCKED'}
-                </div>
-              </div>
-              <div className="mt-2">{WIDGETS[activeWidgetId].docs}</div>
-            </section>
+              </section>
 
-            <div className="flex-1 min-h-0 overflow-y-auto mt-4">
+              <div
+                ref={activeDockedWidgetFocusRef}
+                tabIndex={-1}
+                className="flex-1 min-h-0 overflow-y-auto mt-4 outline-none focus:ring-2 focus:ring-white/10 focus:ring-offset-0 rounded-lg"
+              >
               {floatingWidgetIds.has(activeWidgetId) && (
                 <div className="mb-4 p-3 rounded-xl bg-[#181818] border border-[#222] flex items-center justify-between gap-3">
                   <div className="text-[11px] text-[#bbb]">This widget is popped out on the canvas.</div>
@@ -5529,19 +4975,19 @@ export default function App() {
                     </div>
                     <div className="p-3 rounded-xl bg-white/5 border border-white/10">
                       <div className="space-y-3">
-                        {(() => {
-                          const connKey = selectedConnectionKey;
-                          if (!connKey) {
-                            return (
-                              <div className="text-[10px] text-[#444]">
-                                No bone selected. Use Tab/Shift+Tab, or press 2.
-                              </div>
-                            );
-                          }
+	                        {(() => {
+	                          const connKey = selectedConnectionKey;
+	                          if (!connKey) {
+	                            return (
+	                              <div className="text-[10px] text-[#444]">
+	                                No bone selected. Use Tab/Shift+Tab, or press 2.
+	                              </div>
+	                            );
+	                          }
 
-                          const [a, b] = connKey.split(':');
-                          const conn = CONNECTIONS.find((c) => canonicalConnKey(c.from, c.to) === connKey) ?? null;
-                          const override = state.connectionOverrides?.[connKey];
+	                          const [a, b] = connKey.split(':');
+	                          const conn = CONNECTIONS.find((c) => canonicalConnKey(c.from, c.to) === connKey) ?? null;
+	                          const override = state.connectionOverrides?.[connKey];
                           const currentMode = override?.stretchMode ?? conn?.stretchMode ?? 'rigid';
                           const label = conn?.label || `${a} ↔ ${b}`;
 
@@ -6238,33 +5684,46 @@ export default function App() {
                   }
                 />
               </div>
-              <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Root Controls</div>
-                  <div className="text-[10px] font-mono text-[#666]">{state.activeRoots.length} active</div>
-                </div>
-
-                <button
-                  type="button"
-                            onClick={() => {
-                              setStateWithHistory('clear_roots_ground_root', (prev) => ({
-                                ...prev,
-                                activeRoots: [],
-                                groundRootTarget: computeGroundPivotWorld(prev.joints, INITIAL_JOINTS),
-                              }));
-                              pinTargetsRef.current = {};
-                            }}
-                  className="w-full px-3 py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5"
-                >
-                  Clear Roots (Ground Root)
-                </button>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => toggleRoot('l_ankle')}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
-                      state.activeRoots.includes('l_ankle')
+	              <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10 flex flex-col">
+	                <div className="flex items-center justify-between gap-3">
+	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Root Controls</div>
+	                  <div className="flex items-center gap-2">
+	                    <div className="text-[10px] font-mono text-[#666]">{state.activeRoots.length} active</div>
+	                    <button
+	                      type="button"
+	                      onClick={() => setRootControlsMinimized((v) => !v)}
+	                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+	                      title={rootControlsMinimized ? 'Expand Root Controls' : 'Minimize Root Controls'}
+	                    >
+	                      {rootControlsMinimized ? 'Expand' : 'Minimize'}
+	                    </button>
+	                  </div>
+	                </div>
+	
+	                {!rootControlsMinimized && (
+	                  <div className="mt-2 resize-y overflow-auto pr-1" style={{ minHeight: 140, maxHeight: 520 }}>
+	                    <div className="space-y-2">
+	                      <button
+	                        type="button"
+	                        onClick={() => {
+	                          setStateWithHistory('clear_roots_ground_root', (prev) => ({
+	                            ...prev,
+	                            activeRoots: [],
+	                            groundRootTarget: computeGroundPivotWorld(prev.joints, INITIAL_JOINTS),
+	                          }));
+	                          pinTargetsRef.current = {};
+	                        }}
+	                        className="w-full px-3 py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5"
+	                      >
+	                        Clear Roots (Ground Root)
+	                      </button>
+	
+	                      <div className="grid grid-cols-2 gap-2">
+	                  <button
+	                    type="button"
+	                    onClick={() => toggleRoot('l_ankle')}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+	                      state.activeRoots.includes('l_ankle')
                         ? 'bg-[#00ff88] text-black'
                         : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
                     }`}
@@ -6301,11 +5760,14 @@ export default function App() {
                         ? 'bg-[#00ff88] text-black'
                         : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
                     }`}
-                  >
-                    Root R Wrist
-                  </button>
-                </div>
-              </div>
+	                  >
+	                    Root R Wrist
+	                  </button>
+	                      </div>
+	                    </div>
+	                  </div>
+	                )}
+	              </div>
 	            </section>
                 </WidgetPortal>
 
@@ -7909,6 +7371,97 @@ export default function App() {
                 </WidgetPortal>
               </div>
             </div>
+            </div>
+
+            <div
+              className={`mt-4 h-2 rounded-full bg-white/5 ${
+                widgetDockMinimized ? 'cursor-default opacity-40' : 'cursor-row-resize hover:bg-white/10'
+              }`}
+              onMouseDown={beginWidgetDockResize}
+              title={widgetDockMinimized ? 'Widget dock minimized' : 'Drag to resize widget dock'}
+            />
+
+            <section
+              className="shrink-0 mt-2 p-3 rounded-xl bg-white/5 border border-white/10 flex flex-col"
+              style={{ height: widgetDockMinimized ? 44 : widgetDockHeightPx }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-[#666]">
+                  <Anchor size={14} />
+                  <h2
+                    className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                  >
+                    Widgets
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setWidgetDockMinimized((v) => !v)}
+                  className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                  title={widgetDockMinimized ? 'Expand widget dock' : 'Minimize widget dock'}
+                >
+                  {widgetDockMinimized ? 'Expand' : 'Minimize'}
+                </button>
+              </div>
+
+              {!widgetDockMinimized && (
+                <div className="flex-1 min-h-0 overflow-y-auto mt-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    {WIDGET_TAB_ORDER[sidebarTab].map((id) => {
+                      const isFloating = floatingWidgetIds.has(id);
+                      const active = activeWidgetId === id && !isFloating;
+                      return (
+                        <button
+                          key={`widget:${id}`}
+                          type="button"
+                          draggable={WIDGET_DND_ENABLED}
+                          onDragStart={
+                            WIDGET_DND_ENABLED
+                              ? (e) => {
+                                  e.dataTransfer.setData(DND_WIDGET_MIME, id);
+                                  e.dataTransfer.effectAllowed = 'copy';
+                                }
+                              : undefined
+                          }
+                          onClick={() => activateWidget(id)}
+                          className={`relative py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${
+                            active
+                              ? 'bg-white text-black border-white'
+                              : 'bg-[#222] hover:bg-[#333] border-[#222] text-white'
+                          }`}
+                          title={
+                            isFloating
+                              ? 'Floating (click to focus)'
+                              : WIDGET_DND_ENABLED
+                                ? 'Click to activate; drag to pop out'
+                                : 'Click to activate'
+                          }
+                        >
+                          <span className="truncate">{WIDGETS[id].title}</span>
+                          {isFloating && (
+                            <span
+                              className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[#00ff88]"
+                              aria-label="Floating"
+                            />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-3 text-[10px] text-[#444]">
+                    {WIDGET_DND_ENABLED ? (
+                      <>
+                        Drag onto the canvas to pop out. Hold <span className="font-mono text-[#666]">Alt</span> while
+                        dragging/resizing to disable snapping.
+                      </>
+                    ) : (
+                      <>Pop-out dragging is temporarily disabled (widgets stay docked in the sidebar).</>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
           </div>
 
           <div className="p-6 pt-0">
@@ -7934,12 +7487,15 @@ export default function App() {
         </button>
 
         {/* Canvas */}
-        <div 
-          ref={canvasRef}
-          className="flex-1 cursor-crosshair relative min-h-0 min-w-0 overflow-hidden"
-          onMouseDown={handleCanvasRootRotateMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
+	        <div 
+	          ref={canvasRef}
+	          className="flex-1 cursor-crosshair relative min-h-0 min-w-0 overflow-hidden"
+	          onMouseDown={(e) => {
+	            if (e.button !== 0 || !e.shiftKey) return;
+	            handleCanvasRootRotateMouseDown(e);
+	          }}
+	          onMouseMove={handleMouseMove}
+	          onMouseUp={handleMouseUp}
 	          onMouseLeave={() => {
 	            handleMouseUp();
 	            hideCursorHud();
@@ -7969,12 +7525,13 @@ export default function App() {
             height="100%"
             viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
             onMouseMove={onCanvasMouseMove}
-            onMouseDown={(e) => {
-              if (e.button === 1) e.preventDefault(); // Prevent auto-scroll on middle click
-              handleCanvasRootRotateMouseDown(e);
-            }}
-            className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''}`}
-          >
+	            onMouseDown={(e) => {
+	              if (e.button === 1) e.preventDefault(); // Prevent auto-scroll on middle click
+	              if (e.button !== 0 || !e.shiftKey) return;
+	              handleCanvasRootRotateMouseDown(e);
+	            }}
+	            className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''}`}
+	          >
             <defs>
               <filter id="joint-soft-glow" x="-200%" y="-200%" width="400%" height="400%">
                 <feGaussianBlur stdDeviation="4" />
@@ -8751,17 +8308,16 @@ export default function App() {
             );
           })}
 
-	          {/* HUD Overlay */}
-          <div className="absolute bottom-8 left-8 flex gap-4 pointer-events-none">
-            <div className="bg-[#121212]/80 backdrop-blur-md border border-[#222] p-4 rounded-2xl">
-              <p className="text-[10px] text-[#666] uppercase font-bold mb-2 tracking-widest">State Vector</p>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-xs">
-                <span className="text-[#444]">X_COORD</span>
-                <span className="text-white">{(state.joints.navel.currentOffset.x).toFixed(3)}</span>
-                <span className="text-[#444]">Y_COORD</span>
-                <span className="text-white">{(state.joints.navel.currentOffset.y).toFixed(3)}</span>
-                <span className="text-[#444]">PINS_ACT</span>
-                <span className="text-white">{state.activeRoots.length}</span>
+	          {/* HUD Overlay (compact) */}
+          <div className="absolute top-6 left-6 flex gap-3 pointer-events-none">
+            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl">
+              <div className="flex items-center gap-3 font-mono text-[11px]">
+                <span className="text-[#777]">COORD</span>
+                <span ref={coordHudRef} className="text-white tabular-nums opacity-0">
+                  —
+                </span>
+                <span className="text-[#555]">ROOTS</span>
+                <span className="text-white tabular-nums">{state.activeRoots.length}</span>
               </div>
             </div>
 
@@ -9122,6 +8678,7 @@ export default function App() {
     }}
   />
 </div>
+</TooltipProvider>
 );
 }
 

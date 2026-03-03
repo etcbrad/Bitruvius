@@ -4,6 +4,8 @@ import type { Point, SkeletonState } from './types';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
 const scalePoint = (v: Point, s: number): Point => ({ x: v.x * s, y: v.y * s });
 
 const add = (a: Point, b: Point): Point => ({ x: a.x + b.x, y: a.y + b.y });
@@ -382,7 +384,9 @@ export const applyDragToState = (
   // Static rotation: preserve the current segment length while rotating toward the cursor.
   // (Stretching/proportion edits are handled explicitly via JointDrag mode.)
   if (joint.parent) {
-    const desiredLen = jointLength(draggingId, nextJoints, INITIAL_JOINTS, prev.stretchEnabled);
+    // FK in Cardboard is intended to be rigid: preserve base lengths even if stretch is enabled globally.
+    const effectiveStretchEnabled = prev.controlMode === 'Cardboard' ? false : prev.stretchEnabled;
+    const desiredLen = jointLength(draggingId, nextJoints, INITIAL_JOINTS, effectiveStretchEnabled);
     const d = Math.hypot(newPreview.x, newPreview.y);
     if (desiredLen > 1e-9 && d > 1e-9) {
       const f = desiredLen / d;
@@ -484,6 +488,7 @@ export const applyBalanceDragToState = (
   if (!isFinitePoint(desiredDelta)) return prev;
 
   const pinnedSet = new Set(Object.keys(pinnedWorld ?? {}));
+  const pinnedCount = pinnedSet.size;
 
   type PinnedLeg = {
     ankleId: 'l_ankle' | 'r_ankle';
@@ -531,7 +536,16 @@ export const applyBalanceDragToState = (
     t = lo;
   }
 
-  const delta = scalePoint(desiredDelta, t);
+  // Inertia / "momentum matching":
+  // - When only feet are pinned, let the whole body sway more freely.
+  // - As more joints are pinned, make the translation feel heavier (lag behind cursor).
+  // This avoids "teleporty" balance shifts and produces a more rigid cutout presence.
+  const extraPins = Math.max(0, pinnedCount - pinnedAnkles.length);
+  // Default state should feel rigid: reduce lag/sway, especially for top handles.
+  const baseFollow = draggingId === 'head' || draggingId === 'neck_base' ? 0.985 : 1.0;
+  const follow = clamp(baseFollow / (1 + extraPins * 0.14), 0.72, 1.0);
+
+  const delta = scalePoint(desiredDelta, t * follow);
 
   const nextRootOffset = add(root.previewOffset, delta);
   nextJoints.root = {

@@ -35,29 +35,31 @@ export const getWorldPosition = (
     if (visited.has(currentId)) break;
     visited.add(currentId);
 
-    const joint: Joint | undefined = joints[currentId];
+    const joint: Joint | undefined = joints[currentId] ?? fallbackJoints[currentId];
     if (!joint) break;
 
+    const live = joints[currentId];
     const base = fallbackJoints[currentId];
     const rawOffset =
       mode === 'preview'
-        ? (joint.previewOffset ?? joint.targetOffset)
+        ? (live?.previewOffset ?? live?.targetOffset)
         : mode === 'target'
-          ? joint.targetOffset
-          : joint.currentOffset;
+          ? live?.targetOffset
+          : live?.currentOffset;
     const fallbackOffset =
       mode === 'preview'
-        ? (base?.previewOffset ?? base?.targetOffset ?? { x: 0, y: 0 })
+        ? (base?.previewOffset ?? base?.targetOffset ?? joint.previewOffset ?? joint.targetOffset ?? joint.baseOffset ?? { x: 0, y: 0 })
         : mode === 'target'
-          ? (base?.targetOffset ?? { x: 0, y: 0 })
-          : (base?.currentOffset ?? { x: 0, y: 0 });
+          ? (base?.targetOffset ?? joint.targetOffset ?? joint.baseOffset ?? { x: 0, y: 0 })
+          : (base?.currentOffset ?? joint.currentOffset ?? joint.baseOffset ?? { x: 0, y: 0 });
     const offset = safePoint(rawOffset, fallbackOffset);
 
     x += offset.x;
     y += offset.y;
 
     const parentId: string | null = joint.parent;
-    if (!parentId || !joints[parentId]) break;
+    if (!parentId) break;
+    if (!joints[parentId] && !fallbackJoints[parentId]) break;
     currentId = parentId;
   }
 

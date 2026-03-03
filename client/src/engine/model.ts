@@ -11,12 +11,14 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
   l_nipple: { id: 'l_nipple', label: 'L Nipple', parent: 'sternum', baseOffset: { x: -2.5, y: 1.5 }, currentOffset: { x: -2.5, y: 1.5 }, targetOffset: { x: -2.5, y: 1.5 }, previewOffset: { x: -2.5, y: 1.5 }, mirrorId: 'r_nipple', rotation: 0 },
   r_nipple: { id: 'r_nipple', label: 'R Nipple', parent: 'sternum', baseOffset: { x: 2.5, y: 1.5 }, currentOffset: { x: 2.5, y: 1.5 }, targetOffset: { x: 2.5, y: 1.5 }, previewOffset: { x: 2.5, y: 1.5 }, mirrorId: 'l_nipple', rotation: 0 },
 
-  l_shoulder: { id: 'l_shoulder', label: 'L Shoulder', parent: 'collar', baseOffset: { x: -3, y: 0.5 }, currentOffset: { x: -3, y: 0.5 }, targetOffset: { x: -3, y: 0.5 }, previewOffset: { x: -3, y: 0.5 }, mirrorId: 'r_shoulder', rotation: 0 },
+  l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.5, y: 0.25 }, currentOffset: { x: -1.5, y: 0.25 }, targetOffset: { x: -1.5, y: 0.25 }, previewOffset: { x: -1.5, y: 0.25 }, mirrorId: 'r_clavicle', rotation: 0 },
+  l_shoulder: { id: 'l_shoulder', label: 'L Shoulder', parent: 'l_clavicle', baseOffset: { x: -1.5, y: 0.25 }, currentOffset: { x: -1.5, y: 0.25 }, targetOffset: { x: -1.5, y: 0.25 }, previewOffset: { x: -1.5, y: 0.25 }, mirrorId: 'r_shoulder', rotation: 0 },
   l_elbow: { id: 'l_elbow', label: 'L Elbow', parent: 'l_shoulder', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, rotation: 0 },
   l_wrist: { id: 'l_wrist', label: 'L Wrist', parent: 'l_elbow', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, isEndEffector: true, mirrorId: 'r_wrist', rotation: 0 },
   l_fingertip: { id: 'l_fingertip', label: 'L Fingertip', parent: 'l_wrist', baseOffset: { x: -1, y: 1 }, currentOffset: { x: -1, y: 1 }, targetOffset: { x: -1, y: 1 }, previewOffset: { x: -1, y: 1 }, mirrorId: 'r_fingertip', rotation: 0 },
 
-  r_shoulder: { id: 'r_shoulder', label: 'R Shoulder', parent: 'collar', baseOffset: { x: 3, y: 0.5 }, currentOffset: { x: 3, y: 0.5 }, targetOffset: { x: 3, y: 0.5 }, previewOffset: { x: 3, y: 0.5 }, mirrorId: 'l_shoulder', rotation: 0 },
+  r_clavicle: { id: 'r_clavicle', label: 'R Clavicle', parent: 'collar', baseOffset: { x: 1.5, y: 0.25 }, currentOffset: { x: 1.5, y: 0.25 }, targetOffset: { x: 1.5, y: 0.25 }, previewOffset: { x: 1.5, y: 0.25 }, mirrorId: 'l_clavicle', rotation: 0 },
+  r_shoulder: { id: 'r_shoulder', label: 'R Shoulder', parent: 'r_clavicle', baseOffset: { x: 1.5, y: 0.25 }, currentOffset: { x: 1.5, y: 0.25 }, targetOffset: { x: 1.5, y: 0.25 }, previewOffset: { x: 1.5, y: 0.25 }, mirrorId: 'l_shoulder', rotation: 0 },
   r_elbow: { id: 'r_elbow', label: 'R Elbow', parent: 'r_shoulder', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, rotation: 0 },
   r_wrist: { id: 'r_wrist', label: 'R Wrist', parent: 'r_elbow', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, isEndEffector: true, mirrorId: 'l_wrist', rotation: 0 },
   r_fingertip: { id: 'r_fingertip', label: 'R Fingertip', parent: 'r_wrist', baseOffset: { x: 1, y: 1 }, currentOffset: { x: 1, y: 1 }, targetOffset: { x: 1, y: 1 }, previewOffset: { x: 1, y: 1 }, mirrorId: 'l_fingertip', rotation: 0 },
@@ -33,8 +35,10 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
 };
 
 export const CONNECTIONS: Connection[] = [
-  { from: "collar", to: "l_shoulder", type: "bone", label: "L_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "collar", to: "r_shoulder", type: "bone", label: "R_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "collar", to: "l_clavicle", type: "bone", label: "L_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "l_clavicle", to: "l_shoulder", type: "bone", label: "L_Shoulder_Link", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "collar", to: "r_clavicle", type: "bone", label: "R_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "r_clavicle", to: "r_shoulder", type: "bone", label: "R_Shoulder_Link", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "l_shoulder", to: "l_elbow", type: "bone", label: "L_Humerus", shape: 'muscle', stretchMode: 'rigid' },
   { from: "r_shoulder", to: "r_elbow", type: "bone", label: "R_Humerus", shape: 'muscle', stretchMode: 'rigid' },
   { from: "l_elbow", to: "l_wrist", type: "bone", label: "L_Radius_Ulna", shape: 'tapered', stretchMode: 'rigid' },
@@ -55,7 +59,7 @@ export const CONNECTIONS: Connection[] = [
   { from: "r_ankle", to: "r_toe", type: "bone", label: "R_Foot", shape: 'tapered', stretchMode: 'rigid' },
   // Core spine connections
   { from: "navel", to: "sternum", type: "bone", label: "Torso", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "sternum", to: "collar", type: "bone", label: "Chest", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "sternum", to: "collar", type: "bone", label: "Collar", shape: 'diamond', stretchMode: 'rigid' },
   { from: "collar", to: "neck_base", type: "bone", label: "Neck", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "neck_base", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
   
