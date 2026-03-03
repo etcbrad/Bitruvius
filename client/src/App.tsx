@@ -401,66 +401,14 @@ export default function App() {
   const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
 
   const [state, setState] = useState<SkeletonState>(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) {
-      const parsed = deserializeEngineState(saved);
-      if (parsed.ok) {
-        const defaults = makeDefaultState();
-        const sanitized = sanitizeStateWithReport(parsed.rawState);
-        const reconciled = reconcileSkeletonState(sanitized.state);
-        if (sanitized.issues.length || reconciled.issues.length) {
-          initialSanitizeIssuesRef.current = [...sanitized.issues, ...reconciled.issues].map((i) => ({ ...i, severity: 'info' }));
-        }
-        
-        // Restore cached images
-        const restoredState = { ...reconciled.state };
-        
-                // Restore cached images (videos are not cached in localStorage).
-                if (restoredState.scene.background.src && restoredState.scene.background.mediaType === 'image') {
-                  const cachedBg = restoreImageFromCache('background');
-                  if (cachedBg) {
-                    restoredState.scene.background.src = cachedBg;
-                  }
-                }
-                
-                if (restoredState.scene.foreground.src && restoredState.scene.foreground.mediaType === 'image') {
-                  const cachedFg = restoreImageFromCache('foreground');
-                  if (cachedFg) {
-                    restoredState.scene.foreground.src = cachedFg;
-                  }
-                }
-        
-        // Restore head mask
-        if (restoredState.scene.headMask.src) {
-          const cachedHeadMask = restoreImageFromCache('head_mask');
-          if (cachedHeadMask) {
-            restoredState.scene.headMask.src = cachedHeadMask;
-          }
-        }
-        
-    // Restore joint masks
-    for (const jointId of Object.keys(restoredState.scene.jointMasks)) {
-      const mask = restoredState.scene.jointMasks[jointId];
-      if (mask && mask.src) {
-        const cachedMask = restoreImageFromCache(`joint_mask_${jointId}`);
-        if (cachedMask) {
-          mask.src = cachedMask;
-        }
-      }
+    // Clear any saved state to start with clean T-pose
+    try {
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+    } catch (error) {
+      // Ignore storage errors
     }
-    
-        // Ensure joint masks are initialized for all joints (and include all mask fields).
-        for (const jointId of Object.keys(INITIAL_JOINTS)) {
-          if (!restoredState.scene.jointMasks[jointId]) {
-            restoredState.scene.jointMasks[jointId] = { ...defaults.scene.jointMasks[jointId] };
-          }
-        }
-
-    return syncLegacyMasksToCutouts(restoredState);
-  }
-}
-return makeDefaultState();
-});
+    return makeDefaultState();
+  });
 
   useEffect(() => {
     console.log(`[bitruvius] build=${BUILD_ID}`);
@@ -577,6 +525,8 @@ return makeDefaultState();
   const [fgVideoMeta, setFgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
   const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  type SidebarTab = 'character' | 'physics' | 'animation';
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const cursorHudRef = useRef<HTMLDivElement | null>(null);
@@ -591,6 +541,44 @@ return makeDefaultState();
           const [gridRingsEnabled, setGridRingsEnabled] = useState(true);
           const [gridOverlayEnabled, setGridOverlayEnabled] = useState(true);
           const [backlightEnabled, setBacklightEnabled] = useState(false);
+          const [debugOverlayEnabled, setDebugOverlayEnabled] = useState(false);
+          const [freezeGridCalibration, setFreezeGridCalibration] = useState(false);
+          const gridTransformFrozenRef = useRef<{
+            characterCenterX: number;
+            characterCenterY: number;
+            pxPerUnit: number;
+            headLenPx: number;
+            fingerLenPx: number;
+            vmin: number;
+          } | null>(null);
+          const gridTransformBaselineRef = useRef<{ x: number; y: number } | null>(null);
+          const [debugGridStats, setDebugGridStats] = useState<{
+            canvasW: number;
+            canvasH: number;
+            viewScale: number;
+            viewOffsetX: number;
+            viewOffsetY: number;
+            gridCenterX: number | null;
+            gridCenterY: number | null;
+            pxPerUnit: number | null;
+            driftX: number | null;
+            driftY: number | null;
+            maxAbsDriftX: number;
+            maxAbsDriftY: number;
+          }>(() => ({
+            canvasW: 0,
+            canvasH: 0,
+            viewScale: 1,
+            viewOffsetX: 0,
+            viewOffsetY: 0,
+            gridCenterX: null,
+            gridCenterY: null,
+            pxPerUnit: null,
+            driftX: null,
+            driftY: null,
+            maxAbsDriftX: 0,
+            maxAbsDriftY: 0,
+          }));
           const [backgroundColor, setBackgroundColor] = useState(() => {
     // Load saved background color or use faded paper default
     const saved = localStorage.getItem(BACKGROUND_COLOR_KEY);
@@ -1876,17 +1864,6 @@ return makeDefaultState();
   }, [state.timeline.clip.frameCount]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      try {
-        localStorage.setItem(LOCAL_STORAGE_KEY, serializeEngineState(state));
-      } catch {
-        // Ignore quota / serialization errors to avoid breaking the editor loop.
-      }
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [state]);
-
-  useEffect(() => {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const newW = entry.contentRect.width;
@@ -1971,7 +1948,7 @@ return makeDefaultState();
     };
   }, []);
 
-  const gridOverlayTransform = useMemo(() => {
+  const computedGridOverlayTransform = useMemo(() => {
     if (!canvasSize.width || !canvasSize.height) return null;
 
     const scale = 20;
@@ -2019,6 +1996,70 @@ return makeDefaultState();
       vmin,
     };
   }, [canvasSize.height, canvasSize.width, gridRingsBgData]);
+
+  useEffect(() => {
+    if (!freezeGridCalibration) {
+      gridTransformFrozenRef.current = null;
+      return;
+    }
+    if (!gridTransformFrozenRef.current && computedGridOverlayTransform) {
+      gridTransformFrozenRef.current = computedGridOverlayTransform;
+      gridTransformBaselineRef.current = {
+        x: computedGridOverlayTransform.characterCenterX,
+        y: computedGridOverlayTransform.characterCenterY,
+      };
+      setDebugGridStats((prev) => ({ ...prev, maxAbsDriftX: 0, maxAbsDriftY: 0 }));
+    }
+  }, [freezeGridCalibration, computedGridOverlayTransform]);
+
+  const gridOverlayTransform = freezeGridCalibration
+    ? gridTransformFrozenRef.current ?? computedGridOverlayTransform
+    : computedGridOverlayTransform;
+
+  useEffect(() => {
+    if (!debugOverlayEnabled) return;
+    const id = window.setInterval(() => {
+      const t = gridOverlayTransform;
+      const centerX = t?.characterCenterX ?? null;
+      const centerY = t?.characterCenterY ?? null;
+      const pxPerUnit = t?.pxPerUnit ?? null;
+
+      if (!gridTransformBaselineRef.current && centerX != null && centerY != null) {
+        gridTransformBaselineRef.current = { x: centerX, y: centerY };
+      }
+      const baseline = gridTransformBaselineRef.current;
+      const driftX = baseline && centerX != null ? centerX - baseline.x : null;
+      const driftY = baseline && centerY != null ? centerY - baseline.y : null;
+
+      setDebugGridStats((prev) => {
+        const nextMaxAbsDriftX = driftX == null ? prev.maxAbsDriftX : Math.max(prev.maxAbsDriftX, Math.abs(driftX));
+        const nextMaxAbsDriftY = driftY == null ? prev.maxAbsDriftY : Math.max(prev.maxAbsDriftY, Math.abs(driftY));
+        return {
+          ...prev,
+          canvasW: canvasSize.width,
+          canvasH: canvasSize.height,
+          viewScale: stateLiveRef.current.viewScale,
+          viewOffsetX: stateLiveRef.current.viewOffset.x,
+          viewOffsetY: stateLiveRef.current.viewOffset.y,
+          gridCenterX: centerX,
+          gridCenterY: centerY,
+          pxPerUnit,
+          driftX,
+          driftY,
+          maxAbsDriftX: nextMaxAbsDriftX,
+          maxAbsDriftY: nextMaxAbsDriftY,
+        };
+      });
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [debugOverlayEnabled, gridOverlayTransform, canvasSize.height, canvasSize.width]);
+
+  const resetGridDriftBaseline = useCallback(() => {
+    const t = gridOverlayTransform;
+    if (!t) return;
+    gridTransformBaselineRef.current = { x: t.characterCenterX, y: t.characterCenterY };
+    setDebugGridStats((prev) => ({ ...prev, maxAbsDriftX: 0, maxAbsDriftY: 0 }));
+  }, [gridOverlayTransform]);
 
   // Animation Loop: Exponential Decay for Smooth Motion
   useEffect(() => {
@@ -3537,22 +3578,34 @@ return makeDefaultState();
 
       const jointPos = getWorldPosition(jointId, state.joints, INITIAL_JOINTS);
       const relatedIds = (mask.relatedJoints || []).filter((id) => id !== jointId && id in state.joints);
+      const driverId = relatedIds[0] ?? null;
+      const secondaryIds = relatedIds.slice(1);
 
-      const relatedCentroid = (() => {
-        if (!relatedIds.length) return null;
+      // Relationship joints semantics:
+      // - 1st entry (driver) acts like a custom "parent" for direction/length.
+      // - remaining entries affect anchor placement via centroid (useful for torso/hip clusters).
+      const driverPos = driverId ? getWorldPosition(driverId, state.joints, INITIAL_JOINTS) : null;
+      const secondaryCentroid = (() => {
+        if (!secondaryIds.length) return null;
         let sx = 0;
         let sy = 0;
-        for (const id of relatedIds) {
+        for (const id of secondaryIds) {
           const p = getWorldPosition(id, state.joints, INITIAL_JOINTS);
           sx += p.x;
           sy += p.y;
         }
-        return { x: sx / relatedIds.length, y: sy / relatedIds.length };
+        return { x: sx / secondaryIds.length, y: sy / secondaryIds.length };
       })();
 
-      const anchorUnits = relatedCentroid
-        ? { x: (jointPos.x + relatedCentroid.x) / 2, y: (jointPos.y + relatedCentroid.y) / 2 }
-        : jointPos;
+      const anchorUnits = (() => {
+        if (secondaryCentroid) {
+          return { x: (jointPos.x + secondaryCentroid.x) / 2, y: (jointPos.y + secondaryCentroid.y) / 2 };
+        }
+        if (driverPos) {
+          return { x: (jointPos.x + driverPos.x) / 2, y: (jointPos.y + driverPos.y) / 2 };
+        }
+        return jointPos;
+      })();
 
       const anchorWorldBaseX = anchorUnits.x * pxPerUnit + centerX;
       const anchorWorldBaseY = anchorUnits.y * pxPerUnit + centerY;
@@ -3561,8 +3614,8 @@ return makeDefaultState();
       const joint = state.joints[jointId];
       const parentId = joint.parent;
       let pPos = { x: jointPos.x, y: jointPos.y - 1 };
-      if (relatedCentroid) {
-        pPos = relatedCentroid;
+      if (driverPos) {
+        pPos = driverPos;
       } else if (parentId && state.joints[parentId]) {
         pPos = getWorldPosition(parentId, state.joints, INITIAL_JOINTS);
       }
@@ -3684,10 +3737,35 @@ return makeDefaultState();
                 </p>
               </div>
             </div>
+
+            <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
+              {(
+                [
+                  { id: 'character' as const, label: 'Character' },
+                  { id: 'physics' as const, label: 'Physics' },
+                  { id: 'animation' as const, label: 'Animation' },
+                ] as const
+              ).map((tab) => {
+                const active = sidebarTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSidebarTab(tab.id)}
+                    className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      active ? 'bg-white text-black' : 'text-[#666] hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 pb-6">
             <div className="space-y-6">
+            {sidebarTab === 'character' && (
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Move size={14} />
@@ -3720,7 +3798,9 @@ return makeDefaultState();
                 </button>
               </div>
             </section>
+            )}
 
+            {sidebarTab === 'character' && (
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Anchor size={14} />
@@ -3744,13 +3824,17 @@ return makeDefaultState();
                     onDragStart={(e) => {
                       e.dataTransfer.setData(DND_WIDGET_MIME, kind);
                       e.dataTransfer.effectAllowed = 'copy';
-                    }}
-                    onClick={() => {
-                      const rect = canvasRef.current?.getBoundingClientRect();
-                      const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
-                      const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
-                      spawnFloatingWidget(kind, cx, cy);
-                    }}
+	                    }}
+	                    onClick={() => {
+	                      if (dockedWidgets.includes(kind)) {
+	                        setActiveDockedWidget(kind);
+	                        return;
+	                      }
+	                      const rect = canvasRef.current?.getBoundingClientRect();
+	                      const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+	                      const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+	                      spawnFloatingWidget(kind, cx, cy);
+	                    }}
                     className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
                     title="Drag onto canvas or click to spawn"
                   >
@@ -3758,11 +3842,13 @@ return makeDefaultState();
                   </button>
                 ))}
               </div>
-	              <p className="mt-2 text-[10px] text-[#444]">
-	                Drag a tool onto the canvas, or click to open it.
-	              </p>
-	            </section>
+		              <p className="mt-2 text-[10px] text-[#444]">
+		                Drag a tool onto the canvas, or click to open it.
+		              </p>
+		            </section>
+            )}
 
+              {sidebarTab === 'character' && (
               <section>
                 <div className="flex items-center gap-2 mb-4 text-[#666]">
                   <Terminal size={14} />
@@ -3907,8 +3993,10 @@ return makeDefaultState();
                   </div>
                 )}
               </section>
+              )}
 
-	            <section>
+	            {sidebarTab === 'physics' && (
+              <section>
 	              <div className="flex items-center gap-2 mb-4 text-[#666]">
 	                <Settings2 size={14} />
 	                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rig Controls</h2>
@@ -4047,8 +4135,10 @@ return makeDefaultState();
                   }
                 />
               </div>
-            </section>
+	            </section>
+              )}
 
+            {sidebarTab === 'physics' && (
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Activity size={14} />
@@ -4093,7 +4183,9 @@ return makeDefaultState();
                 </div>
               </div>
             </section>
+            )}
 
+            {sidebarTab === 'character' && (
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Maximize2 size={14} />
@@ -4118,7 +4210,9 @@ return makeDefaultState();
                         {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
                       </div>
                     </section>
+            )}
 
+            {sidebarTab === 'character' && (
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Layers size={14} />
@@ -4187,6 +4281,7 @@ return makeDefaultState();
                 </div>
               </div>
             </section>
+            )}
 
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
@@ -4245,6 +4340,7 @@ return makeDefaultState();
               </div>
             </section>
 
+              {sidebarTab === 'animation' && (
               <section>
                 <div className="flex items-center gap-2 mb-4 text-[#666]">
                   <RotateCcw size={14} />
@@ -4290,6 +4386,7 @@ return makeDefaultState();
                   </button>
                 </div>
               </section>
+              )}
 
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
@@ -5690,7 +5787,7 @@ return makeDefaultState();
       </motion.aside>
 
       {/* Main Viewport */}
-      <main className="flex-1 relative flex flex-col overflow-hidden">
+      <main className="flex-1 relative flex flex-col overflow-hidden min-h-0 min-w-0">
         {/* Toggle Sidebar Button */}
         <button 
           onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -5702,7 +5799,7 @@ return makeDefaultState();
         {/* Canvas */}
         <div 
           ref={canvasRef}
-          className="flex-1 cursor-crosshair relative"
+          className="flex-1 cursor-crosshair relative min-h-0 min-w-0 overflow-hidden"
           onMouseDown={() => setSelectedJointId(null)}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -5738,8 +5835,8 @@ return makeDefaultState();
           </div>
           <svg
             ref={svgRef}
-            width={canvasSize.width}
-            height={canvasSize.height}
+            width="100%"
+            height="100%"
             viewBox={`0 0 ${canvasSize.width} ${canvasSize.height}`}
             onMouseMove={onCanvasMouseMove}
             onMouseDown={(e) => {
@@ -6776,6 +6873,38 @@ return makeDefaultState();
                             >
                               Reset View
                             </button>
+
+                            <div className="space-y-2">
+                              <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">Debug Overlay</span>
+                                <input
+                                  type="checkbox"
+                                  checked={debugOverlayEnabled}
+                                  onChange={(e) => {
+                                    setDebugOverlayEnabled(e.target.checked);
+                                    if (e.target.checked) resetGridDriftBaseline();
+                                  }}
+                                />
+                              </label>
+
+                              <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
+                                <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">Freeze Grid</span>
+                                <input
+                                  type="checkbox"
+                                  checked={freezeGridCalibration}
+                                  onChange={(e) => setFreezeGridCalibration(e.target.checked)}
+                                />
+                              </label>
+
+                              <button
+                                type="button"
+                                onClick={resetGridDriftBaseline}
+                                className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
+                              >
+                                Reset Drift Baseline
+                              </button>
+                            </div>
+
                             <div className="p-2 bg-white/5 rounded-md text-[9px] text-[#555] uppercase tracking-tight leading-relaxed">
                               <span className="text-white/40">Pan:</span> MMB or Space+Drag
                             </div>
@@ -6941,6 +7070,42 @@ return makeDefaultState();
                 <span className="text-white">{state.activePins.length}</span>
               </div>
             </div>
+
+            {debugOverlayEnabled && (
+              <div className="bg-[#121212]/80 backdrop-blur-md border border-[#222] p-4 rounded-2xl">
+                <p className="text-[10px] text-[#666] uppercase font-bold mb-2 tracking-widest">Debug</p>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-xs">
+                  <span className="text-[#444]">CANVAS_W</span>
+                  <span className="text-white">{Math.round(debugGridStats.canvasW)}</span>
+                  <span className="text-[#444]">CANVAS_H</span>
+                  <span className="text-white">{Math.round(debugGridStats.canvasH)}</span>
+                  <span className="text-[#444]">VIEW_Z</span>
+                  <span className="text-white">{debugGridStats.viewScale.toFixed(2)}</span>
+                  <span className="text-[#444]">VIEW_X</span>
+                  <span className="text-white">{debugGridStats.viewOffsetX.toFixed(1)}</span>
+                  <span className="text-[#444]">VIEW_Y</span>
+                  <span className="text-white">{debugGridStats.viewOffsetY.toFixed(1)}</span>
+                  <span className="text-[#444]">GRID_CX</span>
+                  <span className="text-white">
+                    {debugGridStats.gridCenterX == null ? '—' : debugGridStats.gridCenterX.toFixed(1)}
+                  </span>
+                  <span className="text-[#444]">GRID_CY</span>
+                  <span className="text-white">
+                    {debugGridStats.gridCenterY == null ? '—' : debugGridStats.gridCenterY.toFixed(1)}
+                  </span>
+                  <span className="text-[#444]">PX_UNIT</span>
+                  <span className="text-white">{debugGridStats.pxPerUnit == null ? '—' : debugGridStats.pxPerUnit.toFixed(1)}</span>
+                  <span className="text-[#444]">DRIFT_X</span>
+                  <span className="text-white">{debugGridStats.driftX == null ? '—' : debugGridStats.driftX.toFixed(1)}</span>
+                  <span className="text-[#444]">DRIFT_Y</span>
+                  <span className="text-white">{debugGridStats.driftY == null ? '—' : debugGridStats.driftY.toFixed(1)}</span>
+                  <span className="text-[#444]">MAX_DX</span>
+                  <span className="text-white">{debugGridStats.maxAbsDriftX.toFixed(1)}</span>
+                  <span className="text-[#444]">MAX_DY</span>
+                  <span className="text-white">{debugGridStats.maxAbsDriftY.toFixed(1)}</span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="absolute top-8 right-8 flex gap-2">

@@ -23,6 +23,28 @@ type Props = {
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
+const dedupe = (ids: string[]) => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (!id) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+};
+
+const moveItem = <T,>(arr: T[], from: number, to: number): T[] => {
+  if (from === to) return arr;
+  if (from < 0 || from >= arr.length) return arr;
+  if (to < 0 || to >= arr.length) return arr;
+  const next = arr.slice();
+  const [it] = next.splice(from, 1);
+  next.splice(to, 0, it!);
+  return next;
+};
+
 function Thumb({
   label,
   selected,
@@ -136,6 +158,15 @@ export function JointMaskWidget({
         },
       },
     }));
+  };
+
+  const relationshipIds = useMemo(
+    () => dedupe((jointMask?.relatedJoints || []).filter((id) => id && id !== maskJointId && id in state.joints)),
+    [jointMask?.relatedJoints, maskJointId, state.joints],
+  );
+
+  const setRelationshipIds = (next: string[]) => {
+    setJointMask({ relatedJoints: dedupe(next).filter((id) => id !== maskJointId && id in state.joints) } as any);
   };
 
   return (
@@ -868,38 +899,122 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-[10px]">
                       <span>Relationship Joints</span>
-                      <button
-                        type="button"
-                        onClick={() => setJointMask({ relatedJoints: [] } as any)}
-                        className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-                        title="Clear relationship joints (use parent bone instead)"
-                        disabled={!jointMask.src}
-                      >
-                        Use Parent
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const parent = selectedJoint?.parent;
+                            if (parent && parent !== maskJointId && parent in state.joints) setRelationshipIds([parent]);
+                            else setRelationshipIds([]);
+                          }}
+                          className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+                          title="Set driver to the joint’s parent (if any)"
+                          disabled={!jointMask.src}
+                        >
+                          Use Parent
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRelationshipIds([])}
+                          className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+                          title="Clear relationship joints (fallback to parent bone)"
+                          disabled={!jointMask.src}
+                        >
+                          Clear
+                        </button>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+                              disabled={!jointMask.src}
+                            >
+                              + Add
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-64 p-2" align="end">
+                            <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] mb-2">
+                              Add Relationship Joint
+                            </div>
+                            <div className="max-h-56 overflow-auto space-y-1">
+                              {jointIds
+                                .filter((id) => id !== maskJointId)
+                                .map((id) => {
+                                  const active = relationshipIds.includes(id);
+                                  return (
+                                    <button
+                                      key={`rel-add:${id}`}
+                                      type="button"
+                                      onClick={() => setRelationshipIds([...relationshipIds, id])}
+                                      disabled={active}
+                                      className={`w-full text-left px-2 py-1 rounded text-[10px] transition-colors ${
+                                        active ? 'bg-white/10 text-[#888]' : 'bg-[#0a0a0a] hover:bg-white/5 text-[#ddd]'
+                                      }`}
+                                    >
+                                      {state.joints[id]?.label || id}
+                                    </button>
+                                  );
+                                })}
+                            </div>
+                            <div className="mt-2 text-[9px] text-[#666]">
+                              First item = directional driver. Others = anchor helpers.
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
                     </div>
-                    <select
-                      multiple
-                      value={(jointMask.relatedJoints || []).filter((id) => id !== maskJointId)}
-                      onChange={(e) => {
-                        const next = Array.from(e.target.selectedOptions)
-                          .map((o) => o.value)
-                          .filter((id) => id && id !== maskJointId);
-                        setJointMask({ relatedJoints: next } as any);
-                      }}
-                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px] h-24"
-                      disabled={!jointMask.src}
-                    >
-                      {jointIds
-                        .filter((id) => id !== maskJointId)
-                        .map((id) => (
-                          <option key={id} value={id}>
-                            {state.joints[id]?.label || id}
-                          </option>
+                    {relationshipIds.length ? (
+                      <div className="space-y-1">
+                        {relationshipIds.map((id, idx) => (
+                          <div
+                            key={`rel:${id}`}
+                            className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-[#222] border border-white/5"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[10px] text-[#ddd] truncate">
+                                {idx === 0 ? 'Driver: ' : 'Anchor: '}
+                                {state.joints[id]?.label || id}
+                              </div>
+                              <div className="text-[9px] text-[#666] truncate">{id}</div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setRelationshipIds(moveItem(relationshipIds, idx, idx - 1))}
+                                className="px-1.5 py-0.5 rounded bg-black/30 border border-white/10 text-[9px] text-[#ddd] hover:bg-black/50 disabled:opacity-40"
+                                disabled={idx === 0}
+                                title="Move up"
+                              >
+                                ↑
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRelationshipIds(moveItem(relationshipIds, idx, idx + 1))}
+                                className="px-1.5 py-0.5 rounded bg-black/30 border border-white/10 text-[9px] text-[#ddd] hover:bg-black/50 disabled:opacity-40"
+                                disabled={idx === relationshipIds.length - 1}
+                                title="Move down"
+                              >
+                                ↓
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRelationshipIds(relationshipIds.filter((x) => x !== id))}
+                                className="px-1.5 py-0.5 rounded bg-black/30 border border-white/10 text-[9px] text-[#ddd] hover:bg-black/50"
+                                title="Remove"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
                         ))}
-                    </select>
+                      </div>
+                    ) : (
+                      <div className="p-2 rounded bg-white/5 border border-white/10 text-[10px] text-[#555]">
+                        Uses the joint’s parent for direction/length.
+                      </div>
+                    )}
                     <div className="text-[9px] text-[#666]">
-                      Select one or more joints to drive placement/orientation. Empty uses the joint&apos;s parent bone.
+                      Driver controls orientation/length. Extra joints shift the anchor point (useful for torso clusters).
                     </div>
                   </div>
 

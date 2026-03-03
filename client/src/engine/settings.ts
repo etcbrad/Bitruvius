@@ -18,6 +18,18 @@ const safePoint = (value: unknown, fallback: Point): Point => {
   return { x: safeNumber(v.x, fallback.x), y: safeNumber(v.y, fallback.y) };
 };
 
+const safePointClamped = (
+  value: unknown,
+  fallback: Point,
+  range: { min: number; max: number },
+): Point => {
+  const p = safePoint(value, fallback);
+  return {
+    x: clamp(p.x, range.min, range.max),
+    y: clamp(p.y, range.min, range.max),
+  };
+};
+
 const PROCGEN_GAIT_RANGE: Record<keyof WalkingEngineGait, { min: number; max: number }> = {
   stride: { min: 0, max: 2 },
   intensity: { min: 0, max: 2 },
@@ -525,8 +537,32 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
       : base.controlMode;
 
   const snappiness = isFiniteNumber(raw.snappiness) ? clamp(raw.snappiness, 0.05, 1.0) : base.snappiness;
-  const viewScale = isFiniteNumber(raw.viewScale) ? clamp(raw.viewScale, 0.1, 10.0) : base.viewScale;
-  const viewOffset = safePoint(raw.viewOffset, base.viewOffset);
+  const rawViewScale = (raw as any).viewScale;
+  const viewScale = isFiniteNumber(rawViewScale) ? clamp(rawViewScale, 0.1, 10.0) : base.viewScale;
+  if (rawViewScale !== undefined && viewScale !== rawViewScale) {
+    issues.push({
+      severity: 'info',
+      title: 'Normalized camera zoom',
+      detail: 'Loaded viewScale was invalid/out of range and was normalized.',
+      autoFixedFields: ['camera.viewScale'],
+    });
+  }
+
+  const viewOffset = safePointClamped(raw.viewOffset, base.viewOffset, { min: -50_000, max: 50_000 });
+  if (
+    raw.viewOffset !== undefined &&
+    (!raw.viewOffset ||
+      typeof raw.viewOffset !== 'object' ||
+      (raw.viewOffset as any).x !== viewOffset.x ||
+      (raw.viewOffset as any).y !== viewOffset.y)
+  ) {
+    issues.push({
+      severity: 'info',
+      title: 'Normalized camera pan',
+      detail: 'Loaded viewOffset was invalid/out of range and was normalized.',
+      autoFixedFields: ['camera.viewOffset'],
+    });
+  }
   const rigidity = (raw.rigidity === 'cardboard' || raw.rigidity === 'rubberhose' || raw.rigidity === 'realistic') ? raw.rigidity : base.rigidity;
   const physicsRigidity = isFiniteNumber((raw as any).physicsRigidity)
     ? clamp((raw as any).physicsRigidity as number, 0, 1)
