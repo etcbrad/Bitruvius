@@ -1,8 +1,11 @@
-import { viewModes, type ViewModeId } from '../viewModes';
+import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
 import { clamp } from '../utils';
 import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset } from './types';
+import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
+import { DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, DEFAULT_PROCEDURAL_BITRUVIAN_IDLE } from './bitruvian/types';
+import type { TransitionIssue, TransitionResult } from '@/lib/transitionIssues';
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
@@ -13,6 +16,24 @@ const safePoint = (value: unknown, fallback: Point): Point => {
   if (!value || typeof value !== 'object') return { ...fallback };
   const v = value as { x?: unknown; y?: unknown };
   return { x: safeNumber(v.x, fallback.x), y: safeNumber(v.y, fallback.y) };
+};
+
+const PROCGEN_GAIT_RANGE: Record<keyof WalkingEngineGait, { min: number; max: number }> = {
+  stride: { min: 0, max: 2 },
+  intensity: { min: 0, max: 2 },
+  gravity: { min: 0, max: 1 },
+  hover_height: { min: 0, max: 1 },
+  hip_sway: { min: 0, max: 1.5 },
+  waist_twist: { min: 0, max: 1.5 },
+  torso_swivel: { min: 0, max: 1.5 },
+  arm_swing: { min: 0, max: 2 },
+  arm_spread: { min: 0, max: 1 },
+  elbow_bend: { min: 0, max: 1.5 },
+  elbowFlexibility: { min: 0, max: 1 },
+  foot_roll: { min: 0, max: 1 },
+  kick_up_force: { min: 0, max: 1 },
+  head_spin: { min: -1, max: 1 },
+  lean: { min: -1, max: 1 },
 };
 
 const sanitizeRelatedJoints = (value: unknown, fallback: string[]): string[] => {
@@ -194,7 +215,6 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
   };
 };
 
-const VIEW_MODE_ID_SET = new Set<ViewModeId>(viewModes.map((m) => m.id));
 const CONTROL_MODE_SET = new Set<ControlMode>(['Cardboard', 'Rubberband', 'IK', 'JointDrag']);
 
 export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
@@ -258,16 +278,28 @@ export const makeDefaultState = (): SkeletonState => {
     leadEnabled: true,
     hardStop: true, // Enable hard stops for rigid joint limits
     physicsRigidity: 0, // 0..1 macro slider (0=rigid)
-    activePins: ['navel'],
+    activePins: [],
     showJoints: true,
     jointsOverMasks: false,
-    viewMode: '2D',
+    lookMode: 'default',
     controlMode: 'Cardboard', // Default to rigid FK-like behavior
     rigidity: 'cardboard', // Most rigid setting by default
-    physicsMode: '2D',
     snappiness: 1.0, // Maximum snappiness for crisp rigid movement
     viewScale: 1.0,
     viewOffset: { x: 0, y: 0 },
+    procgen: {
+      enabled: false,
+      mode: 'walk_in_place',
+      strength: 1,
+      seed: 1,
+      neutralPose: null,
+      bake: { cycleFrames: 48, keyframeStep: 4 },
+      options: { inPlace: true, groundingEnabled: true, pauseWhileDragging: true },
+      gait: { ...DEFAULT_PROCEDURAL_BITRUVIAN_GAIT },
+      gaitEnabled: {},
+      physics: { ...DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS },
+      idle: { ...DEFAULT_PROCEDURAL_BITRUVIAN_IDLE },
+    },
     timeline: {
       enabled: false,
       clip: {
@@ -434,15 +466,55 @@ const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { asse
   return { assets, cutoutSlots };
 };
 
-export const sanitizeState = (rawState: unknown): SkeletonState => {
+export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<SkeletonState> => {
   const base = makeDefaultState();
-  if (!rawState || typeof rawState !== 'object') return base;
+  const issues: TransitionIssue[] = [];
+  if (!rawState || typeof rawState !== 'object') return { state: base, issues };
   const raw = rawState as Partial<SkeletonState> & { [key: string]: unknown };
 
-  const viewMode =
-    typeof raw.viewMode === 'string' && VIEW_MODE_ID_SET.has(raw.viewMode as ViewModeId)
-      ? (raw.viewMode as ViewModeId)
-      : base.viewMode;
+  const rawLookMode = typeof (raw as any).lookMode === 'string' ? ((raw as any).lookMode as string) : null;
+  const rawLegacyViewMode = typeof (raw as any).viewMode === 'string' ? ((raw as any).viewMode as string) : null;
+
+  let lookMode: LookModeId = base.lookMode;
+  let forceLegacy3DRigid = false;
+  if (rawLookMode && LOOK_MODE_ID_SET.has(rawLookMode as LookModeId)) {
+    lookMode = rawLookMode as LookModeId;
+  } else if (rawLegacyViewMode) {
+    if (LOOK_MODE_ID_SET.has(rawLegacyViewMode as LookModeId)) {
+      lookMode = rawLegacyViewMode as LookModeId;
+      issues.push({
+        severity: 'info',
+        title: 'Migrated legacy viewMode',
+        detail: `Loaded legacy field "viewMode"="${rawLegacyViewMode}" into "lookMode".`,
+        autoFixedFields: ['look.lookMode'],
+      });
+    } else if (rawLegacyViewMode === '2D') {
+      lookMode = 'default';
+      issues.push({
+        severity: 'info',
+        title: 'Migrated legacy 2D viewMode',
+        detail: 'Legacy "viewMode=2D" is now a Look+Simulation split; using lookMode=default.',
+        autoFixedFields: ['look.lookMode'],
+      });
+    } else if (rawLegacyViewMode === '3D') {
+      lookMode = 'default';
+      forceLegacy3DRigid = true;
+      issues.push({
+        severity: 'info',
+        title: 'Migrated legacy 3D viewMode',
+        detail: 'Legacy "viewMode=3D" is now a Look+Simulation split; using lookMode=default and rigid FK simulation defaults.',
+        autoFixedFields: [
+          'look.lookMode',
+          'simulation.physicsRigidity',
+          'simulation.rigidity',
+          'simulation.controlMode',
+          'simulation.bendEnabled',
+          'simulation.stretchEnabled',
+          'simulation.hardStop',
+        ],
+      });
+    }
+  }
 
   const rawControlMode = typeof (raw as any).controlMode === 'string' ? ((raw as any).controlMode as string) : null;
   const normalizedControlMode =
@@ -456,7 +528,6 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
   const viewScale = isFiniteNumber(raw.viewScale) ? clamp(raw.viewScale, 0.1, 10.0) : base.viewScale;
   const viewOffset = safePoint(raw.viewOffset, base.viewOffset);
   const rigidity = (raw.rigidity === 'cardboard' || raw.rigidity === 'rubberhose' || raw.rigidity === 'realistic') ? raw.rigidity : base.rigidity;
-  const physicsMode = (raw.physicsMode === '2D' || raw.physicsMode === '3D') ? raw.physicsMode : base.physicsMode;
   const physicsRigidity = isFiniteNumber((raw as any).physicsRigidity)
     ? clamp((raw as any).physicsRigidity as number, 0, 1)
     : base.physicsRigidity;
@@ -558,22 +629,139 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
     ? raw.activeViewId 
     : (views.length > 0 ? views[0].id : '');
 
-  return {
+  const bendEnabled = typeof raw.bendEnabled === 'boolean' ? raw.bendEnabled : base.bendEnabled;
+  const stretchEnabled = typeof raw.stretchEnabled === 'boolean' ? raw.stretchEnabled : base.stretchEnabled;
+  const hardStop = typeof raw.hardStop === 'boolean' ? raw.hardStop : base.hardStop;
+
+  const finalControlMode = forceLegacy3DRigid ? 'Cardboard' : controlMode;
+  const finalRigidity = forceLegacy3DRigid ? 'cardboard' : rigidity;
+  const finalPhysicsRigidity = forceLegacy3DRigid ? 0 : physicsRigidity;
+  const finalBendEnabled = forceLegacy3DRigid ? false : bendEnabled;
+  const finalStretchEnabled = forceLegacy3DRigid ? false : stretchEnabled;
+  const finalHardStop = forceLegacy3DRigid ? true : hardStop;
+
+  const rawProcgen =
+    (raw as any).procgen && typeof (raw as any).procgen === 'object'
+      ? ((raw as any).procgen as Record<string, unknown>)
+      : null;
+
+  const procgen = (() => {
+    const safeMode = (value: unknown) => (value === 'walk_in_place' || value === 'idle' ? value : null);
+    const safeIdlePinnedFeet = (value: unknown) =>
+      value === 'left' || value === 'right' || value === 'both' || value === 'none' ? value : null;
+
+    const enabled = typeof rawProcgen?.enabled === 'boolean' ? (rawProcgen.enabled as boolean) : base.procgen.enabled;
+    const mode = safeMode(rawProcgen?.mode) ?? base.procgen.mode;
+    const strength = isFiniteNumber(rawProcgen?.strength) ? clamp(rawProcgen!.strength as number, 0, 3) : base.procgen.strength;
+    const seedRaw = isFiniteNumber(rawProcgen?.seed) ? Math.floor(rawProcgen!.seed as number) : base.procgen.seed;
+    const seed = clamp(seedRaw, 1, 0x7fffffff);
+
+    const neutralPose = sanitizePose((rawProcgen as any)?.neutralPose) ?? base.procgen.neutralPose;
+
+    const rawBake = rawProcgen?.bake && typeof rawProcgen.bake === 'object' ? (rawProcgen.bake as any) : null;
+    const bakeCycleFrames = isFiniteNumber(rawBake?.cycleFrames)
+      ? clamp(Math.floor(rawBake.cycleFrames), 2, 600)
+      : base.procgen.bake.cycleFrames;
+    const bakeKeyframeStep = isFiniteNumber(rawBake?.keyframeStep)
+      ? clamp(Math.floor(rawBake.keyframeStep), 1, 120)
+      : base.procgen.bake.keyframeStep;
+
+    const rawOptions =
+      rawProcgen?.options && typeof rawProcgen.options === 'object' ? (rawProcgen.options as any) : null;
+    const options = {
+      inPlace: typeof rawOptions?.inPlace === 'boolean' ? (rawOptions.inPlace as boolean) : base.procgen.options.inPlace,
+      groundingEnabled:
+        typeof rawOptions?.groundingEnabled === 'boolean'
+          ? (rawOptions.groundingEnabled as boolean)
+          : base.procgen.options.groundingEnabled,
+      pauseWhileDragging:
+        typeof rawOptions?.pauseWhileDragging === 'boolean'
+          ? (rawOptions.pauseWhileDragging as boolean)
+          : base.procgen.options.pauseWhileDragging,
+    };
+
+    const gait = (() => {
+      const rawGait = rawProcgen?.gait && typeof rawProcgen.gait === 'object' ? (rawProcgen.gait as any) : {};
+      const next: WalkingEngineGait = { ...base.procgen.gait };
+      (Object.keys(base.procgen.gait) as (keyof WalkingEngineGait)[]).forEach((key) => {
+        const v = rawGait[key];
+        if (!isFiniteNumber(v)) return;
+        const r = PROCGEN_GAIT_RANGE[key];
+        next[key] = clamp(v as number, r.min, r.max);
+      });
+      return next;
+    })();
+
+    const gaitEnabled = (() => {
+      const rawGE =
+        rawProcgen?.gaitEnabled && typeof rawProcgen.gaitEnabled === 'object' ? (rawProcgen.gaitEnabled as any) : {};
+      const out: Partial<Record<keyof WalkingEngineGait, boolean>> = {};
+      (Object.keys(base.procgen.gait) as (keyof WalkingEngineGait)[]).forEach((key) => {
+        const v = rawGE[key];
+        if (typeof v !== 'boolean') return;
+        out[key] = v as boolean;
+      });
+      return out;
+    })();
+
+    const physics = (() => {
+      const rawPhysics =
+        rawProcgen?.physics && typeof rawProcgen.physics === 'object' ? (rawProcgen.physics as any) : null;
+      const next: PhysicsControls = { ...base.procgen.physics };
+      if (isFiniteNumber(rawPhysics?.jointElasticity)) {
+        next.jointElasticity = clamp(rawPhysics.jointElasticity, 0, 1);
+      }
+      if (isFiniteNumber(rawPhysics?.stabilization)) {
+        next.stabilization = clamp(rawPhysics.stabilization, 0, 1);
+      }
+      return next;
+    })();
+
+    const idle = (() => {
+      const rawIdle = rawProcgen?.idle && typeof rawProcgen.idle === 'object' ? (rawProcgen.idle as any) : null;
+      const next: IdleSettings = { ...base.procgen.idle };
+      if (isFiniteNumber(rawIdle?.transitionSpeed)) next.transitionSpeed = clamp(rawIdle.transitionSpeed, 0, 1);
+      if (isFiniteNumber(rawIdle?.breathing)) next.breathing = clamp(rawIdle.breathing, 0, 1);
+      if (isFiniteNumber(rawIdle?.weightShift)) next.weightShift = clamp(rawIdle.weightShift, 0, 1);
+      if (isFiniteNumber(rawIdle?.posture)) next.posture = clamp(rawIdle.posture, -1, 1);
+      if (isFiniteNumber(rawIdle?.tension)) next.tension = clamp(rawIdle.tension, 0, 1);
+      if (isFiniteNumber(rawIdle?.gazeSway)) next.gazeSway = clamp(rawIdle.gazeSway, 0, 1);
+      if (isFiniteNumber(rawIdle?.fidgetFrequency)) next.fidgetFrequency = clamp(rawIdle.fidgetFrequency, 0, 1);
+      next.idlePinnedFeet = safeIdlePinnedFeet(rawIdle?.idlePinnedFeet) ?? base.procgen.idle.idlePinnedFeet;
+      return next;
+    })();
+
+    return {
+      enabled,
+      mode,
+      strength,
+      seed,
+      neutralPose,
+      bake: { cycleFrames: bakeCycleFrames, keyframeStep: bakeKeyframeStep },
+      options,
+      gait,
+      gaitEnabled,
+      physics,
+      idle,
+    };
+  })();
+
+  const state: SkeletonState = {
     joints: sanitizeJoints(raw.joints),
     mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
-    bendEnabled: typeof raw.bendEnabled === 'boolean' ? raw.bendEnabled : base.bendEnabled,
-    stretchEnabled: typeof raw.stretchEnabled === 'boolean' ? raw.stretchEnabled : base.stretchEnabled,
+    bendEnabled: finalBendEnabled,
+    stretchEnabled: finalStretchEnabled,
     leadEnabled: typeof raw.leadEnabled === 'boolean' ? raw.leadEnabled : base.leadEnabled,
-    hardStop: typeof raw.hardStop === 'boolean' ? raw.hardStop : base.hardStop,
-    physicsRigidity,
+    hardStop: finalHardStop,
+    physicsRigidity: finalPhysicsRigidity,
     activePins,
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,
     jointsOverMasks: typeof raw.jointsOverMasks === 'boolean' ? raw.jointsOverMasks : base.jointsOverMasks,
-    viewMode,
-    controlMode,
-    rigidity,
-    physicsMode,
+    lookMode,
+    controlMode: finalControlMode,
+    rigidity: finalRigidity,
     snappiness,
+    procgen,
     timeline: {
       enabled: typeof rawTimeline?.enabled === 'boolean' ? rawTimeline.enabled : base.timeline.enabled,
       clip: {
@@ -603,4 +791,9 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
     viewScale,
     viewOffset,
   };
+  return { state, issues };
+};
+
+export const sanitizeState = (rawState: unknown): SkeletonState => {
+  return sanitizeStateWithReport(rawState).state;
 };

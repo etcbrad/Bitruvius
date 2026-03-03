@@ -20,9 +20,10 @@ interface CutoutsUIProps {
   state: SkeletonState;
   setState: (updater: (prev: SkeletonState) => SkeletonState) => void;
   setStateWithHistory: (action: string, updater: (prev: SkeletonState) => SkeletonState) => void;
+  requestViewSwitch?: (viewId: string) => void;
 }
 
-export const CutoutsUI: React.FC<CutoutsUIProps> = ({ state, setState, setStateWithHistory }) => {
+export const CutoutsUI: React.FC<CutoutsUIProps> = ({ state, setState, setStateWithHistory, requestViewSwitch }) => {
   const [activeTab, setActiveTab] = useState<'assets' | 'slots' | 'views'>('assets');
 
   // Asset management
@@ -356,7 +357,11 @@ export const CutoutsUI: React.FC<CutoutsUIProps> = ({ state, setState, setStateW
               {state.views.map((view) => (
                 <div
                   key={view.id}
-                  onClick={() => setStateWithHistory('switch_view', switchToViewWrapper(view.id))}
+                  onClick={() => {
+                    if (state.activeViewId === view.id) return;
+                    if (requestViewSwitch) requestViewSwitch(view.id);
+                    else setStateWithHistory('switch_view', switchToViewWrapper(view.id));
+                  }}
                   className={`p-3 rounded-lg cursor-pointer transition-all ${
                     state.activeViewId === view.id
                       ? 'bg-white text-black'

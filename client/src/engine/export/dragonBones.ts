@@ -205,10 +205,14 @@ export const exportDragonBones = async (
 
   // Sort slots by zIndex
   const sortedSlots = Object.entries(state.cutoutSlots)
-    .filter(([_, slot]) => slot.visible && slot.assetId && state.assets[slot.assetId])
-    .sort(([_, a], [__, b]) => {
-      const aOverride = activeView.slotOverrides[a.id];
-      const bOverride = activeView.slotOverrides[b.id];
+    .filter(([slotId, slot]) => {
+      const override = activeView.slotOverrides?.[slotId];
+      const visible = override?.visible !== undefined ? Boolean(override.visible) : Boolean(slot.visible);
+      return visible && slot.assetId && state.assets[slot.assetId];
+    })
+    .sort(([slotIdA, a], [slotIdB, b]) => {
+      const aOverride = activeView.slotOverrides?.[slotIdA];
+      const bOverride = activeView.slotOverrides?.[slotIdB];
       const aZ = aOverride?.zIndex !== undefined ? aOverride.zIndex : a.zIndex;
       const bZ = bOverride?.zIndex !== undefined ? bOverride.zIndex : b.zIndex;
       return aZ - bZ;

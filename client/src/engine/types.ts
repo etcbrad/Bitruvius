@@ -1,4 +1,4 @@
-export type PhysicsMode = '2D' | '3D';
+import type { LookModeId } from './lookModes';
 
 export type RigidityPreset = 'cardboard' | 'realistic' | 'rubberhose';
 
@@ -293,6 +293,30 @@ export type TimelineState = {
   };
 };
 
+export type ProcgenMode = 'walk_in_place' | 'idle';
+
+export type ProcgenBakeSettings = { cycleFrames: number; keyframeStep: number };
+
+export type ProcgenOptions = {
+  inPlace: boolean;
+  groundingEnabled: boolean;
+  pauseWhileDragging: boolean;
+};
+
+export type ProcgenState = {
+  enabled: boolean;
+  mode: ProcgenMode;
+  strength: number;
+  seed: number;
+  neutralPose: EnginePoseSnapshot | null;
+  bake: ProcgenBakeSettings;
+  options: ProcgenOptions;
+  gait: import('./bitruvian/types').WalkingEngineGait;
+  gaitEnabled: Partial<Record<keyof import('./bitruvian/types').WalkingEngineGait, boolean>>;
+  physics: import('./bitruvian/types').PhysicsControls;
+  idle: import('./bitruvian/types').IdleSettings;
+};
+
 export type SceneState = {
   background: ReferenceLayer;
   foreground: ReferenceLayer;
@@ -316,13 +340,13 @@ export type SkeletonState = {
   activePins: string[];
   showJoints: boolean;
   jointsOverMasks: boolean;
-  viewMode: string;
+  lookMode: LookModeId;
   controlMode: ControlMode;
   rigidity: RigidityPreset;
-  physicsMode: PhysicsMode;
   snappiness: number;
   viewScale: number;
   viewOffset: Point;
+  procgen: ProcgenState;
   timeline: TimelineState;
   scene: SceneState;
   assets: Record<string, CutoutAsset>;
@@ -371,8 +395,6 @@ export type ControlMode = 'Cardboard' | 'Rubberband' | 'IK' | 'JointDrag';
 // Defines the rendering mode for the Bone component.
 // Simplified: 'grayscale' removed as UI is globally monochrome, 'silhouette' now represents solid black fill.
 export type RenderMode = 'default' | 'wireframe' | 'silhouette' | 'backlight'; // Added 'backlight'
-
-export type ViewMode = 'zoomed' | 'default' | 'lotte' | 'wide' | 'mobile'; // Added 'mobile'
 
 // Defines the min/max rotation limits for each joint (in degrees).
 export type JointLimits = {

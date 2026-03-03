@@ -27,16 +27,29 @@ export const createViewPreset = (
   };
 };
 
-export const switchToView = (state: SkeletonState, viewId: string): SkeletonState => {
-  const view = state.views.find(v => v.id === viewId);
+export const switchToView = (
+  state: SkeletonState,
+  viewId: string,
+  opts: { applyPose?: boolean; applyCamera?: boolean; applyReference?: boolean } = {},
+): SkeletonState => {
+  const view = state.views.find((v) => v.id === viewId);
   if (!view) return state;
 
-  // Apply pose to joints
-  const updatedJoints = applyPoseSnapshotToJoints(state.joints, view.pose);
+  const applyPose = opts.applyPose !== false;
+  const applyCamera = opts.applyCamera !== false;
+  const applyReference = opts.applyReference !== false;
 
-  // Apply camera overrides
-  const viewScale = view.camera?.viewScale ?? state.viewScale;
-  const viewOffset = view.camera?.viewOffset ?? state.viewOffset;
+  const updatedJoints = applyPose ? applyPoseSnapshotToJoints(state.joints, view.pose) : state.joints;
+  const viewScale = applyCamera ? (view.camera?.viewScale ?? state.viewScale) : state.viewScale;
+  const viewOffset = applyCamera ? (view.camera?.viewOffset ?? state.viewOffset) : state.viewOffset;
+
+  const nextScene = applyReference
+    ? {
+        ...state.scene,
+        background: { ...state.scene.background, ...(view.reference?.background || {}) },
+        foreground: { ...state.scene.foreground, ...(view.reference?.foreground || {}) },
+      }
+    : state.scene;
 
   return {
     ...state,
@@ -44,11 +57,7 @@ export const switchToView = (state: SkeletonState, viewId: string): SkeletonStat
     activeViewId: viewId,
     viewScale,
     viewOffset,
-    scene: {
-      ...state.scene,
-      background: { ...state.scene.background, ...(view.reference?.background || {}) },
-      foreground: { ...state.scene.foreground, ...(view.reference?.foreground || {}) },
-    },
+    scene: nextScene,
   };
 };
 
@@ -124,6 +133,10 @@ export const updateSlotOverrides = (
     ...state,
     views: updatedViews,
   };
+};
+
+export const getActiveView = (state: SkeletonState): ViewPreset | null => {
+  return state.views.find((v) => v.id === state.activeViewId) ?? null;
 };
 
 // Helper to get effective slot properties considering view overrides

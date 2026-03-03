@@ -5,8 +5,6 @@ import { SystemGrid } from "@/components/SystemGrid";
 import JSZip from 'jszip';
 import { 
   Activity, 
-  Lock, 
-  Unlock, 
   RotateCcw, 
   RotateCw,
   Maximize2, 
@@ -24,10 +22,12 @@ import {
   X,
   Grid,
   Sparkles,
-  Power
+  Power,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
-import { Joint, Point, SkeletonState, ControlMode, Connection } from './engine/types';
-import { viewModes, ViewModeId } from './viewModes';
+import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connection } from './engine/types';
+import { LOOK_MODES, type LookModeId } from './engine/lookModes';
 import { throttle, normA, d2r, r2d, clamp, lerp } from './utils';
 import { applyBalanceDragToState, applyDragToState } from './engine/interaction';
 import { fromAngleDeg, getWorldPosition, getWorldPositionFromOffsets, toAngleDeg, vectorLength } from './engine/kinematics';
@@ -44,15 +44,26 @@ import {
   simplifyRecordingFrames,
   type DragRecordingSession,
 } from './engine/autoPoseCapture';
-import { makeDefaultState, sanitizeState, sanitizeJoints } from './engine/settings';
+import { makeDefaultState, sanitizeStateWithReport, sanitizeJoints } from './engine/settings';
 import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
-import { generateProceduralPose, type ProceduralMode } from './engine/procedural';
+import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
+import { reconcileSkeletonState } from './engine/reconcileSkeletonState';
+import { syncLegacyMasksToCutouts } from './engine/legacyMaskSync';
+import { createViewPreset, deleteView, getActiveView, switchToView, updateViewFromCurrentState } from './engine/views';
+import { TransitionWarningDialog, getTransitionWarningsDisabled } from './components/TransitionWarningDialog';
+import {
+  ViewSwitchDialog,
+  getViewSwitchDefaultChoice,
+  getViewSwitchPromptDisabled,
+  type ViewSwitchChoice,
+} from './components/ViewSwitchDialog';
 import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
+import type { TransitionIssue } from '@/lib/transitionIssues';
 
 const LOCAL_STORAGE_KEY = 'bitruvius_state';
 const IMAGE_CACHE_KEY = 'bitruvius_image_cache';
@@ -192,8 +203,8 @@ const SyncedReferenceVideo = React.forwardRef<
         objectFit,
       }}
     />
-  );
-});
+	  );
+	});
 
 const SyncedReferenceSequenceCanvas = ({
   sequence,
@@ -387,16 +398,22 @@ type GridOverlayTransform = {
 };
 
 export default function App() {
+  const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
+
   const [state, setState] = useState<SkeletonState>(() => {
     const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
     if (saved) {
       const parsed = deserializeEngineState(saved);
       if (parsed.ok) {
-        const sanitizedState = sanitizeState(parsed.rawState);
         const defaults = makeDefaultState();
+        const sanitized = sanitizeStateWithReport(parsed.rawState);
+        const reconciled = reconcileSkeletonState(sanitized.state);
+        if (sanitized.issues.length || reconciled.issues.length) {
+          initialSanitizeIssuesRef.current = [...sanitized.issues, ...reconciled.issues].map((i) => ({ ...i, severity: 'info' }));
+        }
         
         // Restore cached images
-        const restoredState = { ...sanitizedState };
+        const restoredState = { ...reconciled.state };
         
                 // Restore cached images (videos are not cached in localStorage).
                 if (restoredState.scene.background.src && restoredState.scene.background.mediaType === 'image') {
@@ -439,7 +456,7 @@ export default function App() {
           }
         }
 
-    return restoredState;
+    return syncLegacyMasksToCutouts(restoredState);
   }
 }
 return makeDefaultState();
@@ -549,6 +566,10 @@ return makeDefaultState();
   const [timelineFrame, setTimelineFrame] = useState(0);
   const timelineFrameRef = useRef(0);
   const [timelinePlaying, setTimelinePlaying] = useState(false);
+  const timelinePinTargetsRef = useRef<Record<string, Point> | null>(null);
+  const timelinePinTargetsKeyRef = useRef<string>('');
+  const procgenRuntimeRef = useRef<ProcgenRuntime | null>(null);
+  const procgenNeutralFallbackRef = useRef<EnginePoseSnapshot | null>(null);
   const [poseTracingEnabled, setPoseTracingEnabled] = useState(() => localStorage.getItem(POSE_TRACE_KEY) === '1');
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const fgVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -558,6 +579,12 @@ return makeDefaultState();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const cursorHudRef = useRef<HTMLDivElement | null>(null);
+  const cursorReticleRef = useRef<HTMLDivElement | null>(null);
+  const cursorLabelRef = useRef<HTMLDivElement | null>(null);
+  const cursorTargetRef = useRef<HTMLDivElement | null>(null);
+  const precisionAnchorRef = useRef<null | { raw: Point; applied: Point }>(null);
+  const lastEffectiveMouseWorldRef = useRef<Point | null>(null);
   const importStateInputRef = useRef<HTMLInputElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [gridRingsBgData, setGridRingsBgData] = useState<GridRingsBackgroundData | null>(null);
@@ -574,6 +601,44 @@ return makeDefaultState();
   useEffect(() => {
     stateLiveRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    const isFullFluid = getPhysicsBlendMode(state) === 'fluid';
+    if (!state.timeline.enabled || !isFullFluid) {
+      timelinePinTargetsRef.current = null;
+      timelinePinTargetsKeyRef.current = '';
+      return;
+    }
+
+    const clip = state.timeline.clip;
+    const keyframes = Array.isArray(clip.keyframes) ? clip.keyframes : [];
+    const sig = `${state.activePins.join(',')}|${state.stretchEnabled ? 'S1' : 'S0'}|${clip.frameCount}|${
+      clip.fps
+    }|${clip.easing}|${keyframes.map((k) => k.frame).join(',')}`;
+
+    if (timelinePinTargetsRef.current && timelinePinTargetsKeyRef.current === sig) return;
+
+    const pose0 =
+      sampleClipPose(clip, 0, INITIAL_JOINTS, { stretchEnabled: state.stretchEnabled }) ??
+      capturePoseSnapshot(INITIAL_JOINTS, 'preview');
+
+    const targets = state.activePins.reduce<Record<string, Point>>((acc, pinId) => {
+      acc[pinId] = getWorldPositionFromOffsets(pinId, pose0.joints, INITIAL_JOINTS);
+      return acc;
+    }, {});
+
+    timelinePinTargetsRef.current = targets;
+    timelinePinTargetsKeyRef.current = sig;
+  }, [
+    state.activePins,
+    state.physicsRigidity,
+    state.stretchEnabled,
+    state.timeline.clip.easing,
+    state.timeline.clip.fps,
+    state.timeline.clip.frameCount,
+    state.timeline.clip.keyframes,
+    state.timeline.enabled,
+  ]);
 
   useEffect(() => {
     try {
@@ -594,9 +659,6 @@ return makeDefaultState();
       ? state.scene.foreground.videoStart +
         (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.foreground.videoRate : 0)
       : 0;
-          const [procgenMode, setProcgenMode] = useState<ProceduralMode>('walk');
-          const [procgenCycleFrames, setProcgenCycleFrames] = useState(48);
-          const [procgenStrength, setProcgenStrength] = useState(1);
   
   const [titleFont, setTitleFont] = useState('pixel-mono');
   
@@ -612,7 +674,9 @@ return makeDefaultState();
     'pixel-elegant': 'font-pixel-elegant',
   };
 
-          const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
+	          const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
+            const [dockedWidgets, setDockedWidgets] = useState<WidgetKind[]>([]);
+            const [activeDockedWidget, setActiveDockedWidget] = useState<WidgetKind | null>(null);
   const [widgetDragging, setWidgetDragging] = useState<null | {
     id: string;
     startClientX: number;
@@ -643,6 +707,16 @@ return makeDefaultState();
   }, []);
 
   const filteredConsoleLogs = consoleLogs.filter((log) => activeLogLevels.has(log.level));
+
+  const widgetTitleForKind = useCallback((kind: WidgetKind): string => {
+    if (kind === 'joint_masks') return 'Masks';
+    if (kind === 'bone_inspector') return 'Rig Inspector';
+    if (kind === 'console') return 'Console';
+    if (kind === 'camera') return 'Camera';
+    if (kind === 'procgen') return 'Auto Motion';
+    if (kind === 'atomic_units') return 'Advanced Controls';
+    return 'Widget';
+  }, []);
 
   const disposeSequenceData = useCallback((seq: ReferenceSequenceData) => {
     for (const frame of seq.frames) {
@@ -1032,18 +1106,6 @@ return makeDefaultState();
     };
   }, [widgetDragging]);
 
-  // Update physics mode based on view mode only (JointDrag is for proportions, not 3D)
-  useEffect(() => {
-    // Only 3D view mode allows stretching, JointDrag is for proportion editing
-    const newPhysicsMode = state.viewMode === '3D' ? '3D' : '2D';
-    if (state.physicsMode !== newPhysicsMode) {
-      setStateWithHistory('update_physics_mode', (prev) => ({
-        ...prev,
-        physicsMode: newPhysicsMode,
-      }));
-    }
-  }, [state.viewMode]);
-
   // Save background color to localStorage when it changes
   useEffect(() => {
     localStorage.setItem(BACKGROUND_COLOR_KEY, backgroundColor);
@@ -1051,7 +1113,7 @@ return makeDefaultState();
 
   // Handle Nosferatu mode styling - only set background if user hasn't changed it
   useEffect(() => {
-    if (state.viewMode === 'nosferatu') {
+    if (state.lookMode === 'nosferatu') {
       // Only change to black if user is still using the default background
       const savedColor = localStorage.getItem(BACKGROUND_COLOR_KEY);
       if (!savedColor || savedColor === '#fff3d1') {
@@ -1059,12 +1121,14 @@ return makeDefaultState();
       }
     }
     // Note: We don't reset the background when leaving nosferatu mode to preserve user choice
-  }, [state.viewMode]);
+  }, [state.lookMode]);
 
   const setStateWithHistory = useCallback(
     (actionId: string, update: (prev: SkeletonState) => SkeletonState) => {
       setState((prev) => {
-        const next = update(prev);
+        const proposed = update(prev);
+        if (Object.is(proposed, prev)) return prev;
+        const next = syncLegacyMasksToCutouts(proposed);
         if (!Object.is(next, prev)) {
           historyCtrlRef.current.pushUndo(actionId, prev);
         }
@@ -1074,11 +1138,234 @@ return makeDefaultState();
     [],
   );
 
+  const captureProcgenNeutralFromCurrent = useCallback(() => {
+    setTimelinePlaying(false);
+    setStateWithHistory('procgen:setNeutralFromCurrent', (prev) => ({
+      ...prev,
+      procgen: { ...prev.procgen, neutralPose: capturePoseSnapshot(prev.joints, 'preview') },
+    }));
+  }, [setStateWithHistory]);
+
+  const resetProcgenNeutralToTPose = useCallback(() => {
+    setTimelinePlaying(false);
+    setStateWithHistory('procgen:setNeutralToTPose', (prev) => ({
+      ...prev,
+      procgen: { ...prev.procgen, neutralPose: capturePoseSnapshot(INITIAL_JOINTS, 'preview') },
+    }));
+  }, [setStateWithHistory]);
+
+  const resetProcgenPhase = useCallback(() => {
+    const seed = Math.max(1, Math.floor(stateLiveRef.current.procgen.seed || 1));
+    if (!procgenRuntimeRef.current) {
+      procgenRuntimeRef.current = createProcgenRuntime(seed);
+    } else {
+      resetProcgenRuntime(procgenRuntimeRef.current, seed);
+    }
+  }, []);
+
+  const requestProcgenBake = useCallback(() => {
+    setTimelinePlaying(false);
+    timelineFrameRef.current = 0;
+    setTimelineFrame(0);
+
+    setStateWithHistory('procgen:bakeloop', (prev) => {
+      const frameCount = clamp(Math.floor(prev.procgen.bake.cycleFrames), 2, 600);
+      const fps = Math.max(1, Math.floor(prev.timeline.clip.fps || 24));
+      const neutral = prev.procgen.neutralPose ?? capturePoseSnapshot(prev.joints, 'preview');
+
+      const keyframes = bakeProcgenLoop({
+        neutral,
+        fps,
+        frameCount,
+        strength: prev.procgen.strength,
+        seed: prev.procgen.seed,
+        mode: prev.procgen.mode,
+        gait: prev.procgen.gait,
+        gaitEnabled: prev.procgen.gaitEnabled,
+        physics: prev.procgen.physics,
+        idle: prev.procgen.idle,
+        options: prev.procgen.options,
+        keyframeStep: prev.procgen.bake.keyframeStep,
+      });
+
+      const firstPose = keyframes[0]?.pose ?? neutral;
+      return {
+        ...prev,
+        procgen: { ...prev.procgen, enabled: false },
+        joints: applyPoseSnapshotToJoints(prev.joints, firstPose),
+        timeline: {
+          ...prev.timeline,
+          enabled: true,
+          clip: {
+            ...prev.timeline.clip,
+            frameCount,
+            keyframes,
+          },
+        },
+      };
+    });
+  }, [setStateWithHistory]);
+
+  const pendingTransitionIssuesRef = useRef<TransitionIssue[] | null>(null);
+  const [transitionWarningOpen, setTransitionWarningOpen] = useState(false);
+  const [transitionWarningIssues, setTransitionWarningIssues] = useState<TransitionIssue[]>([]);
+
+  const [viewSwitchOpen, setViewSwitchOpen] = useState(false);
+  const [viewSwitchToId, setViewSwitchToId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!initialSanitizeIssuesRef.current || initialSanitizeIssuesRef.current.length === 0) return;
+    pendingTransitionIssuesRef.current = initialSanitizeIssuesRef.current;
+    initialSanitizeIssuesRef.current = null;
+  }, []);
+
+  const applyEngineTransition = useCallback(
+    (
+      actionId: string,
+      update: (prev: SkeletonState) => SkeletonState,
+      opts: { pushHistory?: boolean } = {},
+    ) => {
+      setState((prev) => {
+        const proposed = update(prev);
+        if (Object.is(proposed, prev)) return prev;
+
+        const requested = new Set<string>();
+        if (prev.lookMode !== proposed.lookMode) requested.add('look.lookMode');
+        if ((prev.physicsRigidity ?? 0) !== (proposed.physicsRigidity ?? 0)) requested.add('simulation.physicsRigidity');
+        if (prev.activeViewId !== proposed.activeViewId) requested.add('view.activeViewId');
+        if (prev.showJoints !== proposed.showJoints) requested.add('render.showJoints');
+        if (prev.jointsOverMasks !== proposed.jointsOverMasks) requested.add('render.jointsOverMasks');
+
+        const reconciled = reconcileSkeletonState(proposed);
+        const annotated = reconciled.issues.map((issue) => {
+          const warning = issue.autoFixedFields.some((f) => requested.has(f));
+          return { ...issue, severity: warning ? 'warning' : 'info' } as TransitionIssue;
+        });
+
+        if (annotated.length > 0) pendingTransitionIssuesRef.current = annotated;
+
+        const next = reconciled.state;
+        const push = opts.pushHistory !== false;
+        if (push && !Object.is(next, prev)) {
+          historyCtrlRef.current.pushUndo(actionId, prev);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const pending = pendingTransitionIssuesRef.current;
+    if (!pending || pending.length === 0) return;
+    pendingTransitionIssuesRef.current = null;
+
+    for (const issue of pending) {
+      addConsoleLog(issue.severity === 'warning' ? 'warning' : 'info', issue.title + ': ' + issue.detail);
+    }
+
+    const warnings = pending.filter((i) => i.severity === 'warning');
+    if (warnings.length > 0 && !getTransitionWarningsDisabled()) {
+      setTransitionWarningIssues(warnings);
+      setTransitionWarningOpen(true);
+    }
+  }, [addConsoleLog, state]);
+
+  const performViewSwitch = useCallback(
+    (viewId: string, choice: ViewSwitchChoice, saveCurrent: boolean) => {
+      applyEngineTransition(
+        'switch_view',
+        (prev) => {
+          const base = saveCurrent && prev.activeViewId ? updateViewFromCurrentState(prev, prev.activeViewId) : prev;
+          const opts =
+            choice === 'camera_reference_only'
+              ? { applyPose: false, applyCamera: true, applyReference: true }
+              : { applyPose: true, applyCamera: true, applyReference: true };
+          return switchToView(base, viewId, opts);
+        },
+        { pushHistory: true },
+      );
+    },
+    [applyEngineTransition],
+  );
+
+  const requestViewSwitch = useCallback(
+    (viewId: string) => {
+      const live = stateLiveRef.current;
+      if (viewId === live.activeViewId) return;
+      const toView = live.views.find((v) => v.id === viewId);
+      if (!toView) return;
+
+      const currentPose = capturePoseSnapshot(live.joints, 'preview');
+      const poseDiffers = (a: typeof currentPose, b: typeof currentPose) => {
+        for (const k of Object.keys(a.joints)) {
+          const pa = a.joints[k];
+          const pb = b.joints[k];
+          if (!pb) return true;
+          const dx = pa.x - pb.x;
+          const dy = pa.y - pb.y;
+          if (dx * dx + dy * dy > 1e-10) return true;
+        }
+        for (const k of Object.keys(b.joints)) {
+          if (!(k in a.joints)) return true;
+        }
+        return false;
+      };
+
+      const cameraDiffers =
+        (toView.camera?.viewScale ?? live.viewScale) !== live.viewScale ||
+        (toView.camera?.viewOffset?.x ?? live.viewOffset.x) !== live.viewOffset.x ||
+        (toView.camera?.viewOffset?.y ?? live.viewOffset.y) !== live.viewOffset.y;
+
+      const refKey = (layer: any) =>
+        JSON.stringify({
+          src: layer?.src ?? null,
+          visible: Boolean(layer?.visible),
+          opacity: Number(layer?.opacity ?? 1),
+          x: Number(layer?.x ?? 0),
+          y: Number(layer?.y ?? 0),
+          scale: Number(layer?.scale ?? 1),
+          rotation: Number(layer?.rotation ?? 0),
+          fitMode: layer?.fitMode ?? 'contain',
+          mediaType: layer?.mediaType ?? 'image',
+          videoStart: Number(layer?.videoStart ?? 0),
+          videoRate: Number(layer?.videoRate ?? 1),
+          sequenceId: layer?.sequence?.id ?? null,
+        });
+
+      const referenceDiffers =
+        refKey({ ...live.scene.background, ...(toView.reference?.background || {}) }) !== refKey(live.scene.background) ||
+        refKey({ ...live.scene.foreground, ...(toView.reference?.foreground || {}) }) !== refKey(live.scene.foreground);
+
+      const poseWouldChange = poseDiffers(currentPose, toView.pose);
+
+      const activeView = getActiveView(live);
+      const unsaved =
+        activeView &&
+        (poseDiffers(currentPose, activeView.pose) ||
+          (activeView.camera?.viewScale ?? live.viewScale) !== live.viewScale ||
+          (activeView.camera?.viewOffset?.x ?? live.viewOffset.x) !== live.viewOffset.x ||
+          (activeView.camera?.viewOffset?.y ?? live.viewOffset.y) !== live.viewOffset.y ||
+          refKey({ ...live.scene.background }) !== refKey({ ...live.scene.background, ...(activeView.reference?.background || {}) }) ||
+          refKey({ ...live.scene.foreground }) !== refKey({ ...live.scene.foreground, ...(activeView.reference?.foreground || {}) }));
+
+      const shouldPrompt = Boolean(poseWouldChange || cameraDiffers || referenceDiffers || unsaved);
+
+      if (getViewSwitchPromptDisabled() || !shouldPrompt) {
+        performViewSwitch(viewId, getViewSwitchDefaultChoice(), false);
+        return;
+      }
+
+      setViewSwitchToId(viewId);
+      setViewSwitchOpen(true);
+    },
+    [performViewSwitch],
+  );
+
   const applyFluidHandshake = useCallback((prev: SkeletonState, next: SkeletonState): SkeletonState => {
     const settingsChanged =
       prev.controlMode !== next.controlMode ||
       prev.rigidity !== next.rigidity ||
-      prev.physicsMode !== next.physicsMode ||
       Boolean(prev.stretchEnabled) !== Boolean(next.stretchEnabled) ||
       Boolean(prev.bendEnabled) !== Boolean(next.bendEnabled) ||
       Boolean(prev.hardStop) !== Boolean(next.hardStop) ||
@@ -1136,8 +1423,11 @@ return makeDefaultState();
           alert(`Import failed: ${parsed.error}`);
           return;
         }
-        const next = sanitizeState(parsed.rawState);
-        setStateWithHistory('import_state', () => next);
+        const sanitized = sanitizeStateWithReport(parsed.rawState);
+        const reconciled = reconcileSkeletonState(sanitized.state);
+        const issues = [...sanitized.issues, ...reconciled.issues].map((i) => ({ ...i, severity: 'info' as const }));
+        if (issues.length > 0) pendingTransitionIssuesRef.current = issues;
+        setStateWithHistory('import_state', () => reconciled.state);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         alert(`Import failed: ${message}`);
@@ -1186,34 +1476,34 @@ return makeDefaultState();
 
     try {
       setTimelinePlaying(false);
-      await exportAsWebm({
-        width: canvasSize.width,
-        height: canvasSize.height,
-        backgroundColor,
-        fps: state.timeline.clip.fps,
-        scale: 1,
-        timeline: state.timeline,
-        baseJoints: INITIAL_JOINTS,
-        connections: CONNECTIONS,
-        scene: state.scene,
-        activePins: state.activePins,
-        stretchEnabled: state.stretchEnabled,
-        fallbackPose: capturePoseSnapshot(state.joints, 'preview'),
-      });
+	      await exportAsWebm({
+	        width: canvasSize.width,
+	        height: canvasSize.height,
+	        backgroundColor,
+	        fps: state.timeline.clip.fps,
+	        scale: 1,
+	        timeline: state.timeline,
+	        baseJoints: INITIAL_JOINTS,
+	        connections: CONNECTIONS,
+	        scene: state.scene,
+	        activePins: state.activePins,
+	        stretchEnabled: state.stretchEnabled,
+	        fallbackPose: capturePoseSnapshot(state.joints, 'preview'),
+	      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       alert(`Video export failed: ${message}`);
     }
-  }, [
-    backgroundColor,
-    canvasSize.height,
-    canvasSize.width,
-    state.activePins,
-    state.scene,
-    state.stretchEnabled,
-    state.timeline,
-    state.joints,
-  ]);
+	  }, [
+	    backgroundColor,
+	    canvasSize.height,
+	    canvasSize.width,
+	    state.activePins,
+	    state.scene,
+	    state.stretchEnabled,
+	    state.timeline,
+	    state.joints,
+	  ]);
 
   const uploadMaskFile = useCallback(
     async (file: File) => {
@@ -1312,12 +1602,12 @@ return makeDefaultState();
             ...prev.scene.jointMasks,
             [targetJointId]: {
               ...prev.scene.jointMasks[targetJointId],
+              ...sourceMask,
               src: sourceMask.src,
               visible: true,
-              opacity: sourceMask.opacity,
-              scale: sourceMask.scale,
-              offsetX: sourceMask.offsetX,
-              offsetY: sourceMask.offsetY,
+              relatedJoints: (sourceMask.relatedJoints || []).filter(
+                (id) => id && id !== targetJointId && id in prev.joints,
+              ),
             },
           },
         },
@@ -1328,7 +1618,7 @@ return makeDefaultState();
       
       addConsoleLog('success', `Mask copied from ${sourceJointId} to ${targetJointId}`);
     },
-    [addConsoleLog, setStateWithHistory, state.scene.jointMasks],
+    [addConsoleLog, setStateWithHistory, state.scene.jointMasks, state.joints],
   );
 
   const handleCopyMaskChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -1575,6 +1865,12 @@ return makeDefaultState();
   }, [state.timeline.enabled]);
 
   useEffect(() => {
+    if (!state.procgen.enabled) return;
+    if (!timelinePlaying) return;
+    setTimelinePlaying(false);
+  }, [state.procgen.enabled, timelinePlaying]);
+
+  useEffect(() => {
     const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
     setTimelineFrame((f) => clamp(f, 0, maxFrame));
   }, [state.timeline.clip.frameCount]);
@@ -1730,14 +2026,66 @@ return makeDefaultState();
     let last = performance.now();
     const update = () => {
       setState(prev => {
-        const now = performance.now();
-        const dt = Math.max(0, (now - last) / 1000);
-        last = now;
+	        const now = performance.now();
+	        const dt = Math.max(0, (now - last) / 1000);
+	        last = now;
 
-        const drag = dragTargetRef.current;
-        const isDirectManipulation = Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current;
-        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
-        const physicsActive = shouldRunPosePhysics(prev) && (Boolean(drag) || prev.activePins.length > 0);
+	        const drag = dragTargetRef.current;
+	        const isDirectManipulation = Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current;
+	        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
+	        const allowPosePhysics = !prev.timeline.enabled || prev.procgen.enabled || isDirectManipulation || Boolean(drag);
+	        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activePins.length > 0);
+
+        const applyPoseSnapshotToPreviewOffsetsOnly = (
+          joints: Record<string, Joint>,
+          pose: EnginePoseSnapshot,
+        ): Record<string, Joint> => {
+          const next: Record<string, Joint> = { ...joints };
+          for (const id of Object.keys(INITIAL_JOINTS)) {
+            const j = next[id] ?? INITIAL_JOINTS[id]!;
+            const off = pose.joints[id] ?? j.previewOffset;
+            next[id] = { ...j, previewOffset: off };
+          }
+          return next;
+        };
+
+        let procgenPreviewApplied = false;
+        let jointsForFrame: Record<string, Joint> = prev.joints;
+        if (prev.procgen.enabled) {
+          const shouldPause = prev.procgen.options.pauseWhileDragging && isDirectManipulation;
+
+          if (!shouldPause) {
+            if (!procgenRuntimeRef.current || procgenRuntimeRef.current.seed !== prev.procgen.seed) {
+              procgenRuntimeRef.current = createProcgenRuntime(prev.procgen.seed);
+            }
+
+            if (prev.procgen.neutralPose) {
+              procgenNeutralFallbackRef.current = null;
+            } else if (!procgenNeutralFallbackRef.current) {
+              procgenNeutralFallbackRef.current = capturePoseSnapshot(prev.joints, 'preview');
+            }
+
+            const neutral = prev.procgen.neutralPose ?? procgenNeutralFallbackRef.current ?? capturePoseSnapshot(prev.joints, 'preview');
+            const snapshot = stepProcgenPose({
+              runtime: procgenRuntimeRef.current,
+              mode: prev.procgen.mode,
+              neutral,
+              dtSec: dt,
+              strength: prev.procgen.strength,
+              gait: prev.procgen.gait,
+              gaitEnabled: prev.procgen.gaitEnabled,
+              physics: prev.procgen.physics,
+              idle: prev.procgen.idle,
+              options: prev.procgen.options,
+            });
+
+            jointsForFrame = applyPoseSnapshotToPreviewOffsetsOnly(prev.joints, snapshot);
+            procgenPreviewApplied = true;
+          }
+        } else {
+          procgenRuntimeRef.current = null;
+          procgenNeutralFallbackRef.current = null;
+        }
         
         // Exclude navel and collar from physics when they're being dragged to prevent tension/jitter
         const navelIsDragged = drag?.id === 'navel';
@@ -1747,7 +2095,6 @@ return makeDefaultState();
           const handshakeKey = [
             prev.controlMode,
             prev.rigidity,
-            prev.physicsMode,
             prev.stretchEnabled ? 'S1' : 'S0',
             prev.bendEnabled ? 'B1' : 'B0',
             prev.hardStop ? 'H1' : 'H0',
@@ -1759,43 +2106,47 @@ return makeDefaultState();
             hingeSignsRef.current = {};
           }
 
-          const drag = dragTargetRef.current;
-          const pinTargets = pinTargetsRef.current;
-          const activePinTargets: Record<string, Point> = {};
-          for (const id of prev.activePins) {
-            const t = pinTargets[id];
-            if (t) activePinTargets[id] = t;
-          }
+	          const pinTargets = pinTargetsRef.current;
+	          const activePinTargets: Record<string, Point> = {};
+	          for (const id of prev.activePins) {
+	            const t = pinTargets[id];
+	            if (t) activePinTargets[id] = t;
+	          }
 
           const rubberbandAnchor = rubberbandAnchorPinRef.current;
           const activePins =
             rubberbandAnchor && rubberbandAnchor.id in prev.joints
               ? Array.from(new Set([...prev.activePins, rubberbandAnchor.id]))
               : prev.activePins;
-          if (rubberbandAnchor && rubberbandAnchor.id in prev.joints) {
-            activePinTargets[rubberbandAnchor.id] = rubberbandAnchor.target;
-          }
+	          if (rubberbandAnchor && rubberbandAnchor.id in prev.joints) {
+	            activePinTargets[rubberbandAnchor.id] = rubberbandAnchor.target;
+	          }
 
-          const result = stepPosePhysics({
-            joints: prev.joints,
-            activePins,
-            pinTargets: activePinTargets,
-            drag: drag && drag.id in prev.joints ? drag : null,
-            connectionOverrides: prev.connectionOverrides,
-            options: {
-              dt: isRigidDragMode ? Math.min(dt, 1 / 60) : dt,
-              iterations: isRigidDragMode ? 28 : 16,
-              damping: isRigidDragMode ? 0.18 : 0.12,
-              wireCompliance: 0.0015,
-              rigidity: prev.rigidity,
-              hardStop: prev.hardStop,
-              // Auto-bend is great for settle/idle, but it can fight cursor-locked FK drags and create jitter.
-              autoBend: prev.bendEnabled && !(isRigidDragMode && isDirectManipulation),
-              hingeSigns: hingeSignsRef.current,
-              physicsMode: prev.physicsMode,
-              stretchEnabled: prev.stretchEnabled,
-            },
-          });
+	          const dragInput = drag && drag.id in prev.joints ? drag : null;
+	          const dragIsPinned = Boolean(dragInput && prev.activePins.includes(dragInput.id));
+	          if (dragIsPinned && dragInput) {
+	            activePinTargets[dragInput.id] = dragInput.target;
+	          }
+
+	          const result = stepPosePhysics({
+	            joints: jointsForFrame,
+	            activePins,
+	            pinTargets: activePinTargets,
+	            drag: dragIsPinned ? null : dragInput,
+	            connectionOverrides: prev.connectionOverrides,
+	            options: {
+	              dt: isRigidDragMode ? Math.min(dt, 1 / 60) : dt,
+	              iterations: isRigidDragMode ? 28 : 16,
+	              damping: isRigidDragMode ? 0.18 : 0.12,
+	              wireCompliance: 0.0015,
+	              rigidity: prev.rigidity,
+	              hardStop: prev.hardStop,
+	              // Auto-bend is great for settle/idle, but it can fight cursor-locked FK drags and create jitter.
+	              autoBend: prev.bendEnabled && !(isRigidDragMode && isDirectManipulation),
+	              hingeSigns: hingeSignsRef.current,
+	              stretchEnabled: prev.stretchEnabled,
+	            },
+	          });
           hingeSignsRef.current = result.hingeSigns;
 
           // Blend physics results in over a short ramp when settings change, so toggling
@@ -1810,9 +2161,9 @@ return makeDefaultState();
           const t = clamp(physicsHandshakeRef.current.blend, 0, 1);
           if (t >= 0.999) return { ...prev, joints: result.joints };
 
-          const blended: Record<string, Joint> = { ...prev.joints };
+          const blended: Record<string, Joint> = { ...jointsForFrame };
           for (const id of Object.keys(result.joints)) {
-            const before = prev.joints[id] ?? result.joints[id]!;
+            const before = jointsForFrame[id] ?? result.joints[id]!;
             const after = result.joints[id]!;
             const off = {
               x: lerp(before.previewOffset.x, after.previewOffset.x, t),
@@ -1824,7 +2175,7 @@ return makeDefaultState();
           return { ...prev, joints: blended };
         }
 
-        const nextJoints = { ...prev.joints };
+        const nextJoints = { ...jointsForFrame };
         let changed = false;
 
         // While the user is actively dragging (joint or mask), the rig should
@@ -1866,7 +2217,7 @@ return makeDefaultState();
           }
         });
 
-        if (changed) return { ...prev, joints: nextJoints };
+        if (changed || procgenPreviewApplied) return { ...prev, joints: nextJoints };
         return prev;
       });
       frameId = requestAnimationFrame(update);
@@ -1885,6 +2236,7 @@ return makeDefaultState();
   }, [state.joints]);
 
   useEffect(() => {
+    if (state.procgen.enabled) return;
     if (!state.timeline.enabled) return;
     if (!timelinePlaying) return;
 
@@ -1917,11 +2269,48 @@ return makeDefaultState();
         timelineFrameRef.current = nextFrame;
         setTimelineFrame(nextFrame);
         setState((prev) => {
-          const pose = sampleClipPose(prev.timeline.clip, nextFrame, prev.joints, {
+          const pose = sampleClipPose(prev.timeline.clip, nextFrame, INITIAL_JOINTS, {
             stretchEnabled: prev.stretchEnabled,
           });
           if (!pose) return prev;
-          return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
+
+          const isFullFluid = getPhysicsBlendMode(prev) === 'fluid';
+          if (!isFullFluid || prev.activePins.length === 0) {
+            return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
+          }
+
+          const seeded = applyPoseSnapshotToJoints(prev.joints, pose);
+          const pinTargets =
+            timelinePinTargetsRef.current ??
+            (() => {
+              const pose0 =
+                sampleClipPose(prev.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled }) ??
+                capturePoseSnapshot(INITIAL_JOINTS, 'preview');
+              return prev.activePins.reduce<Record<string, Point>>((acc, pinId) => {
+                acc[pinId] = getWorldPositionFromOffsets(pinId, pose0.joints, INITIAL_JOINTS);
+                return acc;
+              }, {});
+            })();
+	          const projected = stepPosePhysics({
+	            joints: seeded,
+	            baseJoints: INITIAL_JOINTS,
+	            activePins: prev.activePins,
+	            pinTargets,
+	            drag: null,
+	            connectionOverrides: prev.connectionOverrides,
+	            options: {
+	              dt: 1 / 60,
+	              iterations: 22,
+	              damping: 0.12,
+	              wireCompliance: 0.0015,
+	              rigidity: prev.rigidity,
+	              hardStop: prev.hardStop,
+	              autoBend: prev.bendEnabled,
+	              stretchEnabled: prev.stretchEnabled,
+	            },
+	          }).joints;
+
+          return { ...prev, joints: projected };
         });
       }
 
@@ -1931,6 +2320,7 @@ return makeDefaultState();
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
   }, [
+    state.procgen.enabled,
     state.timeline.enabled,
     state.timeline.clip.easing,
     state.timeline.clip.fps,
@@ -1940,14 +2330,52 @@ return makeDefaultState();
   ]);
 
   useEffect(() => {
+    if (state.procgen.enabled) return;
     if (!state.timeline.enabled) return;
     if (timelinePlaying) return;
     setState((prev) => {
-      const pose = sampleClipPose(prev.timeline.clip, timelineFrame, prev.joints, { stretchEnabled: prev.stretchEnabled });
+      const pose = sampleClipPose(prev.timeline.clip, timelineFrame, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled });
       if (!pose) return prev;
-      return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
+
+      const isFullFluid = getPhysicsBlendMode(prev) === 'fluid';
+      if (!isFullFluid || prev.activePins.length === 0) {
+        return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
+      }
+
+      const seeded = applyPoseSnapshotToJoints(prev.joints, pose);
+      const pinTargets =
+        timelinePinTargetsRef.current ??
+        (() => {
+          const pose0 =
+            sampleClipPose(prev.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled }) ??
+            capturePoseSnapshot(INITIAL_JOINTS, 'preview');
+          return prev.activePins.reduce<Record<string, Point>>((acc, pinId) => {
+            acc[pinId] = getWorldPositionFromOffsets(pinId, pose0.joints, INITIAL_JOINTS);
+            return acc;
+          }, {});
+        })();
+	      const projected = stepPosePhysics({
+	        joints: seeded,
+	        baseJoints: INITIAL_JOINTS,
+	        activePins: prev.activePins,
+	        pinTargets,
+	        drag: null,
+	        connectionOverrides: prev.connectionOverrides,
+	        options: {
+	          dt: 1 / 60,
+	          iterations: 22,
+	          damping: 0.12,
+	          wireCompliance: 0.0015,
+	          rigidity: prev.rigidity,
+	          hardStop: prev.hardStop,
+	          autoBend: prev.bendEnabled,
+	          stretchEnabled: prev.stretchEnabled,
+	        },
+	      }).joints;
+
+      return { ...prev, joints: projected };
     });
-  }, [state.timeline.enabled, state.timeline.clip, timelineFrame, timelinePlaying]);
+  }, [state.procgen.enabled, state.timeline.enabled, state.timeline.clip, timelineFrame, timelinePlaying]);
 
   const handleMouseDown = (id: string) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1958,6 +2386,8 @@ return makeDefaultState();
     syncRigFocusFromJointId(id);
     historyCtrlRef.current.beginAction(`drag:${id}`, state);
     draggingIdLiveRef.current = id;
+    precisionAnchorRef.current = null;
+    lastEffectiveMouseWorldRef.current = getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
 
     if (autoPoseCaptureEnabled) {
       if (autoPoseRecordingTimerRef.current) {
@@ -2084,34 +2514,143 @@ return makeDefaultState();
     });
   };
 
-    const getMouseWorld = (clientX: number, clientY: number): Point => {
-      const rect = canvasRef.current?.getBoundingClientRect();
-      if (!rect) return { x: 0, y: 0 };
-      
-      const screenX = clientX - rect.left;
-      const screenY = clientY - rect.top;
-      
-      const centerX = canvasSize.width / 2;
-      const centerY = canvasSize.height / 2;
-      
-      const transformedX = (screenX - state.viewOffset.x) / state.viewScale;
-      const transformedY = (screenY - state.viewOffset.y) / state.viewScale;
-      
+  const WORLD_PX_SCALE = 20;
+  const PRECISION_DRAG_SCALE = 0.2; // hold Alt for 20% drag sensitivity
+
+  const getMouseCanvasPx = (clientX: number, clientY: number): Point | null => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  };
+
+  const getMouseWorld = (clientX: number, clientY: number): Point => {
+    const p = getMouseCanvasPx(clientX, clientY);
+    if (!p) return { x: 0, y: 0 };
+
+    const centerX = canvasSize.width / 2;
+    const centerY = canvasSize.height / 2;
+
+    const transformedX = (p.x - state.viewOffset.x) / state.viewScale;
+    const transformedY = (p.y - state.viewOffset.y) / state.viewScale;
+
     return {
-      x: (transformedX - centerX) / (20),
-      y: (transformedY - centerY) / (20),
+      x: (transformedX - centerX) / WORLD_PX_SCALE,
+      y: (transformedY - centerY) / WORLD_PX_SCALE,
     };
+  };
+
+  const worldToCanvasPx = (world: Point): Point => {
+    const centerX = canvasSize.width / 2;
+    const centerY = canvasSize.height / 2;
+    const baseX = world.x * WORLD_PX_SCALE + centerX;
+    const baseY = world.y * WORLD_PX_SCALE + centerY;
+    return {
+      x: baseX * state.viewScale + state.viewOffset.x,
+      y: baseY * state.viewScale + state.viewOffset.y,
     };
+  };
+
+  const hideCursorHud = () => {
+    if (cursorHudRef.current) cursorHudRef.current.style.opacity = '0';
+    if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
+  };
+
+  const updateCursorHud = (args: {
+    clientX: number;
+    clientY: number;
+    rawWorld: Point;
+    effectiveWorld: Point;
+    altKey: boolean;
+    shiftKey: boolean;
+    showTarget: boolean;
+  }) => {
+    const hud = cursorHudRef.current;
+    const reticle = cursorReticleRef.current;
+    const label = cursorLabelRef.current;
+    const target = cursorTargetRef.current;
+    if (!hud || !reticle || !label || !target) return;
+
+    const canvasPos = getMouseCanvasPx(args.clientX, args.clientY);
+    if (!canvasPos || !Number.isFinite(canvasPos.x) || !Number.isFinite(canvasPos.y)) return;
+
+    const color = args.altKey && args.shiftKey
+      ? 'rgba(179, 102, 255, 0.95)'
+      : args.altKey
+        ? 'rgba(51, 211, 255, 0.95)'
+        : args.shiftKey
+          ? 'rgba(255, 136, 0, 0.95)'
+          : 'rgba(255, 255, 255, 0.92)';
+
+    const glow = args.altKey && args.shiftKey
+      ? 'rgba(179, 102, 255, 0.24)'
+      : args.altKey
+        ? 'rgba(51, 211, 255, 0.26)'
+        : args.shiftKey
+          ? 'rgba(255, 136, 0, 0.24)'
+          : 'rgba(255, 255, 255, 0.22)';
+
+    hud.style.opacity = '1';
+
+    reticle.style.left = `${canvasPos.x}px`;
+    reticle.style.top = `${canvasPos.y}px`;
+    reticle.style.setProperty('--cursor-color', color);
+    reticle.style.setProperty('--cursor-glow', glow);
+
+    label.style.left = `${canvasPos.x}px`;
+    label.style.top = `${canvasPos.y}px`;
+
+    const rawTxt = `${args.rawWorld.x.toFixed(3)}, ${args.rawWorld.y.toFixed(3)}`;
+    const effTxt = `${args.effectiveWorld.x.toFixed(3)}, ${args.effectiveWorld.y.toFixed(3)}`;
+    const modeParts: string[] = [];
+    if (args.altKey) modeParts.push(`PREC ${PRECISION_DRAG_SCALE}x`);
+    if (args.shiftKey) modeParts.push(`SNAP 1px`);
+    label.textContent = args.showTarget ? `W ${rawTxt}  T ${effTxt}${modeParts.length ? `  ${modeParts.join('  ')}` : ''}` : `W ${rawTxt}${modeParts.length ? `  ${modeParts.join('  ')}` : ''}`;
+
+    target.style.setProperty('--cursor-color', color);
+    target.style.setProperty('--cursor-glow', glow);
+
+    if (args.showTarget) {
+      const t = worldToCanvasPx(args.effectiveWorld);
+      if (Number.isFinite(t.x) && Number.isFinite(t.y)) {
+        target.style.left = `${t.x}px`;
+        target.style.top = `${t.y}px`;
+        target.style.opacity = '1';
+      } else {
+        target.style.opacity = '0';
+      }
+    } else {
+      target.style.opacity = '0';
+    }
+  };
 
     const handleMouseMove = useCallback(
       (e: React.MouseEvent) => {
         if (!canvasRef.current) return;
-        const mouseWorld = getMouseWorld(e.clientX, e.clientY);
+        const mouseWorldRaw = getMouseWorld(e.clientX, e.clientY);
+
+        // Enhanced cursor HUD (kept out of React render loop for performance)
+        updateCursorHud({
+          clientX: e.clientX,
+          clientY: e.clientY,
+          rawWorld: mouseWorldRaw,
+          effectiveWorld: mouseWorldRaw,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          showTarget: false,
+        });
 
         if (maskDragging) {
           maskDraggingLiveRef.current = true;
-          const dx = e.clientX - maskDragging.startClientX;
-          const dy = e.clientY - maskDragging.startClientY;
+          let dx = e.clientX - maskDragging.startClientX;
+          let dy = e.clientY - maskDragging.startClientY;
+          if (e.altKey) {
+            dx *= PRECISION_DRAG_SCALE;
+            dy *= PRECISION_DRAG_SCALE;
+          }
+          if (e.shiftKey) {
+            dx = Math.round(dx);
+            dy = Math.round(dy);
+          }
           const jointId = maskDragging.jointId;
           setState((prev) => {
             const mask = prev.scene.jointMasks[jointId];
@@ -2181,8 +2720,46 @@ return makeDefaultState();
         if (!draggingId) return;
         draggingIdLiveRef.current = draggingId;
 
-        const mouseX = mouseWorld.x;
-        const mouseY = mouseWorld.y;
+        const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
+        const effectiveWorld = (() => {
+          let next = mouseWorldRaw;
+          if (e.altKey) {
+            const anchor =
+              precisionAnchorRef.current ??
+              (() => {
+                const a = { raw: mouseWorldRaw, applied: lastEffectiveMouseWorldRef.current ?? mouseWorldRaw };
+                precisionAnchorRef.current = a;
+                return a;
+              })();
+            next = {
+              x: anchor.applied.x + (mouseWorldRaw.x - anchor.raw.x) * PRECISION_DRAG_SCALE,
+              y: anchor.applied.y + (mouseWorldRaw.y - anchor.raw.y) * PRECISION_DRAG_SCALE,
+            };
+          } else {
+            precisionAnchorRef.current = null;
+          }
+
+          if (e.shiftKey) {
+            const step = 1 / (WORLD_PX_SCALE * Math.max(1e-6, state.viewScale));
+            next = { x: snapWorld(next.x, step), y: snapWorld(next.y, step) };
+          }
+
+          lastEffectiveMouseWorldRef.current = next;
+          return next;
+        })();
+
+        updateCursorHud({
+          clientX: e.clientX,
+          clientY: e.clientY,
+          rawWorld: mouseWorldRaw,
+          effectiveWorld,
+          altKey: e.altKey,
+          shiftKey: e.shiftKey,
+          showTarget: Boolean(e.altKey || e.shiftKey),
+        });
+
+        const mouseX = effectiveWorld.x;
+        const mouseY = effectiveWorld.y;
 
         // Exclude navel and collar from physics drag updates
         if (shouldRunPosePhysics(state) && draggingId !== 'navel' && draggingId !== 'collar') {
@@ -2223,6 +2800,9 @@ return makeDefaultState();
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+    precisionAnchorRef.current = null;
+    lastEffectiveMouseWorldRef.current = null;
+    if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
 
     const finalizedRecording = autoPoseRecordingRef.current;
     if (autoPoseRecordingTimerRef.current) {
@@ -2243,6 +2823,14 @@ return makeDefaultState();
     }
     const endFrameToJump =
       finalizedRecording && recordingFrames.length ? recordingFrames[recordingFrames.length - 1]!.frame : null;
+
+    // If a pinned joint was dragged, update its pin target so it "sticks" on release.
+    if (draggingId && state.activePins.includes(draggingId)) {
+      const drag = dragTargetRef.current;
+      const nextTarget =
+        drag && drag.id === draggingId ? drag.target : getWorldPosition(draggingId, state.joints, INITIAL_JOINTS, 'preview');
+      pinTargetsRef.current = { ...pinTargetsRef.current, [draggingId]: nextTarget };
+    }
     
     // Handle rubberband snap behavior
     if (state.controlMode === 'Rubberband' && isLongPress && rubberbandPose) {
@@ -2568,10 +3156,14 @@ return makeDefaultState();
     setRubberbandPose(null);
     
     pinTargetsRef.current = {};
+    rubberbandAnchorPinRef.current = null;
     hingeSignsRef.current = {};
     setStateWithHistory('reset_engine', (prev) => ({
       ...prev,
       joints: sanitizeJoints(null),
+      activePins: [],
+      viewScale: 1.0,
+      viewOffset: { x: 0, y: 0 },
     }));
   };
 
@@ -2594,31 +3186,29 @@ return makeDefaultState();
     }));
   };
 
-    const renderConnection = (conn: Connection) => {
+  const activeLook = LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0]!;
+  const pixelSnapPx = activeLook.pixelSnapPx ?? 0;
+  const snapPx = (v: number) => (pixelSnapPx > 0 ? Math.round(v / pixelSnapPx) * pixelSnapPx : v);
+  const isNosferatuLook = state.lookMode === 'nosferatu';
+  const isSkeletalLook = state.lookMode === 'skeletal';
+
+  const renderConnection = (conn: Connection) => {
     const fromJoint = state.joints[conn.from];
     const toJoint = state.joints[conn.to];
     if (!fromJoint || !toJoint) return null;
 
     const start = getWorldPosition(conn.from, state.joints, INITIAL_JOINTS);
     const end = getWorldPosition(conn.to, state.joints, INITIAL_JOINTS);
-    
-    const ghostStart = getWorldPosition(conn.from, state.joints, INITIAL_JOINTS, 'preview');
-    const ghostEnd = getWorldPosition(conn.to, state.joints, INITIAL_JOINTS, 'preview');
 
     // Use raw engine units, the <g> transform handles the rest
     const scale = 20;
     const centerX = canvasSize.width / 2;
     const centerY = canvasSize.height / 2;
 
-    const x1 = start.x * scale + centerX;
-    const y1 = start.y * scale + centerY;
-    const x2 = end.x * scale + centerX;
-    const y2 = end.y * scale + centerY;
-    
-    const gx1 = ghostStart.x * scale + centerX;
-    const gy1 = ghostStart.y * scale + centerY;
-    const gx2 = ghostEnd.x * scale + centerX;
-    const gy2 = ghostEnd.y * scale + centerY;
+    const x1 = snapPx(start.x * scale + centerX);
+    const y1 = snapPx(start.y * scale + centerY);
+    const x2 = snapPx(end.x * scale + centerX);
+    const y2 = snapPx(end.y * scale + centerY);
 
     if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) return null;
 
@@ -2655,6 +3245,9 @@ return makeDefaultState();
 
     const renderShape = () => {
       const shape = conn.shape || 'standard';
+      const fillColor = isNosferatuLook ? '#ffffff' : strokeColor;
+      const lineColor = isNosferatuLook ? '#ffffff' : strokeColor;
+      const shapeOpacity = isNosferatuLook ? Math.max(opacity, 0.85) : opacity;
       
       switch (shape) {
         case 'muscle':
@@ -2666,9 +3259,9 @@ return makeDefaultState();
                 Q ${len * 0.5}, 15 0, 0
                 Z
               `}
-              fill={strokeColor}
+              fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-              style={{ opacity }}
+              style={{ opacity: shapeOpacity }}
             />
           );
         case 'tapered':
@@ -2681,112 +3274,36 @@ return makeDefaultState();
                 L 0, 4
                 Z
               `}
-              fill={strokeColor}
+              fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-              style={{ opacity }}
+              style={{ opacity: shapeOpacity }}
             />
           );
         case 'cylinder':
            return (
             <rect
               x="0" y="-4" width={len} height="8"
-              fill={strokeColor}
+              fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-              style={{ opacity }}
+              style={{ opacity: shapeOpacity }}
             />
           );
         case 'wire':
           return (
             <line
               x1={x1} y1={y1} x2={x2} y2={y2}
-              stroke={strokeColor}
+              stroke={lineColor}
               strokeWidth="2"
-              style={{ opacity }}
+              style={{ opacity: shapeOpacity }}
             />
           );
         case 'wireframe':
           return (
             <line
               x1={x1} y1={y1} x2={x2} y2={y2}
-              stroke="#00ff00"
-              strokeWidth="0.5"
-              style={{ opacity: 0.6 }}
-            />
-          );
-        case 'nosferatu':
-          const isNosferatuMode = state.viewMode === 'nosferatu';
-          const nosferatuShape = conn.shape || 'standard';
-          
-          // Render Nosferatu-specific shapes
-          if (isNosferatuMode) {
-            switch (nosferatuShape) {
-              case 'muscle':
-                return (
-                  <path
-                    d={`
-                      M 0,0
-                      L ${len}, 0
-                      L ${len}, 2
-                      L 0, 2
-                      Z
-                    `}
-                    fill="#ffffff"
-                    transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-                    style={{ opacity: 0.9 }}
-                  />
-                );
-              case 'tapered':
-                return (
-                  <path
-                    d={`
-                      M 0,-2
-                      L ${len}, -0.5
-                      L ${len}, 0.5
-                      L 0, 2
-                      Z
-                    `}
-                    fill="#ffffff"
-                    transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-                    style={{ opacity: 0.9 }}
-                  />
-                );
-              case 'cylinder':
-                return (
-                  <rect
-                    x="0" y="-2" width={len} height="4"
-                    fill="#ffffff"
-                    transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-                    style={{ opacity: 0.9 }}
-                  />
-                );
-              case 'wireframe':
-                return (
-                  <line
-                    x1={x1} y1={y1} x2={x2} y2={y2}
-                    stroke="#ffffff"
-                    strokeWidth="1"
-                    style={{ opacity: 0.7 }}
-                  />
-                );
-              default:
-                return (
-                  <line
-                    x1={x1} y1={y1} x2={x2} y2={y2}
-                    stroke="#ffffff"
-                    strokeWidth="2"
-                    style={{ opacity: 0.9 }}
-                  />
-                );
-            }
-          }
-          
-          // Fallback to normal rendering
-          return (
-            <line
-              x1={x1} y1={y1} x2={x2} y2={y2}
-              stroke={strokeColor}
-              strokeWidth={strokeWidth}
-              style={{ opacity }}
+              stroke={isNosferatuLook ? '#ffffff' : '#00ff00'}
+              strokeWidth={isNosferatuLook ? '1' : '0.5'}
+              style={{ opacity: isNosferatuLook ? shapeOpacity : 0.6 }}
             />
           );
         case 'standard':
@@ -2804,9 +3321,9 @@ return makeDefaultState();
                 L 0,5 
                 Z
               `}
-              fill={strokeColor}
+              fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
-              style={{ opacity }}
+              style={{ opacity: shapeOpacity }}
             />
           );
       }
@@ -2823,7 +3340,7 @@ return makeDefaultState();
   const renderJoint = (id: string) => {
     const joint = state.joints[id];
     const pos = getWorldPosition(id, state.joints, INITIAL_JOINTS);
-    const isLotte = state.viewMode === 'lotte';
+    const isLotte = state.lookMode === 'lotte';
     const isRoot = !joint.parent;
     const isSelected = selectedJointId === id;
     
@@ -2844,19 +3361,41 @@ return makeDefaultState();
     const x = pos.x * scale + centerX;
     const y = pos.y * scale + centerY;
 
-    if (isNaN(x) || isNaN(y)) return null;
+    const sx = snapPx(x);
+    const sy = snapPx(y);
+
+    if (isNaN(sx) || isNaN(sy)) return null;
 
     const isNipple = id.includes('nipple');
 
     if (isNipple) return null;
 
-    const fillColor = isLotte ? "#000000" : (isRoot ? "white" : (state.activePins.includes(id) ? "#ff8800" : (state.controlMode === 'Rubberband' && isLongPress ? "#ff4444" : "var(--accent)")));
-    const strokeColor = isLotte ? "#000000" : (isSelected ? 'rgba(255, 255, 255, 0.9)' : (state.controlMode === 'Rubberband' && isLongPress ? 'rgba(255, 68, 68, 0.8)' : 'var(--bg)'));
+    const isNosferatu = isNosferatuLook;
+    const fillColor = isNosferatu
+      ? '#ffffff'
+      : isLotte
+        ? '#000000'
+        : isRoot
+          ? 'white'
+          : state.activePins.includes(id)
+            ? '#ff8800'
+            : state.controlMode === 'Rubberband' && isLongPress
+              ? '#ff4444'
+              : 'var(--accent)';
+    const strokeColor = isNosferatu
+      ? '#ffffff'
+      : isLotte
+        ? '#000000'
+        : isSelected
+          ? 'rgba(255, 255, 255, 0.9)'
+          : state.controlMode === 'Rubberband' && isLongPress
+            ? 'rgba(255, 68, 68, 0.8)'
+            : 'var(--bg)';
 
     return (
       <circle
         key={`joint-${id}`}
-        cx={x} cy={y} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
+        cx={sx} cy={sy} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
         fill={fillColor}
         stroke={strokeColor}
         strokeWidth={isSelected ? 3 : 2}
@@ -2874,175 +3413,209 @@ return makeDefaultState();
     const x = pos.x * scale + centerX;
     const y = pos.y * scale + centerY;
 
-    if (isNaN(x) || isNaN(y)) return null;
+    const sx = snapPx(x);
+    const sy = snapPx(y);
+
+    if (isNaN(sx) || isNaN(sy)) return null;
 
     const size = 8;
     return (
       <g key={`x-marker-${id}`}>
-        <line x1={x - size} y1={y - size} x2={x + size} y2={y + size} stroke={color} strokeWidth="2" />
-        <line x1={x + size} y1={y - size} x2={x - size} y2={y + size} stroke={color} strokeWidth="2" />
-        <line x1={x - size} y1={y + size} x2={x + size} y2={y - size} stroke={color} strokeWidth="2" />
-        <line x1={x - size} y1={y + size} x2={x + size} y2={y - size} stroke={color} strokeWidth="2" />
+        <line x1={sx - size} y1={sy - size} x2={sx + size} y2={sy + size} stroke={color} strokeWidth="2" />
+        <line x1={sx + size} y1={sy - size} x2={sx - size} y2={sy + size} stroke={color} strokeWidth="2" />
       </g>
     );
   };
 
-    const jointMasksLayer = (() => {
-      if (!canvasSize.width || !canvasSize.height) return null;
-      const pxPerUnit = 20;
-      const centerX = canvasSize.width / 2;
-      const centerY = canvasSize.height / 2;
+  const cutoutsLayer = (() => {
+    if (isSkeletalLook) return null;
+    if (!canvasSize.width || !canvasSize.height) return null;
+
+    const pxPerUnit = 20;
+    const centerX = canvasSize.width / 2;
+    const centerY = canvasSize.height / 2;
+
+    const activeView = getActiveView(state);
+    const overrideFor = (slotId: string) => activeView?.slotOverrides?.[slotId];
+    const effectiveVisible = (slotId: string, baseVisible: boolean) =>
+      overrideFor(slotId)?.visible !== undefined ? Boolean(overrideFor(slotId)?.visible) : baseVisible;
+    const effectiveZIndex = (slotId: string, fallbackZ: number) => {
+      const baseZ = state.cutoutSlots[slotId]?.zIndex ?? fallbackZ;
+      const ov = overrideFor(slotId)?.zIndex;
+      return ov !== undefined ? ov : baseZ;
+    };
+
     const headPos = getWorldPosition('head', state.joints, INITIAL_JOINTS);
     const neckBasePos = getWorldPosition('neck_base', state.joints, INITIAL_JOINTS);
     const headLenUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
-    const headLenPx = Math.max(1, headLenUnits * 20);
-      const neckSpanUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
-      const neckSpanPx = Math.max(1, neckSpanUnits * pxPerUnit);
+    const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
 
-      return Object.entries(state.scene.jointMasks).map(([jointId, mask]) => {
-        if (!mask?.src || !mask.visible) return null;
-        if (!(jointId in state.joints)) return null;
+    const jointItems = Object.entries(state.scene.jointMasks)
+      .flatMap(([jointId, mask]) => {
+        if (!mask?.src) return [];
+        if (!(jointId in state.joints)) return [];
+        if (!effectiveVisible(jointId, Boolean(mask.visible))) return [];
+        return [
+          {
+            kind: 'joint' as const,
+            slotId: jointId,
+            zIndex: effectiveZIndex(jointId, 50),
+            mask,
+          },
+        ];
+      });
 
-        const jointPos = getWorldPosition(jointId, state.joints, INITIAL_JOINTS);
-        const relatedIds = (mask.relatedJoints || []).filter((id) => id !== jointId && id in state.joints);
+    const headItem = (() => {
+      const mask = state.scene.headMask;
+      if (!mask?.src) return null;
+      if (!effectiveVisible('head', Boolean(mask.visible))) return null;
+      return {
+        kind: 'head' as const,
+        slotId: 'head',
+        zIndex: effectiveZIndex('head', 100),
+        mask,
+      };
+    })();
 
-        const relatedCentroid = (() => {
-          if (!relatedIds.length) return null;
-          let sx = 0;
-          let sy = 0;
-          for (const id of relatedIds) {
-            const p = getWorldPosition(id, state.joints, INITIAL_JOINTS);
-            sx += p.x;
-            sy += p.y;
-          }
-          return { x: sx / relatedIds.length, y: sy / relatedIds.length };
-        })();
+    const items = [...jointItems, ...(headItem ? [headItem] : [])].sort((a, b) => a.zIndex - b.zIndex);
 
-        const anchorUnits =
-          relatedCentroid ? { x: (jointPos.x + relatedCentroid.x) / 2, y: (jointPos.y + relatedCentroid.y) / 2 } : jointPos;
+    return items.map((item) => {
+      if (item.kind === 'head') {
+        const mask = item.mask;
 
-        const anchorXUnits = anchorUnits.x * pxPerUnit + centerX;
-        const anchorYUnits = anchorUnits.y * pxPerUnit + centerY;
-        if (isNaN(anchorXUnits) || isNaN(anchorYUnits)) return null;
-        
-        // Calculate orientation based on bone vector from parent
-        const joint = state.joints[jointId];
-        const parentId = joint.parent;
-        let pPos = { x: jointPos.x, y: jointPos.y - 1 }; // Default upward (head direction)
-        if (relatedCentroid) {
-          pPos = relatedCentroid;
-        } else if (parentId && state.joints[parentId]) {
-          pPos = getWorldPosition(parentId, state.joints, INITIAL_JOINTS);
-        }
-        const dx = jointPos.x - pPos.x;
-        const dy = jointPos.y - pPos.y;
-        const boneLenPx = Math.max(1, Math.hypot(dx, dy) * pxPerUnit);
+        const headX = headPos.x * pxPerUnit + centerX;
+        const headY = headPos.y * pxPerUnit + centerY;
+        if (isNaN(headX) || isNaN(headY)) return null;
 
-        const baseAngle = (Math.atan2(dy, dx) * (180 / Math.PI)) + 90;
+        const dx = headPos.x - neckBasePos.x;
+        const dy = headPos.y - neckBasePos.y;
+        const baseAngle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
         const mode = mask.mode || 'cutout';
         const finalAngle = (mode === 'roto' ? 0 : baseAngle) + (mask.rotation || 0);
 
-        // "Thickness" stays head-relative; "length" (rubberhose) follows the bone.
         const thicknessPx = headLenPx * Math.max(0.01, mask.scale);
         let width = thicknessPx;
         let height = thicknessPx;
-        let anchorWorldX = anchorXUnits;
-        let anchorWorldY = anchorYUnits;
+        let anchorWorldX = headX;
+        let anchorWorldY = headY;
 
         if (mode === 'rubberhose') {
-          const midX = (jointPos.x + pPos.x) / 2;
-          const midY = (jointPos.y + pPos.y) / 2;
-          anchorWorldX = midX * pxPerUnit + centerX;
-          anchorWorldY = midY * pxPerUnit + centerY;
+          const boneLenPx = Math.max(1, Math.hypot(dx, dy) * pxPerUnit);
+          anchorWorldX = ((headPos.x + neckBasePos.x) / 2) * pxPerUnit + centerX;
+          anchorWorldY = ((headPos.y + neckBasePos.y) / 2) * pxPerUnit + centerY;
           height = Math.max(1, boneLenPx * Math.max(0.05, mask.lengthScale || 1));
           if (mask.volumePreserve) {
             width = clamp((thicknessPx * thicknessPx) / height, thicknessPx * 0.15, thicknessPx * 4);
-          } else {
-            width = thicknessPx;
           }
         }
 
+        const originX = snapPx(anchorWorldX + mask.offsetX / state.viewScale);
+        const originY = snapPx(anchorWorldY + mask.offsetY / state.viewScale);
+        const x = snapPx(originX - mask.anchorX * width);
+        const y = snapPx(originY - mask.anchorY * height);
+
         return (
           <image
-            key={`joint-mask:${jointId}`}
-            href={mask.src}
-            x={anchorWorldX + (mask.offsetX / state.viewScale) - (mask.anchorX * width)}
-            y={anchorWorldY + (mask.offsetY / state.viewScale) - (mask.anchorY * height)}
+            key="head-mask"
+            href={mask.src ?? undefined}
+            x={x}
+            y={y}
             width={width}
             height={height}
             opacity={mask.opacity}
-            onMouseDown={handleMaskMouseDown(jointId)}
-	            style={{
-	              transformOrigin: `${anchorWorldX + (mask.offsetX / state.viewScale)}px ${anchorWorldY + (mask.offsetY / state.viewScale)}px`,
-	              transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
-	              pointerEvents: maskEditArmed ? 'auto' : 'none',
-	              cursor: maskEditArmed ? 'grab' : 'default',
-	            }}
-	          />
+            style={{
+              transformOrigin: `${originX}px ${originY}px`,
+              transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
+              pointerEvents: 'none',
+            }}
+          />
         );
-      });
-    })();
+      }
 
-    const headMaskLayer = (() => {
-      if (!canvasSize.width || !canvasSize.height) return null;
-      if (!state.scene.headMask?.src || !state.scene.headMask.visible) return null;
+      const jointId = item.slotId;
+      const mask = item.mask;
 
-      const pxPerUnit = 20;
-      const centerX = canvasSize.width / 2;
-      const centerY = canvasSize.height / 2;
-      
-      // Get head position and orientation
-      const headPos = getWorldPosition('head', state.joints, INITIAL_JOINTS);
-      const neckBasePos = getWorldPosition('neck_base', state.joints, INITIAL_JOINTS);
-      const headX = headPos.x * pxPerUnit + centerX;
-      const headY = headPos.y * pxPerUnit + centerY;
-      
-      if (isNaN(headX) || isNaN(headY)) return null;
+      const jointPos = getWorldPosition(jointId, state.joints, INITIAL_JOINTS);
+      const relatedIds = (mask.relatedJoints || []).filter((id) => id !== jointId && id in state.joints);
 
-      // Calculate head size based on head length
-      const headLenUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
-      const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
-      const size = headLenPx * Math.max(0.01, state.scene.headMask.scale);
+      const relatedCentroid = (() => {
+        if (!relatedIds.length) return null;
+        let sx = 0;
+        let sy = 0;
+        for (const id of relatedIds) {
+          const p = getWorldPosition(id, state.joints, INITIAL_JOINTS);
+          sx += p.x;
+          sy += p.y;
+        }
+        return { x: sx / relatedIds.length, y: sy / relatedIds.length };
+      })();
 
-      // Calculate head rotation based on neck-to-head vector
-      const dx = headPos.x - neckBasePos.x;
-      const dy = headPos.y - neckBasePos.y;
-      const baseAngle = (Math.atan2(dy, dx) * (180 / Math.PI)) + 90;
-      const mode = state.scene.headMask.mode || 'cutout';
-      const finalAngle = (mode === 'roto' ? 0 : baseAngle) + (state.scene.headMask.rotation || 0);
+      const anchorUnits = relatedCentroid
+        ? { x: (jointPos.x + relatedCentroid.x) / 2, y: (jointPos.y + relatedCentroid.y) / 2 }
+        : jointPos;
 
-      const thicknessPx = headLenPx * Math.max(0.01, state.scene.headMask.scale);
+      const anchorWorldBaseX = anchorUnits.x * pxPerUnit + centerX;
+      const anchorWorldBaseY = anchorUnits.y * pxPerUnit + centerY;
+      if (isNaN(anchorWorldBaseX) || isNaN(anchorWorldBaseY)) return null;
+
+      const joint = state.joints[jointId];
+      const parentId = joint.parent;
+      let pPos = { x: jointPos.x, y: jointPos.y - 1 };
+      if (relatedCentroid) {
+        pPos = relatedCentroid;
+      } else if (parentId && state.joints[parentId]) {
+        pPos = getWorldPosition(parentId, state.joints, INITIAL_JOINTS);
+      }
+      const dx = jointPos.x - pPos.x;
+      const dy = jointPos.y - pPos.y;
+      const boneLenPx = Math.max(1, Math.hypot(dx, dy) * pxPerUnit);
+
+      const baseAngle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
+      const mode = mask.mode || 'cutout';
+      const finalAngle = (mode === 'roto' ? 0 : baseAngle) + (mask.rotation || 0);
+
+      const thicknessPx = headLenPx * Math.max(0.01, mask.scale);
       let width = thicknessPx;
       let height = thicknessPx;
-      let anchorWorldX = headX;
-      let anchorWorldY = headY;
+      let anchorWorldX = anchorWorldBaseX;
+      let anchorWorldY = anchorWorldBaseY;
+
       if (mode === 'rubberhose') {
-        const boneLenPx = Math.max(1, Math.hypot(dx, dy) * pxPerUnit);
-        anchorWorldX = ((headPos.x + neckBasePos.x) / 2) * pxPerUnit + centerX;
-        anchorWorldY = ((headPos.y + neckBasePos.y) / 2) * pxPerUnit + centerY;
-        height = Math.max(1, boneLenPx * Math.max(0.05, state.scene.headMask.lengthScale || 1));
-        if (state.scene.headMask.volumePreserve) {
+        const midX = (jointPos.x + pPos.x) / 2;
+        const midY = (jointPos.y + pPos.y) / 2;
+        anchorWorldX = midX * pxPerUnit + centerX;
+        anchorWorldY = midY * pxPerUnit + centerY;
+        height = Math.max(1, boneLenPx * Math.max(0.05, mask.lengthScale || 1));
+        if (mask.volumePreserve) {
           width = clamp((thicknessPx * thicknessPx) / height, thicknessPx * 0.15, thicknessPx * 4);
         }
       }
 
+      const originX = snapPx(anchorWorldX + mask.offsetX / state.viewScale);
+      const originY = snapPx(anchorWorldY + mask.offsetY / state.viewScale);
+      const x = snapPx(originX - mask.anchorX * width);
+      const y = snapPx(originY - mask.anchorY * height);
+
       return (
         <image
-          key="head-mask"
-          href={state.scene.headMask.src}
-          x={anchorWorldX + (state.scene.headMask.offsetX / state.viewScale) - (state.scene.headMask.anchorX * width)}
-          y={anchorWorldY + (state.scene.headMask.offsetY / state.viewScale) - (state.scene.headMask.anchorY * height)}
+          key={`joint-mask:${jointId}`}
+          href={mask.src ?? undefined}
+          x={x}
+          y={y}
           width={width}
           height={height}
-          opacity={state.scene.headMask.opacity}
-	          style={{
-	            transformOrigin: `${anchorWorldX + (state.scene.headMask.offsetX / state.viewScale)}px ${anchorWorldY + (state.scene.headMask.offsetY / state.viewScale)}px`,
-	            transform: `rotate(${finalAngle}deg) skewX(${state.scene.headMask.skewX ?? 0}deg) skewY(${state.scene.headMask.skewY ?? 0}deg) scale(${state.scene.headMask.stretchX ?? 1}, ${state.scene.headMask.stretchY ?? 1})`,
-	            pointerEvents: 'none',
-	          }}
-	        />
+          opacity={mask.opacity}
+          onMouseDown={handleMaskMouseDown(jointId)}
+          style={{
+            transformOrigin: `${originX}px ${originY}px`,
+            transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
+            pointerEvents: maskEditArmed ? 'auto' : 'none',
+            cursor: maskEditArmed ? 'grab' : 'default',
+          }}
+        />
       );
-    })();
+    });
+  })();
 
   const jointsLayer = state.showJoints ? (() => {
   const regularJoints = Object.keys(state.joints)
@@ -3053,6 +3626,13 @@ return makeDefaultState();
   
   return [...regularJoints, ...xMarkers];
 })() : null;
+
+  const controlModeUi: Record<ControlMode, { label: string; title: string }> = {
+    Cardboard: { label: 'Rigid', title: 'Rigid drag (Cardboard): crisp, stiff posing.' },
+    Rubberband: { label: 'Elastic', title: 'Elastic drag (Rubberband): stretchy, hose-like posing.' },
+    IK: { label: 'Pin', title: 'Pinned posing (IK): drag pins to pose limbs.' },
+    JointDrag: { label: 'Direct', title: 'Direct joint drag: move joints without extra posing modes.' },
+  };
 
   return (
     <div
@@ -3065,6 +3645,28 @@ return makeDefaultState();
         initial={false}
         animate={{ width: sidebarOpen ? 360 : 0 }}
         className="relative bg-[#121212] border-r border-[#222] overflow-hidden flex flex-col"
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
+          if (
+            payload !== 'joint_masks' &&
+            payload !== 'bone_inspector' &&
+            payload !== 'console' &&
+            payload !== 'camera' &&
+            payload !== 'procgen' &&
+            payload !== 'atomic_units'
+          ) {
+            return;
+          }
+          e.preventDefault();
+          setDockedWidgets((prev) => {
+            if (prev.includes(payload)) return prev;
+            return [...prev, payload];
+          });
+          setActiveDockedWidget(payload);
+        }}
       >
         <div className="w-[360px] h-full flex flex-col">
           <div className="p-6 pb-4">
@@ -3074,8 +3676,11 @@ return makeDefaultState();
               </div>
               <div>
                 <h1 className={`text-lg font-bold tracking-tight ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>BITRUVIUS</h1>
+                <p className="text-[11px] text-white/70">
+                  Pose, plan, and export motion from reference.
+                </p>
                 <p className="text-[10px] text-[#666] uppercase tracking-[0.2em] font-mono">
-                  Core Engine v0.2 · build {BUILD_ID}
+                  v0.2 · build {BUILD_ID}
                 </p>
               </div>
             </div>
@@ -3119,17 +3724,17 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Anchor size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Widgets</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Tools</h2>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {(
 	                  [
-		                    { kind: 'joint_masks' as const, label: 'Joint/Mask' },
-	                      { kind: 'bone_inspector' as const, label: 'Bone Inspector' },
+		                    { kind: 'joint_masks' as const, label: 'Masks' },
+	                      { kind: 'bone_inspector' as const, label: 'Rig' },
 	                    { kind: 'console' as const, label: 'Console' },
 	                    { kind: 'camera' as const, label: 'Camera' },
-	                  { kind: 'procgen' as const, label: 'Procedural' },
-	                    { kind: 'atomic_units' as const, label: 'Atomic Units' },
+	                  { kind: 'procgen' as const, label: 'Auto Motion' },
+	                    { kind: 'atomic_units' as const, label: 'Advanced' },
 	                  ] as const
 	                ).map(({ kind, label }) => (
                   <button
@@ -3153,28 +3758,172 @@ return makeDefaultState();
                   </button>
                 ))}
               </div>
-              <p className="mt-2 text-[10px] text-[#444]">
-                Drag buttons onto the canvas to spawn floating tools.
-              </p>
-            </section>
+	              <p className="mt-2 text-[10px] text-[#444]">
+	                Drag a tool onto the canvas, or click to open it.
+	              </p>
+	            </section>
+
+              <section>
+                <div className="flex items-center gap-2 mb-4 text-[#666]">
+                  <Terminal size={14} />
+                  <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Dock</h2>
+                </div>
+                <div className="text-[10px] text-[#444] mb-3">
+                  Drag a tool button onto the sidebar to dock it as a tab.
+                </div>
+
+                {dockedWidgets.length === 0 ? (
+                  <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-[10px] text-[#555]">
+                    No docked widgets.
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                    <div className="flex gap-1 overflow-x-auto pb-2">
+                      {dockedWidgets.map((kind) => {
+                        const active = kind === activeDockedWidget;
+                        return (
+                          <div key={`dock-tab:${kind}`} className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setActiveDockedWidget(kind)}
+                              className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest border transition-colors ${
+                                active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:bg-white/5'
+                              }`}
+                            >
+                              {widgetTitleForKind(kind)}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDockedWidgets((prev) => {
+                                  const next = prev.filter((k) => k !== kind);
+                                  setActiveDockedWidget((curr) => (curr === kind ? next[0] ?? null : curr));
+                                  return next;
+                                });
+                              }}
+                              className="px-1.5 py-1 rounded hover:bg-white/10 text-[#666]"
+                              title="Close tab"
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="max-h-[420px] overflow-auto">
+                      {activeDockedWidget === 'joint_masks' ? (
+                        <JointMaskWidget
+                          state={state}
+                          setStateWithHistory={setStateWithHistory}
+                          maskJointId={maskJointId}
+                          setMaskJointId={setMaskJointId}
+                          maskEditArmed={maskEditArmed}
+                          setMaskEditArmed={setMaskEditArmed}
+                          maskDragMode={maskDragMode}
+                          setMaskDragMode={setMaskDragMode}
+                          uploadJointMaskFile={uploadJointMaskFile}
+                          uploadMaskFile={uploadMaskFile}
+                          copyJointMaskTo={copyJointMaskTo}
+                        />
+                      ) : activeDockedWidget === 'console' ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              {(['info', 'warning', 'error', 'success'] as const).map((lvl) => {
+                                const active = activeLogLevels.has(lvl);
+                                const color =
+                                  lvl === 'error'
+                                    ? 'text-orange-400'
+                                    : lvl === 'warning'
+                                      ? 'text-yellow-300'
+                                      : lvl === 'success'
+                                        ? 'text-green-400'
+                                        : 'text-blue-300';
+                                return (
+                                  <button
+                                    key={lvl}
+                                    type="button"
+                                    onClick={() =>
+                                      setActiveLogLevels((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(lvl)) next.delete(lvl);
+                                        else next.add(lvl);
+                                        return next;
+                                      })
+                                    }
+                                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest border ${
+                                      active ? 'bg-[#222] border-[#333]' : 'bg-transparent border-[#222] opacity-60'
+                                    } ${color}`}
+                                  >
+                                    {lvl}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setConsoleLogs([])}
+                              className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                            >
+                              Clear
+                            </button>
+                          </div>
+
+                          <div className="space-y-1 font-mono text-[11px]">
+                            {filteredConsoleLogs.slice(-120).map((log) => (
+                              <div key={log.id} className="flex gap-2 items-start">
+                                <span className="text-[#555] shrink-0">
+                                  {new Date(log.ts).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                    second: '2-digit',
+                                  })}
+                                </span>
+                                <span className="text-[#666] shrink-0">{log.level.toUpperCase()}</span>
+                                <span className="text-white break-words">{log.message}</span>
+                              </div>
+                            ))}
+                            {filteredConsoleLogs.length === 0 && (
+                              <div className="text-[#444]">No logs (filters may be hiding everything).</div>
+                            )}
+                          </div>
+                        </div>
+                      ) : activeDockedWidget === 'atomic_units' ? (
+                        <AtomicUnitsControl
+                          state={state}
+                          setStateNoHistory={setStateNoHistory}
+                          setStateWithHistory={setStateWithHistory}
+                          beginHistoryAction={beginHistoryAction}
+                          commitHistoryAction={commitHistoryAction}
+                          addConsoleLog={addConsoleLog}
+                        />
+                      ) : (
+                        <div className="text-[10px] text-[#555]">
+                          This panel can’t be docked yet. Open it as a floating tool for now.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </section>
 
 	            <section>
 	              <div className="flex items-center gap-2 mb-4 text-[#666]">
 	                <Settings2 size={14} />
-	                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rigidity & Control</h2>
+	                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rig Controls</h2>
                 <HelpTip
                   text={
                     <>
-                      <div className="font-bold mb-1">Rigidity presets</div>
+                      <div className="font-bold mb-1">Rig feel & posing</div>
                       <div className="text-[#ddd]">
-                        Cardboard is stiff and crisp. Realistic is a balanced hybrid. Rubberhose makes wires and elastic
-                        links looser.
+                        Use <span className="font-bold">Rigidity</span> to choose how stiff the rig behaves overall.
                       </div>
                       <div className="mt-2 text-[#ddd]">
-                        <span className="font-bold">Elasticity</span> lets connections marked as <span className="font-mono">stretch</span> keep their stretched length (see the Bone Dynamics widget).
+                        <span className="font-bold">Control mode</span> changes how dragging works (rigid vs elastic vs pinned posing).
                       </div>
                       <div className="mt-2 text-[#ddd]">
-                        <span className="font-bold">Auto-Bend</span> adds a soft rest-angle bias; <span className="font-bold">Hard Stop</span> clamps hinge limits.
+                        <span className="font-bold">Stretch</span>, <span className="font-bold">Auto-bend</span>, and <span className="font-bold">Hard stop</span> refine the feel without changing your artwork.
                       </div>
                     </>
                   }
@@ -3182,7 +3931,7 @@ return makeDefaultState();
 	              </div>
 	              <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
 	                <div className="flex items-center justify-between mb-2">
-	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Physics Dial</div>
+	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Rig Feel</div>
 	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
 	                    {getPhysicsBlendMode(state).toUpperCase()} • {Math.round((state.physicsRigidity ?? 0) * 100)}%
 	                  </div>
@@ -3195,7 +3944,7 @@ return makeDefaultState();
 	                  value={state.physicsRigidity ?? 0}
 	                  onChange={(e) => {
 	                    const v = parseFloat(e.target.value);
-	                    setStateWithHistory('physics_dial', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
+	                    applyEngineTransition('physics_dial', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
 	                  }}
 	                  className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
 	                />
@@ -3203,18 +3952,18 @@ return makeDefaultState();
 	                  <button
 	                    type="button"
 	                    onClick={() =>
-                        setStateWithHistory('physics_dial_rigid', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, 0)))
+                        applyEngineTransition('physics_dial_rigid', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, 0)))
                       }
 	                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
 	                  >
-	                    Snap Rigid
+	                    Go Rigid
 	                  </button>
 	                  <button
 	                    type="button"
-	                    onClick={() => setStateWithHistory('rigid_start_point', (prev) => createRigidStartPoint(prev))}
+	                    onClick={() => applyEngineTransition('rigid_start_point', (prev) => createRigidStartPoint(prev))}
 	                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
 	                  >
-	                    Rigid Start
+	                    Set Rigid Start
 	                  </button>
 	                </div>
 	              </div>
@@ -3222,7 +3971,7 @@ return makeDefaultState();
                 <select
                   value={state.rigidity}
 	                  onChange={(e) =>
-                      setStateWithHistory('rigidity', (prev) =>
+                      applyEngineTransition('rigidity', (prev) =>
                         applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
                       )
                     }
@@ -3234,17 +3983,18 @@ return makeDefaultState();
                 </select>
               </div>
               <div className="flex bg-[#222] rounded-xl p-1 mb-4">
-                {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map(mode => (
+                {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() =>
-                      setStateWithHistory('set_control_mode', (prev) =>
+                      applyEngineTransition('set_control_mode', (prev) =>
                         prev.controlMode === mode ? prev : applyFluidHandshake(prev, { ...prev, controlMode: mode }),
                       )
                     }
                     className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'}`}
+                    title={controlModeUi[mode].title}
                   >
-                    {mode}
+                    {controlModeUi[mode].label}
                   </button>
                 ))}
               </div>
@@ -3253,7 +4003,7 @@ return makeDefaultState();
                   label="Mirroring" 
                   active={state.mirroring} 
                   onClick={() =>
-                    setStateWithHistory('toggle_mirroring', (prev) => ({
+                    applyEngineTransition('toggle_mirroring', (prev) => ({
                       ...prev,
                       mirroring: !prev.mirroring,
                     }))
@@ -3263,7 +4013,7 @@ return makeDefaultState();
                   label="Auto-Bend (B)" 
                   active={state.bendEnabled} 
                   onClick={() =>
-                    setStateWithHistory('toggle_bend', (prev) =>
+                    applyEngineTransition('toggle_bend', (prev) =>
                       applyFluidHandshake(prev, { ...prev, bendEnabled: !prev.bendEnabled }),
                     )
                   }
@@ -3272,7 +4022,7 @@ return makeDefaultState();
                           label="Elasticity (S)" 
                           active={state.stretchEnabled} 
                           onClick={() =>
-                            setStateWithHistory('toggle_stretch', (prev) =>
+                            applyEngineTransition('toggle_stretch', (prev) =>
                               applyFluidHandshake(prev, { ...prev, stretchEnabled: !prev.stretchEnabled }),
                             )
                           }
@@ -3281,7 +4031,7 @@ return makeDefaultState();
                     label="Lead (L)"
                     active={state.leadEnabled}
                     onClick={() =>
-                      setStateWithHistory('toggle_lead', (prev) => ({
+                      applyEngineTransition('toggle_lead', (prev) => ({
                         ...prev,
                         leadEnabled: !prev.leadEnabled,
                       }))
@@ -3291,7 +4041,7 @@ return makeDefaultState();
                           label="Hard Stop" 
                           active={state.hardStop} 
                           onClick={() =>
-                    setStateWithHistory('toggle_hard_stop', (prev) =>
+                    applyEngineTransition('toggle_hard_stop', (prev) =>
                       applyFluidHandshake(prev, { ...prev, hardStop: !prev.hardStop }),
                     )
                   }
@@ -3302,12 +4052,12 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Activity size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Live Feedback</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Responsiveness</h2>
               </div>
               <div className="space-y-4">
                 <div className="space-y-2">
                   <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-[#444]">
-                    <span>Snappiness</span>
+                    <span>Responsiveness</span>
                     <span className="text-white">{(state.snappiness * 100).toFixed(0)}%</span>
                   </div>
                           <input 
@@ -3337,6 +4087,9 @@ return makeDefaultState();
                     }
                     className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                   />
+                  <div className="text-[#666] text-[9px]">
+                    Higher = follows your drag more tightly.
+                  </div>
                 </div>
               </div>
             </section>
@@ -3344,24 +4097,96 @@ return makeDefaultState();
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Maximize2 size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>View Modes</h2>
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Look</h2>
               </div>
                       <div className="grid grid-cols-2 gap-2">
-                        {viewModes.map(mode => (
+                        {LOOK_MODES.map((mode) => (
                           <button
                             key={mode.id}
                     onClick={() =>
-                      setStateWithHistory('set_view_mode', (prev) =>
-                        prev.viewMode === mode.id ? prev : { ...prev, viewMode: mode.id },
+                      applyEngineTransition('set_look_mode', (prev) =>
+                        prev.lookMode === mode.id ? prev : { ...prev, lookMode: mode.id as LookModeId },
                       )
                     }
-                    className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all ${state.viewMode === mode.id ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'}`}
+                    className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all ${state.lookMode === mode.id ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'}`}
                   >
                     {mode.label}
                   </button>
                         ))}
                       </div>
+                      <div className="mt-2 text-[#666] text-[9px]">
+                        {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
+                      </div>
                     </section>
+
+            <section>
+              <div className="flex items-center gap-2 mb-4 text-[#666]">
+                <Layers size={14} />
+                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Views</h2>
+              </div>
+              <div className="space-y-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      applyEngineTransition('create_view', (prev) => {
+                        const nextName = `View ${prev.views.length + 1}`;
+                        const newView = createViewPreset(nextName, prev);
+                        return {
+                          ...prev,
+                          views: [...prev.views, newView],
+                          activeViewId: newView.id,
+                        };
+                      })
+                    }
+                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+                  >
+                    New
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyEngineTransition('update_view_from_current', (prev) => updateViewFromCurrentState(prev, prev.activeViewId))}
+                    disabled={!state.activeViewId}
+                    className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                      state.activeViewId ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyEngineTransition('delete_view', (prev) => deleteView(prev, prev.activeViewId))}
+                    disabled={!state.activeViewId || state.views.length <= 1}
+                    className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                      state.activeViewId && state.views.length > 1 ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                    }`}
+                  >
+                    Delete
+                  </button>
+                </div>
+
+                <div className="space-y-1">
+                  {state.views.map((view) => {
+                    const active = view.id === state.activeViewId;
+                    return (
+                      <button
+                        key={`view:${view.id}`}
+                        type="button"
+                        onClick={() => (active ? null : requestViewSwitch(view.id))}
+                        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all ${
+                          active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'
+                        }`}
+                        title={view.name}
+                      >
+                        <span className="truncate">{view.name}</span>
+                        <span className={`text-[9px] ${active ? 'text-black/70' : 'text-[#444]'}`}>{active ? 'Active' : 'Switch'}</span>
+                      </button>
+                    );
+                  })}
+                  {state.views.length === 0 && <div className="text-[10px] text-[#444]">No views.</div>}
+                </div>
+              </div>
+            </section>
 
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
@@ -3469,22 +4294,24 @@ return makeDefaultState();
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <Download size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Transfer</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Project</h2>
                       </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={downloadStateJson}
                   className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  title="Save a project file (.json)"
                 >
-                  Save JSON
+                  Save Project
                 </button>
                 <button
                   type="button"
                   onClick={() => importStateInputRef.current?.click()}
                   className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  title="Open a project file (.json)"
                 >
-                  Load JSON
+                  Open Project
                 </button>
               </div>
               <input
@@ -3550,7 +4377,7 @@ return makeDefaultState();
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
                         <RotateCcw size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Capture History</h2>
+                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pose Capture</h2>
                       </div>
               <div className="space-y-2">
                 <button 
@@ -3564,12 +4391,12 @@ return makeDefaultState();
                   }
                   className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
                 >
-                  Capture Pose
+                  Save Pose
                 </button>
 
                 <div className="p-2 bg-white/5 rounded-lg space-y-2">
                   <label className="flex items-center justify-between gap-3 text-[10px] select-none">
-                    <span className="font-bold uppercase tracking-widest text-[#666]">Auto Pose Capture</span>
+                    <span className="font-bold uppercase tracking-widest text-[#666]">Auto-capture While Dragging</span>
                     <input
                       type="checkbox"
                       checked={autoPoseCaptureEnabled}
@@ -3580,7 +4407,7 @@ return makeDefaultState();
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Record FPS</div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Capture Rate (fps)</div>
                       <input
                         type="number"
                         min={1}
@@ -3633,7 +4460,7 @@ return makeDefaultState();
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Moved Thresh</div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Min Movement</div>
                       <input
                         type="number"
                         step={0.001}
@@ -3658,14 +4485,14 @@ return makeDefaultState();
                           onChange={(e) => setAutoPoseCaptureSimplifyEnabled(e.target.checked)}
                           className="accent-white"
                         />
-                        Simplify
+                        Simplify (Fewer Poses)
                       </label>
                     </div>
                   </div>
 
                   {autoPoseCaptureSimplifyEnabled && (
                     <div>
-                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Simplify Eps</div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Simplify Amount</div>
                       <input
                         type="number"
                         step={0.001}
@@ -3713,13 +4540,13 @@ return makeDefaultState();
                             ? 'bg-[#3366cc]/30 border border-[#3366cc]/50' 
                             : 'bg-white/5 hover:bg-white/10'
                         }`}
-                        title={`Click to apply • Double-click to send to timeline • Right-click to ${isSelected ? 'deselect' : 'select'} for interpolation`}
+                        title={`Click to apply • Double-click to send to timeline • Right-click (or Ctrl-click) to ${isSelected ? 'deselect' : 'select'} for interpolation`}
                       >
                         <div className="flex items-center gap-2">
                           {isSelected && (
                             <div className="w-2 h-2 bg-[#3366cc] rounded-full" />
                           )}
-                          <span>Pose Snapshot {snapshotIndex}</span>
+                          <span>Pose {snapshotIndex}</span>
                         </div>
                         <span className="text-[#444]">
                           {h.timestamp 
@@ -3735,8 +4562,8 @@ return makeDefaultState();
                 {poseSnapshots.length > 0 && (
                   <div className="text-[#666] text-[9px] mt-2">
                     {selectedPoseIndices.length === 0 
-                      ? 'Right-click poses to select for interpolation'
-                      : `Selected ${selectedPoseIndices.length} pose${selectedPoseIndices.length === 1 ? '' : 's'} • Right-click to deselect`
+                      ? 'Right-click (or Ctrl-click) poses to select for interpolation'
+                      : `Selected ${selectedPoseIndices.length} pose${selectedPoseIndices.length === 1 ? '' : 's'} • Right-click (or Ctrl-click) to deselect`
                     }
                   </div>
                 )}
@@ -3796,7 +4623,7 @@ return makeDefaultState();
                     label="Joints"
                     active={state.showJoints}
                     onClick={() =>
-                      setStateWithHistory('toggle_show_joints', (prev) => ({
+                      applyEngineTransition('toggle_show_joints', (prev) => ({
                         ...prev,
                         showJoints: !prev.showJoints,
                       }))
@@ -3806,7 +4633,7 @@ return makeDefaultState();
                     label="Joints Above Masks"
                     active={state.jointsOverMasks}
                     onClick={() =>
-                      setStateWithHistory('toggle_joints_over_masks', (prev) => ({
+                      applyEngineTransition('toggle_joints_over_masks', (prev) => ({
                         ...prev,
                         jointsOverMasks: !prev.jointsOverMasks,
                       }))
@@ -4879,7 +5706,10 @@ return makeDefaultState();
           onMouseDown={() => setSelectedJointId(null)}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
+          onMouseLeave={() => {
+            handleMouseUp();
+            hideCursorHud();
+          }}
           onDragOver={(e) => {
             if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
           }}
@@ -4899,6 +5729,13 @@ return makeDefaultState();
 	            spawnFloatingWidget(payload, e.clientX, e.clientY);
 	          }}
         >
+          <div ref={cursorHudRef} className="editor-cursor-hud">
+            <div ref={cursorTargetRef} className="editor-cursor-target" />
+            <div ref={cursorReticleRef} className="editor-cursor-reticle">
+              <div className="editor-cursor-dot" />
+            </div>
+            <div ref={cursorLabelRef} className="editor-cursor-label" />
+          </div>
           <svg
             ref={svgRef}
             width={canvasSize.width}
@@ -4909,7 +5746,7 @@ return makeDefaultState();
               if (e.button === 1) e.preventDefault(); // Prevent auto-scroll on middle click
               setSelectedJointId(null);
             }}
-            className={`w-full h-full skeleton-canvas ${state.viewMode === 'noir' ? 'grayscale contrast-125' : ''}`}
+            className={`w-full h-full skeleton-canvas ${state.lookMode === 'noir' ? 'grayscale contrast-125' : ''}`}
           >
             <g transform={`translate(${state.viewOffset.x}, ${state.viewOffset.y}) scale(${state.viewScale})`}>
                       {/* Reference Layers */}
@@ -5029,7 +5866,7 @@ return makeDefaultState();
                 visible={gridOverlayEnabled || gridRingsEnabled}
                 showGrid={gridOverlayEnabled}
                 showRings={gridRingsEnabled}
-                opacity={0.18}
+                opacity={0.65}
                 plot={gridRingsBgData?.vitruvian.plot ?? null}
                 transform={gridOverlayTransform}
                       />
@@ -5084,8 +5921,8 @@ return makeDefaultState();
               const scale = 20;
               const centerX = canvasSize.width / 2;
               const centerY = canvasSize.height / 2;
-              const x = pos.x * scale + centerX;
-              const y = pos.y * scale + centerY;
+              const x = snapPx(pos.x * scale + centerX);
+              const y = snapPx(pos.y * scale + centerY);
               if (isNaN(x) || isNaN(y)) return null;
               return (
                 <circle 
@@ -5101,19 +5938,15 @@ return makeDefaultState();
                       <>
                         {/* Joints */}
                         {jointsLayer}
-                        {/* Joint Masks */}
-                        {jointMasksLayer}
-                        {/* Head Mask */}
-                        {headMaskLayer}
+                        {/* Cutouts / Masks */}
+                        {cutoutsLayer}
                       </>
                     )}
 
                     {state.jointsOverMasks && (
                       <>
-                        {/* Joint Masks */}
-                        {jointMasksLayer}
-                        {/* Head Mask */}
-                        {headMaskLayer}
+                        {/* Cutouts / Masks */}
+                        {cutoutsLayer}
                         {/* Joints */}
                         {jointsLayer}
                       </>
@@ -5948,135 +6781,123 @@ return makeDefaultState();
                             </div>
                           </div>
 	                    ) : widget.kind === 'procgen' ? (
-                      <div className="space-y-4">
-                        <div className="text-[10px] text-[#666]">Procedural Engine</div>
+                        <div className="space-y-3">
+                          <div className="text-[10px] text-[#666]">Procedural Engine</div>
 
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] text-[#666]">Mode</label>
-                            <select
-                              value={procgenMode}
-                              onChange={(e) => setProcgenMode(e.target.value as ProceduralMode)}
-                              className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                            >
-                              <option value="walk">Walk Loop</option>
-                              <option value="idle">Idle Loop</option>
-                            </select>
+                          <label className="flex items-center justify-between gap-3 p-2 bg-[#181818] rounded-lg border border-white/5">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#bbb]">Enabled</span>
+                            <input
+                              type="checkbox"
+                              checked={state.procgen.enabled}
+                              onChange={(e) => {
+                                const nextEnabled = e.target.checked;
+                                if (nextEnabled) setTimelinePlaying(false);
+                                setStateWithHistory('procgen:enabled', (prev) => ({
+                                  ...prev,
+                                  procgen: {
+                                    ...prev.procgen,
+                                    enabled: nextEnabled,
+                                    neutralPose: nextEnabled
+                                      ? (prev.procgen.neutralPose ?? capturePoseSnapshot(prev.joints, 'preview'))
+                                      : prev.procgen.neutralPose,
+                                  },
+                                }));
+                              }}
+                              className="accent-white"
+                            />
+                          </label>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-[#666]">Mode</label>
+                              <select
+                                value={state.procgen.mode}
+                                onChange={(e) =>
+                                  setStateWithHistory('procgen:mode', (prev) => ({
+                                    ...prev,
+                                    procgen: { ...prev.procgen, mode: e.target.value as any },
+                                  }))
+                                }
+                                className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                              >
+                                <option value="walk_in_place">Walk In Place</option>
+                                <option value="idle">Idle</option>
+                              </select>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-[#666]">Strength</label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={3}
+                                step={0.1}
+                                value={state.procgen.strength}
+                                onChange={(e) =>
+                                  setStateWithHistory('procgen:strength', (prev) => ({
+                                    ...prev,
+                                    procgen: { ...prev.procgen, strength: parseFloat(e.target.value) || 0 },
+                                  }))
+                                }
+                                className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                              />
+                            </div>
                           </div>
-                          <div>
-                            <label className="text-[10px] text-[#666]">Strength</label>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-[#666]">Cycle Frames</label>
                             <input
                               type="number"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={procgenStrength}
-                              onChange={(e) => setProcgenStrength(parseFloat(e.target.value) || 0)}
+                              min={2}
+                              max={600}
+                              step={1}
+                              value={state.procgen.bake.cycleFrames}
+                              onChange={(e) =>
+                                setStateWithHistory('procgen:bake:cycleFrames', (prev) => ({
+                                  ...prev,
+                                  procgen: {
+                                    ...prev.procgen,
+                                    bake: { ...prev.procgen.bake, cycleFrames: parseInt(e.target.value || '0', 10) || 2 },
+                                  },
+                                }))
+                              }
                               className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
                             />
                           </div>
-                        </div>
 
-                        <div>
-                          <label className="text-[10px] text-[#666]">Cycle Frames</label>
-                          <input
-                            type="number"
-                            min={2}
-                            max={600}
-                            step={1}
-                            value={procgenCycleFrames}
-                            onChange={(e) => setProcgenCycleFrames(parseInt(e.target.value || '0', 10) || 2)}
-                            className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                          />
-                        </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={captureProcgenNeutralFromCurrent}
+                              className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+                            >
+                              Capture Neutral
+                            </button>
+                            <button
+                              type="button"
+                              onClick={resetProcgenNeutralToTPose}
+                              className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+                            >
+                              Neutral = T-Pose
+                            </button>
+                          </div>
 
-                        <div className="space-y-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTimelinePlaying(false);
-                              setTimelineFrame(0);
-                              setStateWithHistory(`procgen_bake:${procgenMode}`, (prev) => {
-                                const frameCount = clamp(Math.floor(procgenCycleFrames), 2, 600);
-                                const fps = Math.max(1, Math.floor(prev.timeline.clip.fps || 24));
-                                const neutral = capturePoseSnapshot(prev.joints, 'preview');
-                                const rawFrames = [
-                                  0,
-                                  Math.floor(frameCount * 0.25),
-                                  Math.floor(frameCount * 0.5),
-                                  Math.floor(frameCount * 0.75),
-                                  frameCount - 1,
-                                ];
-                                const frames = Array.from(new Set(rawFrames.map((f) => clamp(f, 0, frameCount - 1)))).sort((a, b) => a - b);
-                                const keyframes = frames.map((f) => ({
-                                  frame: f,
-                                  pose: generateProceduralPose({
-                                    mode: procgenMode,
-                                    neutral,
-                                    frame: f,
-                                    fps,
-                                    cycleFrames: frameCount,
-                                    strength: procgenStrength,
-                                  }),
-                                }));
-                                if (keyframes.length >= 2) keyframes[keyframes.length - 1].pose = keyframes[0].pose;
-                                const firstPose = keyframes[0]?.pose ?? neutral;
-                                return {
-                                  ...prev,
-                                  joints: applyPoseSnapshotToJoints(prev.joints, firstPose),
-                                  timeline: {
-                                    ...prev.timeline,
-                                    enabled: true,
-                                    clip: {
-                                      ...prev.timeline.clip,
-                                      frameCount,
-                                      keyframes,
-                                    },
-                                  },
-                                };
-                              });
-                            }}
-                            className="w-full py-2 bg-[#2b0057] hover:bg-[#3a007a] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
-                          >
-                            Bake Loop to Timeline
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              // Generate random pose
-                              const randomPose = Object.keys(INITIAL_JOINTS).reduce((acc, id) => {
-                                acc[id] = {
-                                  ...INITIAL_JOINTS[id],
-                                  previewOffset: {
-                                    x: INITIAL_JOINTS[id].baseOffset.x + (Math.random() - 0.5) * 2,
-                                    y: INITIAL_JOINTS[id].baseOffset.y + (Math.random() - 0.5) * 2,
-                                  },
-                                  targetOffset: INITIAL_JOINTS[id].baseOffset,
-                                  currentOffset: INITIAL_JOINTS[id].baseOffset,
-                                };
-                                return acc;
-                              }, {} as Record<string, typeof INITIAL_JOINTS[string]>);
-                              setState((prev) => ({ ...prev, joints: randomPose }));
-                            }}
-                            className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
-                          >
-                            Random Pose
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => setState((prev) => ({ ...prev, joints: INITIAL_JOINTS }))}
-                            className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
-                          >
-                            Reset to T-Pose
-                          </button>
-
-                          <div className="p-2 bg-white/5 rounded-md text-[9px] text-[#555] uppercase tracking-tight leading-relaxed">
-                            Tip: Bake a loop, then export WebM (and add Titles in the sidebar).
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={resetProcgenPhase}
+                              className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+                            >
+                              Reset Phase
+                            </button>
+                            <button
+                              type="button"
+                              onClick={requestProcgenBake}
+                              className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all bg-[#2b0057] hover:bg-[#3a007a] border border-[#333]"
+                            >
+                              Bake To Timeline
+                            </button>
                           </div>
                         </div>
-                      </div>
 	                    ) : widget.kind === 'atomic_units' ? (
 	                      <AtomicUnitsControl
 	                        state={state}
@@ -6412,6 +7233,35 @@ return makeDefaultState();
             );
           })()}
   </main>
+  <ViewSwitchDialog
+    open={viewSwitchOpen}
+    fromName={(getActiveView(state)?.name ?? 'Current')}
+    toName={(viewSwitchToId ? (state.views.find((v) => v.id === viewSwitchToId)?.name ?? viewSwitchToId) : 'View')}
+    onCancel={() => {
+      setViewSwitchOpen(false);
+      setViewSwitchToId(null);
+    }}
+    onChoose={(choice) => {
+      if (!viewSwitchToId) return;
+      performViewSwitch(viewSwitchToId, choice, false);
+      setViewSwitchOpen(false);
+      setViewSwitchToId(null);
+    }}
+    onSaveThenChoose={(choice) => {
+      if (!viewSwitchToId) return;
+      performViewSwitch(viewSwitchToId, choice, true);
+      setViewSwitchOpen(false);
+      setViewSwitchToId(null);
+    }}
+  />
+  <TransitionWarningDialog
+    open={transitionWarningOpen}
+    issues={transitionWarningIssues}
+    onClose={() => {
+      setTransitionWarningOpen(false);
+      setTransitionWarningIssues([]);
+    }}
+  />
 </div>
 );
 }
@@ -6420,10 +7270,12 @@ function Toggle({ label, active, onClick }: { label: string, active: boolean, on
   return (
     <button 
       onClick={onClick}
+      type="button"
+      aria-pressed={active}
       className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all ${active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'}`}
     >
       <span className="text-[11px] font-bold uppercase tracking-tight">{label}</span>
-      {active ? <Lock size={12} /> : <Unlock size={12} />}
+      {active ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
     </button>
   );
 }
