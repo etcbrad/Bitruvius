@@ -89,7 +89,18 @@ const sanitizeReferenceLayer = (raw: unknown, base: ReferenceLayer): ReferenceLa
   const fitMode = layer.fitMode === 'contain' || layer.fitMode === 'cover' || 
                   layer.fitMode === 'fill' || layer.fitMode === 'none' 
                   ? layer.fitMode : base.fitMode;
-  const mediaType = layer.mediaType === 'video' || layer.mediaType === 'image' ? layer.mediaType : base.mediaType;
+  const mediaType = layer.mediaType === 'video' || layer.mediaType === 'image' || layer.mediaType === 'sequence' ? layer.mediaType : base.mediaType;
+
+  const rawSeq = (layer as any).sequence;
+  const sequence =
+    rawSeq && typeof rawSeq === 'object'
+      ? {
+          id: typeof rawSeq.id === 'string' ? rawSeq.id : '',
+          kind: rawSeq.kind === 'gif' || rawSeq.kind === 'zip' ? rawSeq.kind : 'zip',
+          frameCount: isFiniteNumber(rawSeq.frameCount) ? clamp(Math.floor(rawSeq.frameCount), 0, 200_000) : 0,
+          fps: isFiniteNumber(rawSeq.fps) ? clamp(Math.floor(rawSeq.fps), 1, 60) : 24,
+        }
+      : null;
   
   return {
     src: typeof layer.src === 'string' ? layer.src : base.src,
@@ -103,6 +114,7 @@ const sanitizeReferenceLayer = (raw: unknown, base: ReferenceLayer): ReferenceLa
     mediaType,
     videoStart: isFiniteNumber(layer.videoStart) ? clamp(layer.videoStart, 0, 60 * 60) : base.videoStart,
     videoRate: isFiniteNumber(layer.videoRate) ? clamp(layer.videoRate, 0.05, 4) : base.videoRate,
+    sequence: sequence && sequence.id && sequence.frameCount > 0 ? sequence : null,
   };
 };
 
@@ -283,6 +295,7 @@ export const makeDefaultState = (): SkeletonState => {
         mediaType: 'image',
         videoStart: 0,
         videoRate: 1,
+        sequence: null,
       },
       foreground: {
         src: null,
@@ -296,6 +309,7 @@ export const makeDefaultState = (): SkeletonState => {
         mediaType: 'image',
         videoStart: 0,
         videoRate: 1,
+        sequence: null,
       },
       headMask: {
         src: null,
