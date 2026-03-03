@@ -320,6 +320,8 @@ export function ProcgenWidget(props: {
                     step={conf.step}
                     value={typeof value === 'number' ? value : 0}
                     disabled={!enabled}
+                    onPointerDownCapture={(e) => e.stopPropagation()}
+                    onMouseDownCapture={(e) => e.stopPropagation()}
                     onChange={(e) => {
                       const next = parseFloat(e.target.value);
                       setStateWithHistory(`procgen:gait:${String(conf.key)}`, (prev) => ({

@@ -360,6 +360,11 @@ export type SkeletonState = {
    * the center of gravity (sternum-heavy) to this world-space target.
    */
   groundRootTarget: Point;
+  /**
+   * "Foot plunger" grounding: feet can latch to the ground and cleanly detach
+   * with hysteresis (toe + ankle contact points).
+   */
+  footPlungerEnabled: boolean;
   showJoints: boolean;
   jointsOverMasks: boolean;
   lookMode: LookModeId;

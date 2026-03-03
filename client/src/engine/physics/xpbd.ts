@@ -1,6 +1,8 @@
 import { vectorLength } from '../kinematics';
 import type { Joint, Point } from '../types';
 import type {
+  AxisLimitConstraint,
+  AxisSpringConstraint,
   DistanceConstraint,
   HingeLimitConstraint,
   HingeSignMap,
@@ -113,6 +115,9 @@ type SolveContext = {
 const lambdaKey = (c: DistanceConstraint | PinConstraint) =>
   c.kind === 'distance' ? `d:${c.a}:${c.b}` : `p:${c.id}`;
 
+const axisSpringKey = (c: AxisSpringConstraint) => `as:${c.id}:${c.axis}`;
+const axisLimitKey = (c: AxisLimitConstraint, bound: 'min' | 'max') => `al:${c.id}:${c.axis}:${bound}`;
+
 const solvePin = (ctx: SolveContext, c: PinConstraint) => {
   const pos = ctx.p[c.id];
   if (!pos) return;
@@ -145,6 +150,79 @@ const solvePin = (ctx: SolveContext, c: PinConstraint) => {
   ctx.lambdas.set(key, lambda);
 
   ctx.p[c.id] = sub(pos, scale(n, w * dlambda));
+};
+
+const solveAxisSpring = (ctx: SolveContext, c: AxisSpringConstraint) => {
+  const pos = ctx.p[c.id];
+  if (!pos) return;
+  if (!Number.isFinite(c.target)) return;
+
+  const axis = c.axis;
+  const v = axis === 'x' ? pos.x : pos.y;
+
+  if (c.compliance <= 0) {
+    ctx.p[c.id] = axis === 'x' ? { ...pos, x: c.target } : { ...pos, y: c.target };
+    return;
+  }
+
+  const w = ctx.invMass[c.id] ?? 1;
+  if (w <= 0) return;
+
+  const C = v - c.target;
+  if (!Number.isFinite(C) || Math.abs(C) <= EPS) return;
+
+  const alpha = Math.max(0, c.compliance) / (ctx.cfg.dt * ctx.cfg.dt);
+  const key = axisSpringKey(c);
+  const lambda0 = ctx.lambdas.get(key) ?? 0;
+
+  const dlambda = (-C - alpha * lambda0) / (w + alpha);
+  const lambda = lambda0 + dlambda;
+  ctx.lambdas.set(key, lambda);
+
+  const nextV = v + w * dlambda;
+  ctx.p[c.id] = axis === 'x' ? { ...pos, x: nextV } : { ...pos, y: nextV };
+};
+
+const solveAxisLimit = (ctx: SolveContext, c: AxisLimitConstraint) => {
+  const axis = c.axis;
+
+  const min = c.min;
+  const max = c.max;
+  if (min === undefined && max === undefined) return;
+
+  // Prefer resolving min/max separately with independent lambdas to avoid interference.
+  const applyBound = (bound: 'min' | 'max', boundValue: number) => {
+    const pos = ctx.p[c.id];
+    if (!pos) return;
+    const v = axis === 'x' ? pos.x : pos.y;
+    const isViolation = bound === 'min' ? v < boundValue : v > boundValue;
+    if (!isViolation) return;
+
+    if (c.compliance <= 0) {
+      ctx.p[c.id] = axis === 'x' ? { ...pos, x: boundValue } : { ...pos, y: boundValue };
+      return;
+    }
+
+    const w = ctx.invMass[c.id] ?? 1;
+    if (w <= 0) return;
+
+    const C = v - boundValue; // negative for min violations, positive for max violations
+    if (!Number.isFinite(C) || Math.abs(C) <= EPS) return;
+
+    const alpha = Math.max(0, c.compliance) / (ctx.cfg.dt * ctx.cfg.dt);
+    const key = axisLimitKey(c, bound);
+    const lambda0 = ctx.lambdas.get(key) ?? 0;
+
+    const dlambda = (-C - alpha * lambda0) / (w + alpha);
+    const lambda = lambda0 + dlambda;
+    ctx.lambdas.set(key, lambda);
+
+    const nextV = v + w * dlambda;
+    ctx.p[c.id] = axis === 'x' ? { ...pos, x: nextV } : { ...pos, y: nextV };
+  };
+
+  if (min !== undefined && Number.isFinite(min)) applyBound('min', min);
+  if (max !== undefined && Number.isFinite(max)) applyBound('max', max);
 };
 
 const solveDistance = (ctx: SolveContext, c: DistanceConstraint) => {
@@ -292,6 +370,8 @@ export const solveXpbd = (
         solveDistance(ctx, c);
       }
       else if (c.kind === 'pin') solvePin(ctx, c);
+      else if (c.kind === 'axisSpring') solveAxisSpring(ctx, c);
+      else if (c.kind === 'axisLimit') solveAxisLimit(ctx, c);
       else if (c.kind === 'hingeLimit') solveHingeLimit(ctx, c);
       else if (c.kind === 'hingeSoft') solveHingeSoft(ctx, c);
     }

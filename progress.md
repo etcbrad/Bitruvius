@@ -70,3 +70,53 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 2026-03-03
 - Unified rotation math so canvas root-rotate and Joint Hierarchy angle edits use the same rigid world-space transform + re-derived local offsets (subtree rotates as a proper hierarchy instead of “only the one offset vector”).
 - Procedural Bitruvius: `bodyRotation` now applies as a global rotation around `root` by rotating all non-root local offsets (so gait/IK rotation and the rig share the same angle basis).
+
+2026-03-03
+- Added `footPlungerEnabled` (default ON) to allow clean grounded/ungrounded feet via hysteresis (toe + ankle contact points).
+- Grounding now uses a foot touchdown line (toe/ankle) instead of ankle-only:
+  - New `computeFootTouchdownYWorld` in `client/src/engine/rooting.ts`.
+  - `computeGroundPivotWorld` + ground-root correction align to foot touchdown.
+- App grounding: when plunger is ON, the ground root only corrects the rig while at least one foot is “latched”; when both feet detach, no auto-ground correction is applied.
+- Added a `Foot Plunger` toggle under Root Controls (Edit widget).
+
+2026-03-03
+- Slider smoothness pass:
+  - Radix `Slider` now RAF-throttles `onValueChange` (reduces drag jank under heavy state updates).
+  - All sliders (Radix + native `input[type=range]`) now stop pointer/mouse propagation so canvas/editor gestures don’t “fight” slider drags.
+- Playwright smoke: still cannot launch Chromium here due to `bootstrap_check_in ... Permission denied (1100)` (same as earlier), so no automated screenshot verification yet.
+
+2026-03-03
+- Default state: starts in rigid IK (`rigidity=cardboard`, `controlMode=IK`) with both ankles rooted so feet are planted by default.
+- Physics Rigidity dial no longer forces `controlMode=Cardboard` at 0%, allowing rigid IK posing.
+
+2026-03-03
+- Lotte-style rigid physics tuning: cardboard mode now allows a tiny (configurable) brace compliance and uses a blend-mode-based `wireCompliance` so rigid posing feels more like Reiniger cutouts (stiff, hinge-driven, low jitter).
+- Playwright smoke regressed again in this environment (Chromium crash `bootstrap_check_in ... Permission denied (1100)`), so automated screenshot verification is flaky.
+
+2026-03-03
+- Balance-drag inertia: when feet are rooted, dragging balance handles (especially `head`/`neck_base`) now translates the body with a follow factor that decreases as more joints are pinned, producing a heavier “momentum matching” sway instead of instant/teleporty shifts (`client/src/engine/interaction.ts`).
+
+2026-03-03
+- Sidebar UX: activating a widget now auto-minimizes the Roots panel + Root Controls, and the active docked widget container is focused for keyboard UX. Added a reliable `Undock`/`Dock` toggle in the widget header (no drag required) (`client/src/App.tsx`).
+
+2026-03-03
+- FK rigidity pass:
+  - Balance-drag inertia/sway now only applies in fluid modes (`IK` / `Rubberband`); FK modes stay crisp (`client/src/App.tsx`).
+  - Cardboard FK now preserves base bone lengths even if stretch is enabled globally (`client/src/engine/interaction.ts`).
+  - Rooted-joint lever rotation length math now treats Cardboard as base-length-only (`client/src/App.tsx`).
+- Widget dock bloat + crash guard:
+  - Active widget metadata now falls back safely if localStorage has stale ids (`client/src/App.tsx`).
+  - Dock header help moved into a hover tooltip (keeps more content visible without overcrowding) (`client/src/App.tsx`).
+- Coordinates UX:
+  - Cursor-following coordinate label is hidden; coordinates display in a compact top HUD and only while hovering the canvas/grid (`client/src/App.tsx`).
+- Added a lightweight TSX test runner and a rigidity regression test (`script/tests/run.ts`, `script/tests/rigidity.test.ts`, `package.json`).
+
+2026-03-03
+- Head drag smoothness:
+  - When dragging `head`/`neck_base` under pose physics, collar motion is driven by a smoothed momentum delta and shoulders follow lightly (prevents collar twitch) (`client/src/App.tsx`).
+  - Disabled the internal shoulder→collar bias constraint while head/neck is directly dragged to avoid competing targets (`client/src/engine/physics/posePhysics.ts`).
+
+2026-03-03
+- Default drag rigidity + top-handle jitter fix:
+  - Balance-drag follow factor increased (less lag/sway) for `head`/`neck_base` (`client/src/engine/interaction.ts`).
+  - Added target smoothing for `head`/`neck_base` balance drags with pinned feet to prevent micro-jitter (`client/src/App.tsx`).

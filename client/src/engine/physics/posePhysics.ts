@@ -26,6 +26,7 @@ export type PosePhysicsInput = {
   rootTargets: Record<string, Point>;
   drag: { id: string; target: Point } | null;
   connectionOverrides?: SkeletonState['connectionOverrides'];
+  extraConstraints?: XpbdConstraint[];
   options: {
     iterations?: number;
     dt: number;
@@ -34,6 +35,7 @@ export type PosePhysicsInput = {
     rigidity?: string;
     hardStop?: boolean;
     autoBend?: boolean;
+    bendEnabled?: boolean;
     hingeSigns?: HingeSignMap;
     stretchEnabled?: boolean;
   };
@@ -100,13 +102,17 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   };
 
   const rigidity = input.options.rigidity ?? 'realistic';
-  const wireCompliance =
-    rigidity === 'rubberhose'
-      ? 0.02
-      : rigidity === 'cardboard'
-        ? 0
-        : Math.max(0, input.options.wireCompliance ?? 0.0015);
+  // "Wire" constraints are non-hierarchical braces (structural links / soft limits).
+  // For Reiniger-style rigid cutouts, these should be *very* stiff but not perfectly rigid,
+  // so the solver can resolve small inconsistencies without jitter/popping.
+  const wireCompliance = (() => {
+    const requested = Math.max(0, input.options.wireCompliance ?? (rigidity === 'cardboard' ? 0.00025 : 0.0015));
+    if (rigidity === 'rubberhose') return 0.02;
+    if (rigidity === 'cardboard') return Math.min(requested, 0.002);
+    return Math.min(requested, 0.02);
+  })();
   const stretchEnabled = Boolean(input.options.stretchEnabled);
+  const bendEnabled = Boolean(input.options.bendEnabled);
   const boneElasticCompliance =
     rigidity === 'rubberhose' ? 0.0015 : rigidity === 'cardboard' ? 0 : 0.0005;
 
@@ -198,6 +204,10 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
     invMass[input.drag.id] = 0;
   }
 
+  if (input.extraConstraints?.length) {
+    constraints.push(...input.extraConstraints);
+  }
+
   // Hard stop hinge limits.
   if (input.options.hardStop) {
     for (const def of Object.values(HINGE_LIMITS_DEG)) {
@@ -232,6 +242,39 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
 
   // Initial world pose from preview.
   const world0 = buildWorldPoseFromJoints(joints, baseJoints, 'preview');
+
+  // Shoulder-driven collar balance: gently bias collar toward aiming at the shoulder midpoint.
+  // Only active in bend/stretch contexts to avoid fighting rigid FK intent.
+  // During head/neck direct manipulation, defer to interaction-driven constraints to avoid twitchy competing targets.
+  const draggingHeadOrNeck = input.drag?.id === 'head' || input.drag?.id === 'neck_base';
+  if (!draggingHeadOrNeck && rigidity !== 'cardboard' && (bendEnabled || stretchEnabled) && (invMass.collar ?? 1) > 0) {
+    const sternumWorld = world0.sternum;
+    const lShoulderWorld = world0.l_shoulder;
+    const rShoulderWorld = world0.r_shoulder;
+    if (sternumWorld && lShoulderWorld && rShoulderWorld) {
+      const mid = {
+        x: (lShoulderWorld.x + rShoulderWorld.x) * 0.5,
+        y: (lShoulderWorld.y + rShoulderWorld.y) * 0.5,
+      };
+      const dx = mid.x - sternumWorld.x;
+      const dy = mid.y - sternumWorld.y;
+      const len = Math.hypot(dx, dy);
+      if (Number.isFinite(len) && len > 1e-6) {
+        const dir = { x: dx / len, y: dy / len };
+        const restLen = baseLength('collar', baseJoints);
+        if (Number.isFinite(restLen) && restLen > 1e-6) {
+          const target = {
+            x: sternumWorld.x + dir.x * restLen,
+            y: sternumWorld.y + dir.y * restLen,
+          };
+          const compliance = rigidity === 'rubberhose' ? 0.006 : 0.002;
+          const c: PinConstraint = { kind: 'pin', id: 'collar', target, compliance };
+          constraints.push(c);
+        }
+      }
+    }
+  }
+
   const physicsOutput = solveXpbd(
     world0,
     constraints,
@@ -256,6 +299,7 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
 };
 
 export const shouldRunPosePhysics = (state: SkeletonState): boolean => {
+  if (state.footPlungerEnabled) return true;
   const cm = state.controlMode;
   if (cm === 'IK' || cm === 'Rubberband' || cm === 'JointDrag') return true;
   if (state.activeRoots.length > 0) return true;

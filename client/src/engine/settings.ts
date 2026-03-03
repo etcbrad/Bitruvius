@@ -2,7 +2,7 @@ import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
 import { clamp } from '../utils';
 import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
-import { computeGroundPivotWorld } from './rooting';
+import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset } from './types';
 import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
 import { DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, DEFAULT_PROCEDURAL_BITRUVIAN_IDLE } from './bitruvian/types';
@@ -70,9 +70,10 @@ const sanitizeJointMask = (raw: unknown, base: JointMask): JointMask => {
   if (!raw || typeof raw !== 'object') return base;
   const mask = raw as Partial<JointMask>;
   const mode = mask.mode === 'cutout' || mask.mode === 'rubberhose' || mask.mode === 'roto' ? mask.mode : base.mode;
+  const src = typeof mask.src === 'string' ? mask.src : base.src;
   return {
-    src: typeof mask.src === 'string' ? mask.src : base.src,
-    visible: typeof mask.visible === 'boolean' ? mask.visible : base.visible,
+    src,
+    visible: typeof mask.visible === 'boolean' ? mask.visible : Boolean(src),
     opacity: isFiniteNumber(mask.opacity) ? clamp(mask.opacity, 0, 1) : base.opacity,
     scale: isFiniteNumber(mask.scale) ? clamp(mask.scale, 0.01, 20) : base.scale,
     offsetX: isFiniteNumber(mask.offsetX) ? clamp(mask.offsetX, -5000, 5000) : base.offsetX,
@@ -229,10 +230,11 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
   if (!raw || typeof raw !== 'object') return base;
   const mask = raw as Partial<HeadMask>;
   const mode = mask.mode === 'cutout' || mask.mode === 'rubberhose' || mask.mode === 'roto' ? mask.mode : base.mode;
+  const src = typeof mask.src === 'string' ? mask.src : base.src;
   
   return {
-    src: typeof mask.src === 'string' ? mask.src : base.src,
-    visible: typeof mask.visible === 'boolean' ? mask.visible : base.visible,
+    src,
+    visible: typeof mask.visible === 'boolean' ? mask.visible : Boolean(src),
     opacity: isFiniteNumber(mask.opacity) ? clamp(mask.opacity, 0, 1) : base.opacity,
     scale: isFiniteNumber(mask.scale) ? clamp(mask.scale, 0.01, 20) : base.scale,
     offsetX: isFiniteNumber(mask.offsetX) ? clamp(mask.offsetX, -5000, 5000) : base.offsetX,
@@ -346,17 +348,19 @@ export const makeDefaultState = (): SkeletonState => {
     mirroring: true,
     bendEnabled: false, // Default: no auto-bend (rigid)
     stretchEnabled: false, // Ensure stretching is disabled by default
-    leadEnabled: true,
-    hardStop: true, // Enable hard stops for rigid joint limits
-    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
-    activeRoots: [],
-    groundRootTarget,
-    showJoints: true,
-    jointsOverMasks: false,
-    lookMode: 'default',
-    controlMode: 'Cardboard', // Default to rigid FK-like behavior
-    rigidity: 'cardboard', // Most rigid setting by default
-    snappiness: 1.0, // Maximum snappiness for crisp rigid movement
+	    leadEnabled: true,
+	    hardStop: true, // Enable hard stops for rigid joint limits
+	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
+	    // Default: planted feet (rigid IK cutout). Users can unroot to return to Ground Root.
+	    activeRoots: ['l_ankle', 'r_ankle'],
+	    groundRootTarget,
+	    footPlungerEnabled: true,
+	    showJoints: true,
+	    jointsOverMasks: false,
+	    lookMode: 'default',
+	    controlMode: 'IK', // Default to rigid IK with planted feet
+	    rigidity: 'cardboard', // Most rigid setting by default
+	    snappiness: 1.0, // Maximum snappiness for crisp rigid movement
     viewScale: 1.0,
     viewOffset: { x: 0, y: 0 },
     procgen: {
@@ -475,7 +479,7 @@ const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { asse
         toJointId: 'head',
       },
       assetId,
-      visible: headMask.visible ?? false,
+      visible: headMask.visible ?? true,
       opacity: headMask.opacity ?? 1.0,
       zIndex: 100,
       mode: headMask.mode ?? 'cutout',
@@ -519,7 +523,7 @@ const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { asse
             toJointId: jointId,
           },
           assetId,
-          visible: jointMask.visible ?? false,
+          visible: jointMask.visible ?? true,
           opacity: jointMask.opacity ?? 1.0,
           zIndex: 50,
           mode: jointMask.mode ?? 'cutout',
@@ -717,12 +721,21 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
 
   // Sanitize views
   if (Array.isArray(raw.views)) {
-    views = raw.views.filter((view): view is ViewPreset => {
+    const filtered = raw.views.filter((view): view is ViewPreset => {
       return view && typeof view === 'object' && 
              typeof view.id === 'string' && 
              typeof view.name === 'string' &&
              view.pose && typeof view.pose === 'object' &&
              view.pose.joints && typeof view.pose.joints === 'object';
+    });
+    // Expand pose joint maps to include all known joints, so older saves don't "forget" new joints.
+    views = filtered.map((view) => {
+      const rawPoseJoints = (view.pose?.joints ?? {}) as Record<string, unknown>;
+      const expandedPoseJoints: Record<string, Point> = {};
+      for (const id of Object.keys(INITIAL_JOINTS)) {
+        expandedPoseJoints[id] = safePoint(rawPoseJoints[id], INITIAL_JOINTS[id].previewOffset);
+      }
+      return { ...view, pose: { ...view.pose, joints: expandedPoseJoints } };
     });
   }
 
@@ -855,8 +868,36 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     };
   })();
 
+  const joints = sanitizeJoints(raw.joints);
+
+  const rawFootPlungerEnabled = (raw as any).footPlungerEnabled;
+  const footPlungerEnabled =
+    typeof rawFootPlungerEnabled === 'boolean' ? rawFootPlungerEnabled : base.footPlungerEnabled;
+
+  let groundRootTarget = safePointClamped((raw as any).groundRootTarget, base.groundRootTarget, {
+    min: -50_000,
+    max: 50_000,
+  });
+
+  // Migration: older saves used ankle-touchdown as the ground line; newer grounding treats the foot
+  // (toe/ankle) as the touchdown. Shift the ground target once so the character doesn't jump on load.
+  if (rawFootPlungerEnabled === undefined && (raw as any).groundRootTarget !== undefined) {
+    const ankleTouchdownY = computeTouchdownYWorld(joints, INITIAL_JOINTS, 'preview');
+    const footTouchdownY = computeFootTouchdownYWorld(joints, INITIAL_JOINTS, 'preview');
+    const deltaY = footTouchdownY - ankleTouchdownY;
+    if (Number.isFinite(deltaY) && Math.abs(deltaY) > 1e-6) {
+      groundRootTarget = { x: groundRootTarget.x, y: clamp(groundRootTarget.y + deltaY, -50_000, 50_000) };
+      issues.push({
+        severity: 'info',
+        title: 'Updated ground line for toe contact',
+        detail: 'Migrated groundRootTarget.y to keep the character in place while switching to toe/ankle touchdown grounding.',
+        autoFixedFields: ['grounding.groundRootTarget'],
+      });
+    }
+  }
+
   const state: SkeletonState = {
-    joints: sanitizeJoints(raw.joints),
+    joints,
     mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
     bendEnabled: finalBendEnabled,
     stretchEnabled: finalStretchEnabled,
@@ -864,7 +905,8 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     hardStop: finalHardStop,
     physicsRigidity: finalPhysicsRigidity,
     activeRoots,
-    groundRootTarget: safePointClamped((raw as any).groundRootTarget, base.groundRootTarget, { min: -50_000, max: 50_000 }),
+    groundRootTarget,
+    footPlungerEnabled,
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,
     jointsOverMasks: typeof raw.jointsOverMasks === 'boolean' ? raw.jointsOverMasks : base.jointsOverMasks,
     lookMode,

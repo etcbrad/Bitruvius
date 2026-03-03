@@ -304,6 +304,8 @@ export const CutoutsUI: React.FC<CutoutsUIProps> = ({ state, setState, setStateW
                           min="0"
                           max="200"
                           value={slot.zIndex}
+                          onPointerDownCapture={(e) => e.stopPropagation()}
+                          onMouseDownCapture={(e) => e.stopPropagation()}
                           onChange={(e) => updateSlot(slotId, { zIndex: parseInt(e.target.value) })}
                           className="w-full h-1 bg-[#222] rounded-lg appearance-none cursor-pointer accent-white"
                         />

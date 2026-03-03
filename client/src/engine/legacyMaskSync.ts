@@ -74,7 +74,7 @@ export const syncLegacyMasksToCutouts = (state: SkeletonState): SkeletonState =>
 
     const nextSlots = ensureSlot(cutoutSlots, 'head', baseSlot, {
       assetId: LEGACY_HEAD_ASSET_ID,
-      visible: Boolean(headMask.visible),
+      visible: typeof headMask.visible === 'boolean' ? headMask.visible : true,
       opacity: headMask.opacity,
       mode: headMask.mode,
       scale: headMask.scale,
@@ -144,7 +144,7 @@ export const syncLegacyMasksToCutouts = (state: SkeletonState): SkeletonState =>
 
       const nextSlots = ensureSlot(cutoutSlots, jointId, baseSlot, {
         assetId,
-        visible: Boolean(mask.visible),
+        visible: typeof mask.visible === 'boolean' ? mask.visible : true,
         opacity: mask.opacity,
         mode: mask.mode,
         scale: mask.scale,

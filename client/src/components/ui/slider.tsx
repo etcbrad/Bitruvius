@@ -26,6 +26,9 @@ function Slider({
   trackStyle,
   rangeStyle,
   thumbStyle,
+  onValueChange,
+  onPointerDownCapture,
+  onMouseDownCapture,
   ...props
 }: SliderProps) {
   const _values = React.useMemo(
@@ -38,6 +41,32 @@ function Slider({
     [value, defaultValue, min, max],
   );
 
+  const onValueChangeRef = React.useRef<typeof onValueChange>(onValueChange);
+  React.useEffect(() => {
+    onValueChangeRef.current = onValueChange;
+  }, [onValueChange]);
+
+  const rafIdRef = React.useRef(0);
+  const latestValuesRef = React.useRef<number[] | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+    };
+  }, []);
+
+  const onValueChangeRaf = React.useCallback((values: number[]) => {
+    latestValuesRef.current = values;
+    if (rafIdRef.current) return;
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = 0;
+      const nextValues = latestValuesRef.current;
+      latestValuesRef.current = null;
+      if (!nextValues) return;
+      onValueChangeRef.current?.(nextValues);
+    });
+  }, []);
+
   return (
     <SliderPrimitive.Root
       data-slot="slider"
@@ -45,6 +74,15 @@ function Slider({
       value={value}
       min={min}
       max={max}
+      onValueChange={onValueChange ? onValueChangeRaf : undefined}
+      onPointerDownCapture={(e) => {
+        onPointerDownCapture?.(e);
+        e.stopPropagation();
+      }}
+      onMouseDownCapture={(e) => {
+        onMouseDownCapture?.(e);
+        e.stopPropagation();
+      }}
       className={cn(
         "relative flex w-full touch-none items-center select-none data-[disabled]:opacity-50 data-[orientation=vertical]:h-full data-[orientation=vertical]:min-h-44 data-[orientation=vertical]:w-auto data-[orientation=vertical]:flex-col",
         className,
