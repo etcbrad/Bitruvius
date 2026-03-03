@@ -120,3 +120,7 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - Default drag rigidity + top-handle jitter fix:
   - Balance-drag follow factor increased (less lag/sway) for `head`/`neck_base` (`client/src/engine/interaction.ts`).
   - Added target smoothing for `head`/`neck_base` balance drags with pinned feet to prevent micro-jitter (`client/src/App.tsx`).
+
+2026-03-03
+- UX: editor state now loads from + autosaves to `localStorage` (throttled; queued only from user-intent transitions) with `?reset=1` to force a clean default state (`client/src/App.tsx`).
+- Added `SYSTEM_AUDIT_2026-03-03.md` with a prioritized UI/feel/engineering audit and roadmap.
