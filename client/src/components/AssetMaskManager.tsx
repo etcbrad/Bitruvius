@@ -22,6 +22,7 @@ interface AssetMaskManagerProps {
   state: SkeletonState;
   setState: (updater: (prev: SkeletonState) => SkeletonState) => void;
   setStateWithHistory: (action: string, updater: (prev: SkeletonState) => SkeletonState) => void;
+  requestViewSwitch?: (viewId: string) => void;
   maskJointId: string;
   setMaskJointId: (id: string) => void;
   maskEditArmed: boolean;
@@ -35,6 +36,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
   state,
   setState,
   setStateWithHistory,
+  requestViewSwitch,
   maskJointId,
   setMaskJointId,
   maskEditArmed,
@@ -548,7 +550,11 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       ? 'bg-white text-black border-white'
                       : 'bg-[#181818] border-[#333] hover:border-[#666]'
                   }`}
-                  onClick={() => setState(switchToViewWrapper(view.id))}
+                  onClick={() => {
+                    if (view.id === state.activeViewId) return;
+                    if (requestViewSwitch) requestViewSwitch(view.id);
+                    else setState(switchToViewWrapper(view.id));
+                  }}
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-medium">{view.name}</span>

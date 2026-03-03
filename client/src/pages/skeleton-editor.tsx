@@ -6,6 +6,8 @@ import { observeCanvasContainer } from '@/lib/canvas';
 import { computeWorldTransforms } from '@/lib/skeleton';
 import { solveFABRIK } from '@/lib/ik';
 import { useUndoRedo } from '@/hooks/useUndoRedo';
+import { TransitionWarningDialog, getTransitionWarningsDisabled } from '@/components/TransitionWarningDialog';
+import type { TransitionIssue } from '@/lib/transitionIssues';
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -79,6 +81,7 @@ type DragState =
 export default function SkeletonEditorPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dragPointerIdRef = useRef<number | null>(null);
 
   const { state: skeleton, setState: setSkeleton, undo, redo, canUndo, canRedo } = useUndoRedo(INITIAL_SKELETON);
   const skeletonRef = useRef(skeleton);
@@ -87,6 +90,8 @@ export default function SkeletonEditorPage() {
   const [selectedBoneId, setSelectedBoneId] = useState<string | null>(null);
   const [drag, setDrag] = useState<DragState>(null);
   const [panelSizes, setPanelSizes] = useState({ left: 200, right: 260, bottom: 160 });
+  const [transitionWarningOpen, setTransitionWarningOpen] = useState(false);
+  const [transitionWarningIssues, setTransitionWarningIssues] = useState<TransitionIssue[]>([]);
 
   const startResize = useCallback(
     (edge: 'left' | 'right' | 'bottom', e: ReactMouseEvent) => {
@@ -131,6 +136,36 @@ export default function SkeletonEditorPage() {
   useEffect(() => {
     skeletonRef.current = skeleton;
   }, [skeleton]);
+
+  useEffect(() => {
+    if (mode === 'Pose') return;
+    if (!drag) return;
+
+    setDrag(null);
+
+    const canvas = canvasRef.current;
+    const pointerId = dragPointerIdRef.current;
+    dragPointerIdRef.current = null;
+    if (canvas && pointerId !== null) {
+      try {
+        canvas.releasePointerCapture(pointerId);
+      } catch {
+        // ignore
+      }
+    }
+
+    const issue: TransitionIssue = {
+      severity: 'warning',
+      title: 'Stopped active drag',
+      detail: 'Left Pose mode while dragging; the active interaction was canceled to prevent contradictory editor modes.',
+      autoFixedFields: ['ui.drag'],
+    };
+    console.warn('[skeleton-editor]', issue.title, issue.detail);
+    if (!getTransitionWarningsDisabled()) {
+      setTransitionWarningIssues([issue]);
+      setTransitionWarningOpen(true);
+    }
+  }, [drag, mode]);
 
   const getWorldFromPointerEvent = useCallback(
     (e: PointerEvent): Vec2 | null => {
@@ -343,6 +378,7 @@ export default function SkeletonEditorPage() {
         if (dist({ x: t.targetX, y: t.targetY }, w) <= 14) {
           setDrag({ type: 'ik', targetId: t.id });
           canvas.setPointerCapture(e.pointerId);
+          dragPointerIdRef.current = e.pointerId;
           updateIKTarget(t.id, w, false);
           return;
         }
@@ -355,6 +391,7 @@ export default function SkeletonEditorPage() {
           setSelectedBoneId(bone.id);
           setDrag({ type: 'rotate', boneId: bone.id });
           canvas.setPointerCapture(e.pointerId);
+          dragPointerIdRef.current = e.pointerId;
           return;
         }
       }
@@ -362,6 +399,7 @@ export default function SkeletonEditorPage() {
 
     const onPointerMove = (e: PointerEvent) => {
       if (!drag) return;
+      if (mode !== 'Pose') return;
       const w = getWorldFromPointerEvent(e);
       if (!w) return;
 
@@ -396,8 +434,19 @@ export default function SkeletonEditorPage() {
 
     const onPointerUp = (e: PointerEvent) => {
       if (!drag) return;
+      if (mode !== 'Pose') {
+        setDrag(null);
+        dragPointerIdRef.current = null;
+        try {
+          canvas.releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        return;
+      }
       const w = getWorldFromPointerEvent(e);
       setDrag(null);
+      dragPointerIdRef.current = null;
 
       if (drag.type === 'ik') {
         if (w) updateIKTarget(drag.targetId, w, true);
@@ -719,6 +768,15 @@ export default function SkeletonEditorPage() {
           <div className="px-3 py-2 text-[10px] font-semibold tracking-wide uppercase text-white/60">Timeline</div>
         </div>
       </div>
+
+      <TransitionWarningDialog
+        open={transitionWarningOpen}
+        issues={transitionWarningIssues}
+        onClose={() => {
+          setTransitionWarningOpen(false);
+          setTransitionWarningIssues([]);
+        }}
+      />
     </div>
   );
 }

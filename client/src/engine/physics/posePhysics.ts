@@ -35,7 +35,6 @@ export type PosePhysicsInput = {
     hardStop?: boolean;
     autoBend?: boolean;
     hingeSigns?: HingeSignMap;
-    physicsMode?: string;
     stretchEnabled?: boolean;
   };
 };
