@@ -379,6 +379,17 @@ export const applyDragToState = (
 
   // 2. FK / Default Dragging Logic
 
+  // Static rotation: preserve the current segment length while rotating toward the cursor.
+  // (Stretching/proportion edits are handled explicitly via JointDrag mode.)
+  if (joint.parent) {
+    const desiredLen = jointLength(draggingId, nextJoints, INITIAL_JOINTS, prev.stretchEnabled);
+    const d = Math.hypot(newPreview.x, newPreview.y);
+    if (desiredLen > 1e-9 && d > 1e-9) {
+      const f = desiredLen / d;
+      newPreview = { x: newPreview.x * f, y: newPreview.y * f };
+    }
+  }
+
   // Keep drag rotation continuous by unwrapping target angle relative to current preview angle.
   if (joint.parent) {
     const prevA = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);

@@ -85,6 +85,16 @@ const bitruviusPoseToEnginePose = (bitruviusPose: Partial<WalkingEnginePose>, ba
     };
   }
 
+  // Apply a global body rotation around the root so the gait/IK `bodyRotation` and the rig's
+  // hierarchical offsets share the same angle basis.
+  if (typeof bitruviusPose.bodyRotation === 'number' && Number.isFinite(bitruviusPose.bodyRotation) && Math.abs(bitruviusPose.bodyRotation) > 1e-6) {
+    const a = bitruviusPose.bodyRotation;
+    for (const [id, off] of Object.entries(result.joints)) {
+      if (id === 'root' || !off) continue;
+      result.joints[id] = rotateVecInternal(off, a);
+    }
+  }
+
   return result;
 };
 
