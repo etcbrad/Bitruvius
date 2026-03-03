@@ -31,7 +31,7 @@ import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connectio
 import { LOOK_MODES, type LookModeId } from './engine/lookModes';
 import { throttle, normA, d2r, r2d, clamp, lerp } from './utils';
 import { applyBalanceDragToState, applyDragToState } from './engine/interaction';
-import { fromAngleDeg, getWorldPosition, getWorldPositionFromOffsets, toAngleDeg, vectorLength } from './engine/kinematics';
+import { fromAngleDeg, getWorldPosition, getWorldPositionFromOffsets, toAngleDeg, unwrapAngleRad, vectorLength } from './engine/kinematics';
 import { HistoryController } from './engine/history';
 import { deserializeEngineState, serializeEngineState } from './engine/serialization';
 import { downloadSvg } from './engine/export/svg';
@@ -47,7 +47,7 @@ import {
 } from './engine/autoPoseCapture';
 import { makeDefaultState, sanitizeStateWithReport, sanitizeJoints } from './engine/settings';
 import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
-import { applyGroundRootCorrectionToJoints, computeCogWorld } from './engine/rooting';
+import { applyGroundRootCorrectionToJoints, computeGroundPivotWorld, computeTouchdownYWorld } from './engine/rooting';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
 import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
@@ -73,13 +73,52 @@ const LOCAL_STORAGE_KEY = 'bitruvius_state';
 const IMAGE_CACHE_KEY = 'bitruvius_image_cache';
 const BACKGROUND_COLOR_KEY = 'bitruvius_background_color';
 const POSE_TRACE_KEY = 'bitruvius_pose_trace_enabled';
+const CONTROL_SETTINGS_KEY = 'bitruvius_control_settings_v1';
 const BUILD_ID = 'Bitruvius';
 const DND_WIDGET_MIME = 'text/bitruvius-widget';
+// Temporarily disable widget drag/pop-out until the DnD flow is fixed.
+const WIDGET_DND_ENABLED = false;
 
 const BONE_PALETTE = {
   violet: '#2b0057',
   magenta: '#ff2bbd',
 } as const;
+
+type ControlSettingsGroup = 'fk' | 'ik';
+type ControlSettingsSnapshot = Pick<SkeletonState, 'bendEnabled' | 'stretchEnabled' | 'leadEnabled' | 'hardStop' | 'snappiness'>;
+type ControlSettingsCache = Record<ControlSettingsGroup, ControlSettingsSnapshot>;
+
+const controlGroupForMode = (mode: ControlMode): ControlSettingsGroup => (mode === 'Cardboard' ? 'fk' : 'ik');
+
+const snapshotControlSettings = (s: SkeletonState): ControlSettingsSnapshot => ({
+  bendEnabled: Boolean(s.bendEnabled),
+  stretchEnabled: Boolean(s.stretchEnabled),
+  leadEnabled: Boolean(s.leadEnabled),
+  hardStop: Boolean(s.hardStop),
+  snappiness: Number.isFinite(s.snappiness) ? clamp(s.snappiness, 0.05, 1.0) : 1.0,
+});
+
+const coerceControlSettingsSnapshot = (raw: any, fallback: ControlSettingsSnapshot): ControlSettingsSnapshot => ({
+  bendEnabled: typeof raw?.bendEnabled === 'boolean' ? raw.bendEnabled : fallback.bendEnabled,
+  stretchEnabled: typeof raw?.stretchEnabled === 'boolean' ? raw.stretchEnabled : fallback.stretchEnabled,
+  leadEnabled: typeof raw?.leadEnabled === 'boolean' ? raw.leadEnabled : fallback.leadEnabled,
+  hardStop: typeof raw?.hardStop === 'boolean' ? raw.hardStop : fallback.hardStop,
+  snappiness: Number.isFinite(raw?.snappiness) ? clamp(raw.snappiness, 0.05, 1.0) : fallback.snappiness,
+});
+
+const loadControlSettingsCache = (fallback: ControlSettingsSnapshot): ControlSettingsCache => {
+  try {
+    const txt = localStorage.getItem(CONTROL_SETTINGS_KEY);
+    if (!txt) return { fk: fallback, ik: fallback };
+    const parsed = JSON.parse(txt);
+    return {
+      fk: coerceControlSettingsSnapshot(parsed?.fk, fallback),
+      ik: coerceControlSettingsSnapshot(parsed?.ik, fallback),
+    };
+  } catch {
+    return { fk: fallback, ik: fallback };
+  }
+};
 
 const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
   const h = hex.trim().replace(/^#/, '');
@@ -132,6 +171,83 @@ const getBoneHex = (boneStyle: SkeletonState['boneStyle'] | null | undefined): s
   const hueT = clamp(boneStyle?.hueT ?? 0, 0, 1);
   const lightness = clamp(boneStyle?.lightness ?? 0, -1, 1);
   return applyLightness(mixHex(BONE_PALETTE.violet, BONE_PALETTE.magenta, hueT), lightness);
+};
+
+const collectSubtreeJointIds = (rootId: string, joints: Record<string, Joint>): string[] => {
+  if (!rootId || !joints[rootId]) return [];
+
+  const childrenByParent: Record<string, string[]> = {};
+  for (const [id, j] of Object.entries(joints)) {
+    if (!j?.parent) continue;
+    (childrenByParent[j.parent] ??= []).push(id);
+  }
+
+  const out: string[] = [];
+  const q: string[] = [rootId];
+  const seen = new Set<string>();
+  while (q.length && out.length < 256) {
+    const id = q.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (!joints[id]) continue;
+    out.push(id);
+    const kids = childrenByParent[id];
+    if (kids) q.push(...kids);
+  }
+  return out;
+};
+
+const applyRigidTransformToJointSubset = (args: {
+  joints: Record<string, Joint>;
+  baseJoints: Record<string, Joint>;
+  subsetIds: string[];
+  pivotWorld: Point;
+  rotateRad: number;
+  translateWorld: Point;
+}): Record<string, Joint> => {
+  const { joints, baseJoints, subsetIds, pivotWorld, rotateRad, translateWorld } = args;
+  if (!subsetIds.length) return joints;
+
+  const c = Math.cos(rotateRad);
+  const s = Math.sin(rotateRad);
+
+  const world: Record<string, Point> = {};
+  for (const id of Object.keys(joints)) {
+    world[id] = getWorldPosition(id, joints, baseJoints, 'preview');
+  }
+
+  const subset = new Set(subsetIds);
+  const transformedWorld: Record<string, Point> = {};
+  for (const id of subsetIds) {
+    const p = world[id];
+    if (!p) continue;
+    const rx = (p.x - pivotWorld.x) * c - (p.y - pivotWorld.y) * s;
+    const ry = (p.x - pivotWorld.x) * s + (p.y - pivotWorld.y) * c;
+    transformedWorld[id] = {
+      x: pivotWorld.x + rx + translateWorld.x,
+      y: pivotWorld.y + ry + translateWorld.y,
+    };
+  }
+
+  const nextJoints: Record<string, Joint> = { ...joints };
+  for (const id of subsetIds) {
+    const j = nextJoints[id] ?? baseJoints[id];
+    const p = transformedWorld[id];
+    if (!j || !p) continue;
+
+    if (!j.parent) {
+      const off = { x: p.x, y: p.y };
+      nextJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
+      continue;
+    }
+
+    const parentWorld = subset.has(j.parent) ? transformedWorld[j.parent] : world[j.parent];
+    if (!parentWorld) continue;
+    const off = { x: p.x - parentWorld.x, y: p.y - parentWorld.y };
+    nextJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
+  }
+
+  return nextJoints;
 };
 
 type ReferenceVideoMeta = { duration: number; width: number; height: number };
@@ -482,15 +598,21 @@ const WIDGETS: Record<
         <div className="text-[11px] text-[#ddd]">
           Widgets live in the side console by default to keep the canvas clean.
         </div>
-        <ul className="list-disc pl-4 text-[11px] text-[#bbb] space-y-1">
-          <li>Click a widget to activate it here.</li>
-          <li>Drag a widget onto the canvas to pop it out.</li>
-          <li>Drag a widget back onto the sidebar to dock it.</li>
-        </ul>
+	        <ul className="list-disc pl-4 text-[11px] text-[#bbb] space-y-1">
+	          <li>Click a widget to activate it here.</li>
+	          {WIDGET_DND_ENABLED ? (
+	            <>
+	              <li>Drag a widget onto the canvas to pop it out.</li>
+	              <li>Drag a widget back onto the sidebar to dock it.</li>
+	            </>
+	          ) : (
+	            <li>Pop-out dragging is temporarily disabled (widgets stay docked).</li>
+	          )}
+	        </ul>
       </div>
     ),
     defaultFloatSize: { w: 360, h: 240 },
-    minFloatSize: { w: 260, h: 160 },
+    minFloatSize: { w: 220, h: 140 },
   },
   edit: {
     title: 'Edit',
@@ -498,7 +620,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Undo/redo and editor utilities.</div>,
     defaultFloatSize: { w: 360, h: 190 },
-    minFloatSize: { w: 260, h: 160 },
+    minFloatSize: { w: 220, h: 140 },
   },
   joint_hierarchy: {
     title: 'Joint Hierarchy',
@@ -506,7 +628,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Quick navigation through joints and bones.</div>,
     defaultFloatSize: { w: 360, h: 540 },
-    minFloatSize: { w: 280, h: 240 },
+    minFloatSize: { w: 240, h: 200 },
   },
   joint_masks: {
     title: 'Masks',
@@ -514,7 +636,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Edit cutout masks and masking behavior.</div>,
     defaultFloatSize: { w: 360, h: 420 },
-    minFloatSize: { w: 280, h: 240 },
+    minFloatSize: { w: 240, h: 200 },
   },
   cutout_relationships: {
     title: 'Cutout Relationships',
@@ -522,7 +644,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Visualize and debug cutout overlaps and ordering.</div>,
     defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 320, h: 240 },
+    minFloatSize: { w: 260, h: 200 },
   },
   bone_inspector: {
     title: 'Rig Inspector',
@@ -530,7 +652,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Inspect bones, joints, and stretch behavior.</div>,
     defaultFloatSize: { w: 360, h: 300 },
-    minFloatSize: { w: 300, h: 200 },
+    minFloatSize: { w: 240, h: 180 },
   },
   rig_controls: {
     title: 'Rig Controls',
@@ -547,7 +669,7 @@ const WIDGETS: Record<
       </div>
     ),
     defaultFloatSize: { w: 420, h: 520 },
-    minFloatSize: { w: 320, h: 260 },
+    minFloatSize: { w: 260, h: 220 },
   },
   responsiveness: {
     title: 'Responsiveness',
@@ -555,7 +677,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Fine-tune smoothing, damping, and feel.</div>,
     defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 320, h: 240 },
+    minFloatSize: { w: 260, h: 200 },
   },
   atomic_units: {
     title: 'Advanced Controls',
@@ -563,7 +685,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Low-level rig settings and debugging utilities.</div>,
     defaultFloatSize: { w: 420, h: 560 },
-    minFloatSize: { w: 320, h: 260 },
+    minFloatSize: { w: 280, h: 220 },
   },
   animation: {
     title: 'Animation',
@@ -571,7 +693,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Timeline and keyframe tools.</div>,
     defaultFloatSize: { w: 420, h: 340 },
-    minFloatSize: { w: 320, h: 240 },
+    minFloatSize: { w: 260, h: 200 },
   },
   procgen: {
     title: 'Auto Motion',
@@ -579,7 +701,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Procedural motion and loop baking.</div>,
     defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 320, h: 240 },
+    minFloatSize: { w: 260, h: 200 },
   },
   camera: {
     title: 'Camera',
@@ -587,7 +709,7 @@ const WIDGETS: Record<
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Viewport and export framing controls.</div>,
     defaultFloatSize: { w: 320, h: 220 },
-    minFloatSize: { w: 260, h: 180 },
+    minFloatSize: { w: 220, h: 160 },
   },
   look: {
     title: 'Look',
@@ -595,7 +717,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Display style and look presets.</div>,
     defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 320, h: 240 },
+    minFloatSize: { w: 260, h: 200 },
   },
   views: {
     title: 'Views',
@@ -603,7 +725,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Save and switch camera / view presets.</div>,
     defaultFloatSize: { w: 420, h: 520 },
-    minFloatSize: { w: 320, h: 260 },
+    minFloatSize: { w: 260, h: 220 },
   },
   pixel_fonts: {
     title: 'Pixel Fonts',
@@ -611,7 +733,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Choose the UI title font style.</div>,
     defaultFloatSize: { w: 420, h: 260 },
-    minFloatSize: { w: 320, h: 220 },
+    minFloatSize: { w: 260, h: 200 },
   },
   background: {
     title: 'Background',
@@ -619,7 +741,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Canvas background color and defaults.</div>,
     defaultFloatSize: { w: 420, h: 320 },
-    minFloatSize: { w: 320, h: 240 },
+    minFloatSize: { w: 260, h: 200 },
   },
   scene: {
     title: 'Scene',
@@ -627,7 +749,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Reference layers, titles, and scene overlays.</div>,
     defaultFloatSize: { w: 520, h: 640 },
-    minFloatSize: { w: 360, h: 280 },
+    minFloatSize: { w: 300, h: 240 },
   },
   project: {
     title: 'Project',
@@ -635,7 +757,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Save and open project files.</div>,
     defaultFloatSize: { w: 420, h: 260 },
-    minFloatSize: { w: 320, h: 220 },
+    minFloatSize: { w: 260, h: 200 },
   },
   export: {
     title: 'Export',
@@ -643,7 +765,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Export SVG/PNG/WebM outputs.</div>,
     defaultFloatSize: { w: 420, h: 280 },
-    minFloatSize: { w: 320, h: 220 },
+    minFloatSize: { w: 260, h: 200 },
   },
   pose_capture: {
     title: 'Pose Capture',
@@ -651,7 +773,7 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Capture pose snapshots and bake recordings.</div>,
     defaultFloatSize: { w: 520, h: 560 },
-    minFloatSize: { w: 360, h: 260 },
+    minFloatSize: { w: 300, h: 240 },
   },
   console: {
     title: 'Console',
@@ -659,15 +781,8 @@ const WIDGETS: Record<
     isGlobal: true,
     docs: <div className="text-[11px] text-[#bbb]">Engine and workflow logs.</div>,
     defaultFloatSize: { w: 520, h: 340 },
-    minFloatSize: { w: 340, h: 220 },
+    minFloatSize: { w: 280, h: 200 },
   },
-};
-
-const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
-  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'cutout_relationships', 'bone_inspector'],
-  physics: ['rig_controls', 'responsiveness', 'atomic_units'],
-  animation: ['animation', 'procgen', 'camera'],
-  global: [],
 };
 
 const WIDGET_GLOBAL_ORDER: WidgetId[] = [
@@ -682,7 +797,12 @@ const WIDGET_GLOBAL_ORDER: WidgetId[] = [
   'console',
 ];
 
-WIDGET_TAB_ORDER.global = WIDGET_GLOBAL_ORDER;
+const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
+  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'cutout_relationships', 'bone_inspector'],
+  physics: ['rig_controls', 'responsiveness', 'atomic_units'],
+  animation: ['animation', 'procgen', 'camera'],
+  global: WIDGET_GLOBAL_ORDER,
+};
 
 type RigTrack = 'body' | 'arms';
 type RigSide = 'front' | 'back'; // front=right, back=left
@@ -743,6 +863,21 @@ export default function App() {
     }
     return makeDefaultState();
   });
+
+  // Keep FK/IK-ish settings separate: Cardboard uses the FK group, everything else uses the IK group.
+  // This allows quick switching between rigid rotation and IK without constantly re-toggling options.
+  const controlSettingsCacheRef = useRef<ControlSettingsCache>(loadControlSettingsCache(snapshotControlSettings(state)));
+  useEffect(() => {
+    const group = controlGroupForMode(state.controlMode);
+    const snap = snapshotControlSettings(state);
+    const next: ControlSettingsCache = { ...controlSettingsCacheRef.current, [group]: snap };
+    controlSettingsCacheRef.current = next;
+    try {
+      localStorage.setItem(CONTROL_SETTINGS_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }, [state.bendEnabled, state.controlMode, state.hardStop, state.leadEnabled, state.snappiness, state.stretchEnabled]);
 
   useEffect(() => {
     console.log(`[bitruvius] build=${BUILD_ID}`);
@@ -810,11 +945,18 @@ export default function App() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdLiveRef = useRef<string | null>(null);
   const effectiveDraggingIdLiveRef = useRef<string | null>(null);
+  const dragProxyOffsetWorldRef = useRef<Point | null>(null);
   const [groundRootDragging, setGroundRootDragging] = useState(false);
   const groundRootDraggingLiveRef = useRef(false);
   const [rootLeverDraggingId, setRootLeverDraggingId] = useState<string | null>(null);
   const rootLeverDraggingLiveRef = useRef<string | null>(null);
   const rootDragKindLiveRef = useRef<'none' | 'root_target' | 'root_lever'>('none');
+  const [rootRotateDragging, setRootRotateDragging] = useState<null | {
+    pivot: Point;
+    startAngle: number;
+    lastAngle: number;
+  }>(null);
+  const rootRotateDraggingLiveRef = useRef<null | { pivot: Point; startAngle: number; lastAngle: number }>(null);
   const pinWorldRef = useRef<Record<string, Point> | null>(null);
   const dragTargetRef = useRef<{ id: string; target: Point } | null>(null);
   const pinTargetsRef = useRef<Record<string, Point>>({});
@@ -871,6 +1013,9 @@ export default function App() {
   const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
+  const [canvasRotationDeg, setCanvasRotationDeg] = useState(0);
+  const canvasRotationDegLiveRef = useRef(0);
+  const [rigidRootDragEnabled, setRigidRootDragEnabled] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const cursorHudRef = useRef<HTMLDivElement | null>(null);
@@ -939,14 +1084,14 @@ export default function App() {
     return clickedId;
   }, []);
 
-  useEffect(() => {
-    if (state.activeRoots.length > 0) return;
-    setState((prev) => {
-      if (prev.activeRoots.length > 0) return prev;
-      const corrected = applyGroundRootCorrectionToJoints({
-        joints: prev.joints,
-        baseJoints: INITIAL_JOINTS,
-        activeRoots: prev.activeRoots,
+	  useEffect(() => {
+	    if (state.activeRoots.length > 0) return;
+	    setState((prev) => {
+	      if (prev.activeRoots.length > 0) return prev;
+	      const corrected = applyGroundRootCorrectionToJoints({
+	        joints: prev.joints,
+	        baseJoints: INITIAL_JOINTS,
+	        activeRoots: prev.activeRoots,
         groundRootTarget: prev.groundRootTarget,
       });
       if (corrected === prev.joints) return prev;
@@ -1066,7 +1211,9 @@ export default function App() {
   };
 
   const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
-  const [activeWidgetId, setActiveWidgetId] = useState<WidgetId>('tools');
+  const [activeWidgetId, setActiveWidgetId] = useState<WidgetId>(
+    () => WIDGET_TAB_ORDER.character.find((id) => id !== 'tools') ?? 'tools',
+  );
   const [widgetDragging, setWidgetDragging] = useState<null | {
     id: WidgetId;
     startClientX: number;
@@ -1084,6 +1231,8 @@ export default function App() {
   }>(null);
 
   const widgetSnapGridPx = 16;
+  const floatingWidgetHeaderPx = 34;
+  const widgetMagnetThresholdPx = 10;
   const [consoleLogs, setConsoleLogs] = useState<ConsoleLogEntry[]>([]);
   const [activeLogLevels, setActiveLogLevels] = useState<Set<ConsoleLogLevel>>(
     () => new Set<ConsoleLogLevel>(['info', 'warning', 'error', 'success']),
@@ -1100,7 +1249,7 @@ export default function App() {
 
   useEffect(() => {
     const tabWidgets = WIDGET_TAB_ORDER[sidebarTab];
-    const desired = tabWidgets[0] ?? 'tools';
+    const desired = tabWidgets.find((id) => id !== 'tools') ?? tabWidgets[0] ?? 'tools';
     if (WIDGETS[activeWidgetId]?.tabGroup !== sidebarTab) {
       setActiveWidgetId(desired);
     }
@@ -1475,19 +1624,64 @@ export default function App() {
       const dy = e.clientY - widgetDragging.startClientY;
       const rawX = widgetDragging.startX + dx;
       const rawY = widgetDragging.startY + dy;
-      const x = e.altKey ? rawX : snapToGrid(rawX, widgetSnapGridPx);
-      const y = e.altKey ? rawY : snapToGrid(rawY, widgetSnapGridPx);
-      setFloatingWidgets((prev) =>
-        prev.map((w) =>
-          w.id === widgetDragging.id
-            ? {
-                ...w,
-                x,
-                y,
-              }
-            : w,
-        ),
-      );
+
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const canvasW = rect?.width ?? window.innerWidth;
+      const canvasH = rect?.height ?? window.innerHeight;
+
+      const magnet1D = (value: number, candidates: number[]) => {
+        let best = value;
+        let bestDist = widgetMagnetThresholdPx + 0.01;
+        for (const c of candidates) {
+          const d = Math.abs(value - c);
+          if (d < bestDist) {
+            bestDist = d;
+            best = c;
+          }
+        }
+        return best;
+      };
+
+      setFloatingWidgets((prev) => {
+        const self = prev.find((w) => w.id === widgetDragging.id);
+        if (!self) return prev;
+
+        let x = rawX;
+        let y = rawY;
+
+        if (!e.altKey) {
+          x = snapToGrid(x, widgetSnapGridPx);
+          y = snapToGrid(y, widgetSnapGridPx);
+
+          const selfW = self.w;
+          const selfH = self.minimized ? floatingWidgetHeaderPx : self.h;
+
+          const others = prev
+            .filter((w) => w.id !== self.id)
+            .map((w) => ({
+              x: w.x,
+              y: w.y,
+              w: w.w,
+              h: w.minimized ? floatingWidgetHeaderPx : w.h,
+            }));
+
+          const xCandidates = [
+            0,
+            canvasW - selfW,
+            ...others.flatMap((o) => [o.x, o.x + o.w, o.x - selfW, o.x + o.w - selfW]),
+          ];
+          const yCandidates = [
+            0,
+            canvasH - selfH,
+            ...others.flatMap((o) => [o.y, o.y + o.h, o.y - selfH, o.y + o.h - selfH]),
+          ];
+
+          x = magnet1D(x, xCandidates);
+          y = magnet1D(y, yCandidates);
+        }
+
+        return prev.map((w) => (w.id === self.id ? { ...w, x, y } : w));
+      });
     };
 
     const onUp = () => setWidgetDragging(null);
@@ -1509,15 +1703,60 @@ export default function App() {
       const rawW = widgetResizing.startW + dx;
       const rawH = widgetResizing.startH + dy;
 
-      const min = WIDGETS[widgetResizing.id].minFloatSize;
-      const clampedW = Math.max(min.w, rawW);
-      const clampedH = Math.max(min.h, rawH);
-      const w = e.altKey ? clampedW : snapToGrid(clampedW, widgetSnapGridPx);
-      const h = e.altKey ? clampedH : snapToGrid(clampedH, widgetSnapGridPx);
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const canvasW = rect?.width ?? window.innerWidth;
+      const canvasH = rect?.height ?? window.innerHeight;
 
-      setFloatingWidgets((prev) =>
-        prev.map((fw) => (fw.id === widgetResizing.id ? { ...fw, w, h } : fw)),
-      );
+      const magnet1D = (value: number, candidates: number[]) => {
+        let best = value;
+        let bestDist = widgetMagnetThresholdPx + 0.01;
+        for (const c of candidates) {
+          const d = Math.abs(value - c);
+          if (d < bestDist) {
+            bestDist = d;
+            best = c;
+          }
+        }
+        return best;
+      };
+
+      setFloatingWidgets((prev) => {
+        const self = prev.find((w) => w.id === widgetResizing.id);
+        if (!self) return prev;
+
+        const min = WIDGETS[widgetResizing.id].minFloatSize;
+        const clampedW = Math.max(min.w, rawW);
+        const clampedH = Math.max(min.h, rawH);
+
+        let w = clampedW;
+        let h = clampedH;
+
+        if (!e.altKey) {
+          w = snapToGrid(w, widgetSnapGridPx);
+          h = snapToGrid(h, widgetSnapGridPx);
+
+          const others = prev
+            .filter((w) => w.id !== self.id)
+            .map((w) => ({
+              x: w.x,
+              y: w.y,
+              w: w.w,
+              h: w.minimized ? floatingWidgetHeaderPx : w.h,
+            }));
+
+          const right = self.x + w;
+          const bottom = self.y + h;
+          const rightCandidates = [canvasW, ...others.flatMap((o) => [o.x, o.x + o.w])];
+          const bottomCandidates = [canvasH, ...others.flatMap((o) => [o.y, o.y + o.h])];
+
+          const snappedRight = magnet1D(right, rightCandidates);
+          const snappedBottom = magnet1D(bottom, bottomCandidates);
+          w = Math.max(min.w, snappedRight - self.x);
+          h = Math.max(min.h, snappedBottom - self.y);
+        }
+
+        return prev.map((fw) => (fw.id === self.id ? { ...fw, w, h } : fw));
+      });
     };
 
     const onUp = () => setWidgetResizing(null);
@@ -2547,7 +2786,12 @@ export default function App() {
 
 	        const drag = dragTargetRef.current;
 	        const isDirectManipulation =
-            Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current || groundPlaneDraggingLiveRef.current;
+            Boolean(draggingIdLiveRef.current) ||
+            Boolean(rootLeverDraggingLiveRef.current) ||
+            Boolean(rootRotateDraggingLiveRef.current) ||
+            maskDraggingLiveRef.current ||
+            groundPlaneDraggingLiveRef.current ||
+            groundRootDraggingLiveRef.current;
 	        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
 	        const allowPosePhysics = !prev.timeline.enabled || prev.procgen.enabled || isDirectManipulation || Boolean(drag);
 	        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activeRoots.length > 0);
@@ -2908,20 +3152,23 @@ export default function App() {
     setMaskJointId(id);
     setSelectedConnectionKey(focusBoneKeyForJointId(id, state.joints));
     syncRigFocusFromJointId(id);
-    historyCtrlRef.current.beginAction(`drag:${id}`, state);
-    draggingIdLiveRef.current = id;
-    effectiveDraggingIdLiveRef.current = resolveEffectiveManipulationId(id);
-    const isRooted = state.activeRoots.includes(effectiveDraggingIdLiveRef.current);
-    rootDragKindLiveRef.current = isRooted && e.ctrlKey ? 'root_target' : 'none';
-    setGroundRootDragging(false);
-    groundRootDraggingLiveRef.current = false;
-    precisionAnchorRef.current = null;
-    lastEffectiveMouseWorldRef.current = getWorldPosition(
-      effectiveDraggingIdLiveRef.current,
-      state.joints,
-      INITIAL_JOINTS,
-      'preview',
-    );
+	    historyCtrlRef.current.beginAction(`drag:${id}`, state);
+	    draggingIdLiveRef.current = id;
+	    const resolvedEffectiveId = resolveEffectiveManipulationId(id);
+	    effectiveDraggingIdLiveRef.current = resolvedEffectiveId;
+	    const isRooted = state.activeRoots.includes(resolvedEffectiveId);
+	    rootDragKindLiveRef.current = isRooted && (e.ctrlKey || !rigidRootDragEnabled) ? 'root_target' : 'none';
+	    setGroundRootDragging(false);
+	    groundRootDraggingLiveRef.current = false;
+	    setRootLeverDraggingId(null);
+	    rootLeverDraggingLiveRef.current = null;
+	    precisionAnchorRef.current = null;
+	    const clickedWorld = getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
+	    const effectiveWorld =
+	      resolvedEffectiveId === id ? clickedWorld : getWorldPosition(resolvedEffectiveId, state.joints, INITIAL_JOINTS, 'preview');
+	    dragProxyOffsetWorldRef.current =
+	      resolvedEffectiveId === id ? null : { x: effectiveWorld.x - clickedWorld.x, y: effectiveWorld.y - clickedWorld.y };
+	    lastEffectiveMouseWorldRef.current = effectiveWorld;
 
     if (autoPoseCaptureEnabled) {
       if (autoPoseRecordingTimerRef.current) {
@@ -3008,10 +3255,10 @@ export default function App() {
     }
     
     const effectiveId = effectiveDraggingIdLiveRef.current ?? id;
-    const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
-    if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag && (!isRooted || rootDragKindLiveRef.current === 'root_target')) {
-      dragTargetRef.current = { id: effectiveId, target: getWorldPosition(effectiveId, state.joints, INITIAL_JOINTS, 'preview') };
-    }
+	    const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
+	    if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag && (!isRooted || rootDragKindLiveRef.current === 'root_target')) {
+	      dragTargetRef.current = { id: effectiveId, target: getWorldPosition(effectiveId, state.joints, INITIAL_JOINTS, 'preview') };
+	    }
 
     pinWorldRef.current =
       state.activeRoots.length === 0
@@ -3029,11 +3276,15 @@ export default function App() {
     setTimelinePlaying(false);
     setSelectedJointId(null);
     historyCtrlRef.current.beginAction('drag:ground_root', state);
-    setDraggingId(null);
-    draggingIdLiveRef.current = null;
-    effectiveDraggingIdLiveRef.current = null;
-    setGroundRootDragging(true);
-    groundRootDraggingLiveRef.current = true;
+	    setDraggingId(null);
+	    draggingIdLiveRef.current = null;
+	    effectiveDraggingIdLiveRef.current = null;
+	    dragProxyOffsetWorldRef.current = null;
+	    setGroundRootDragging(true);
+	    groundRootDraggingLiveRef.current = true;
+    setRootLeverDraggingId(null);
+    rootLeverDraggingLiveRef.current = null;
+    rootDragKindLiveRef.current = 'none';
     precisionAnchorRef.current = null;
     lastEffectiveMouseWorldRef.current = state.groundRootTarget;
   };
@@ -3045,11 +3296,12 @@ export default function App() {
     setTimelinePlaying(false);
     setSelectedJointId(rootId);
     historyCtrlRef.current.beginAction(`root_lever:${rootId}`, state);
-    setDraggingId(null);
-    draggingIdLiveRef.current = null;
-    effectiveDraggingIdLiveRef.current = null;
-    setGroundRootDragging(false);
-    groundRootDraggingLiveRef.current = false;
+	    setDraggingId(null);
+	    draggingIdLiveRef.current = null;
+	    effectiveDraggingIdLiveRef.current = null;
+	    dragProxyOffsetWorldRef.current = null;
+	    setGroundRootDragging(false);
+	    groundRootDraggingLiveRef.current = false;
     setRootLeverDraggingId(rootId);
     rootLeverDraggingLiveRef.current = rootId;
     rootDragKindLiveRef.current = 'root_lever';
@@ -3060,11 +3312,12 @@ export default function App() {
   const handleMaskMouseDown = (jointId: string) => (e: React.MouseEvent) => {
     if (!maskEditArmed) return;
     e.stopPropagation();
-    setTimelinePlaying(false);
-    setSelectedJointId(jointId);
-    setMaskJointId(jointId);
-    setSelectedConnectionKey(focusBoneKeyForJointId(jointId, state.joints));
-    syncRigFocusFromJointId(jointId);
+	    setTimelinePlaying(false);
+	    setSelectedJointId(jointId);
+	    setMaskJointId(jointId);
+	    dragProxyOffsetWorldRef.current = null;
+	    setSelectedConnectionKey(focusBoneKeyForJointId(jointId, state.joints));
+	    syncRigFocusFromJointId(jointId);
     const mask = state.scene.jointMasks[jointId];
     if (!mask?.src || !mask.visible) return;
     historyCtrlRef.current.beginAction(`mask_drag:${jointId}`, state);
@@ -3196,6 +3449,52 @@ export default function App() {
     }
   };
 
+  const handleCanvasRootRotateMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    setTimelinePlaying(false);
+    setSelectedJointId(null);
+
+    const mouseWorld = getMouseWorld(e.clientX, e.clientY);
+    const pivot =
+      state.activeRoots.length > 0
+        ? (() => {
+            let sumW = 0;
+            let sumX = 0;
+            let sumY = 0;
+            for (const id of state.activeRoots) {
+              const p = pinTargetsRef.current[id] ?? getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
+              if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+              sumW += 1;
+              sumX += p.x;
+              sumY += p.y;
+            }
+            if (sumW <= 1e-9) return state.groundRootTarget;
+            return { x: sumX / sumW, y: sumY / sumW };
+          })()
+        : state.groundRootTarget;
+
+    const v = { x: mouseWorld.x - pivot.x, y: mouseWorld.y - pivot.y };
+    const d = Math.hypot(v.x, v.y);
+    if (!Number.isFinite(d) || d < 1e-3) return;
+
+    const a = Math.atan2(v.y, v.x);
+    historyCtrlRef.current.beginAction('root_rotate', state);
+    setDraggingId(null);
+    draggingIdLiveRef.current = null;
+    effectiveDraggingIdLiveRef.current = null;
+    dragTargetRef.current = null;
+    setGroundRootDragging(false);
+    groundRootDraggingLiveRef.current = false;
+    setRootLeverDraggingId(null);
+    rootLeverDraggingLiveRef.current = null;
+    rootDragKindLiveRef.current = 'none';
+
+    const next = { pivot, startAngle: a, lastAngle: a };
+    rootRotateDraggingLiveRef.current = next;
+    setRootRotateDragging(next);
+  };
+
     const handleMouseMove = useCallback(
       (e: React.MouseEvent) => {
         if (!canvasRef.current) return;
@@ -3255,6 +3554,24 @@ export default function App() {
                     offsetY: Number.isFinite(maskDragging.startOffsetY + dy) ? maskDragging.startOffsetY + dy : 0,
                   };
                 }
+                case 'widen': {
+                  const fx = 1 + dx / 200;
+                  return {
+                    stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
+                  };
+                }
+                case 'expand': {
+                  // "Expand" is intentionally opposite of legacy "scale": drag up to get bigger.
+                  const factor = 1 - dy / 200;
+                  const nextScale = maskDragging.startScale * factor;
+                  return { scale: Math.max(0.01, Math.min(20, nextScale)) };
+                }
+                case 'shrink': {
+                  // Drag up to shrink; drag down to grow.
+                  const factor = 1 + dy / 200;
+                  const nextScale = maskDragging.startScale * factor;
+                  return { scale: Math.max(0.01, Math.min(20, nextScale)) };
+                }
                 case 'rotate': {
                   const nextRotation = maskDragging.startRotation + dx * 0.5;
                   return { rotation: Math.max(-360, Math.min(360, nextRotation)) };
@@ -3304,6 +3621,76 @@ export default function App() {
               },
             };
           });
+          return;
+        }
+
+        if (rootRotateDragging) {
+          const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
+          const effectiveWorld = (() => {
+            let next = mouseWorldRaw;
+            if (e.altKey) {
+              const anchor =
+                precisionAnchorRef.current ??
+                (() => {
+                  const a = { raw: mouseWorldRaw, applied: lastEffectiveMouseWorldRef.current ?? mouseWorldRaw };
+                  precisionAnchorRef.current = a;
+                  return a;
+                })();
+              const dx = (mouseWorldRaw.x - anchor.raw.x) * PRECISION_DRAG_SCALE;
+              const dy = (mouseWorldRaw.y - anchor.raw.y) * PRECISION_DRAG_SCALE;
+              next = { x: anchor.applied.x + dx, y: anchor.applied.y + dy };
+            }
+            if (e.shiftKey) {
+              const step = 1 / (WORLD_PX_SCALE * Math.max(1e-6, state.viewScale));
+              next = { x: snapWorld(next.x, step), y: snapWorld(next.y, step) };
+            }
+            lastEffectiveMouseWorldRef.current = next;
+            return next;
+          })();
+
+          updateCursorHud({
+            clientX: e.clientX,
+            clientY: e.clientY,
+            rawWorld: mouseWorldRaw,
+            effectiveWorld,
+            altKey: e.altKey,
+            shiftKey: e.shiftKey,
+            showTarget: Boolean(e.altKey || e.shiftKey),
+          });
+
+          const drag = rootRotateDraggingLiveRef.current ?? rootRotateDragging;
+          const v = { x: effectiveWorld.x - drag.pivot.x, y: effectiveWorld.y - drag.pivot.y };
+          const d = Math.hypot(v.x, v.y);
+          if (!Number.isFinite(d) || d < 1e-6) return;
+
+          const a = Math.atan2(v.y, v.x);
+          const nextA = unwrapAngleRad(drag.lastAngle, a);
+          const delta = nextA - drag.lastAngle;
+          if (!Number.isFinite(delta) || Math.abs(delta) < 1e-9) return;
+
+          const deltaDeg = (delta * 180) / Math.PI;
+          setCanvasRotationDeg((prev) => {
+            const next = Math.max(-360, Math.min(360, prev + deltaDeg));
+            canvasRotationDegLiveRef.current = next;
+            return next;
+          });
+
+          setState((prev) => {
+            const ids = Object.keys(prev.joints);
+            const nextJoints = applyRigidTransformToJointSubset({
+              joints: prev.joints,
+              baseJoints: INITIAL_JOINTS,
+              subsetIds: ids,
+              pivotWorld: drag.pivot,
+              rotateRad: delta,
+              translateWorld: { x: 0, y: 0 },
+            });
+            return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
+          });
+
+          const updated = { ...drag, lastAngle: nextA };
+          rootRotateDraggingLiveRef.current = updated;
+          setRootRotateDragging(updated);
           return;
         }
 
@@ -3460,24 +3847,27 @@ export default function App() {
           showTarget: Boolean(e.altKey || e.shiftKey),
         });
 
-        const mouseX = effectiveWorld.x;
-        const mouseY = effectiveWorld.y;
+	        const mouseX = effectiveWorld.x;
+	        const mouseY = effectiveWorld.y;
 
-        const effectiveId = effectiveDraggingIdLiveRef.current ?? draggingId;
+	        const effectiveId = effectiveDraggingIdLiveRef.current ?? draggingId;
+	        const proxyOffset = dragProxyOffsetWorldRef.current;
+	        const targetX = proxyOffset && effectiveId !== draggingId ? mouseX + proxyOffset.x : mouseX;
+	        const targetY = proxyOffset && effectiveId !== draggingId ? mouseY + proxyOffset.y : mouseY;
 
-        const isRooted = state.activeRoots.includes(effectiveId);
-        if (isRooted && rootDragKindLiveRef.current !== 'root_target') {
-          setState((prev) => {
-            const joint = prev.joints[effectiveId];
+	        const isRooted = state.activeRoots.includes(effectiveId);
+	        if (isRooted && rootDragKindLiveRef.current !== 'root_target') {
+	          setState((prev) => {
+	            const joint = prev.joints[effectiveId];
             if (!joint?.parent) return prev;
-            const rootWorld =
-              pinTargetsRef.current[effectiveId] ?? getWorldPosition(effectiveId, prev.joints, INITIAL_JOINTS, 'preview');
-            const dx = mouseX - rootWorld.x;
-            const dy = mouseY - rootWorld.y;
-            const mag = Math.hypot(dx, dy);
-            if (!Number.isFinite(mag) || mag < 1e-6) return prev;
-            const nx = dx / mag;
-            const ny = dy / mag;
+	            const rootWorld =
+	              pinTargetsRef.current[effectiveId] ?? getWorldPosition(effectiveId, prev.joints, INITIAL_JOINTS, 'preview');
+	            const dx = targetX - rootWorld.x;
+	            const dy = targetY - rootWorld.y;
+	            const mag = Math.hypot(dx, dy);
+	            if (!Number.isFinite(mag) || mag < 1e-6) return prev;
+	            const nx = dx / mag;
+	            const ny = dy / mag;
 
             const len = vectorLength(prev.stretchEnabled ? joint.previewOffset : joint.baseOffset) || vectorLength(joint.previewOffset);
             if (!Number.isFinite(len) || len < 1e-6) return prev;
@@ -3500,20 +3890,20 @@ export default function App() {
 	          effectiveId === 'l_hip' ||
 	          effectiveId === 'r_hip';
 
-        if (hasRootedFeet && isBalanceHandle && pinWorld) {
-          setState((prev) => applyBalanceDragToState(prev, effectiveId, { x: mouseX, y: mouseY }, pinWorld));
-          return;
-        }
+	        if (hasRootedFeet && isBalanceHandle && pinWorld) {
+	          setState((prev) => applyBalanceDragToState(prev, effectiveId, { x: targetX, y: targetY }, pinWorld));
+	          return;
+	        }
 
-        const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
-        if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag) {
-          dragTargetRef.current = { id: effectiveId, target: { x: mouseX, y: mouseY } };
-          return;
-        }
+	        const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
+	        if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag) {
+	          dragTargetRef.current = { id: effectiveId, target: { x: targetX, y: targetY } };
+	          return;
+	        }
 
-        setState((prev) => applyDragToState(prev, effectiveId, { x: mouseX, y: mouseY }));
-      },
-      [draggingId, groundRootDragging, maskDragging, rootLeverDraggingId, state.activeRoots, state.stretchEnabled, state.viewScale, state.viewOffset, canvasSize],
+	        setState((prev) => applyDragToState(prev, effectiveId, { x: targetX, y: targetY }));
+	      },
+      [draggingId, groundRootDragging, maskDragging, rootLeverDraggingId, rootRotateDragging, state.activeRoots, state.stretchEnabled, state.viewScale, state.viewOffset, canvasSize],
     );
 
   const handleMouseUp = () => {
@@ -3534,9 +3924,10 @@ export default function App() {
       return;
     }
 
-    precisionAnchorRef.current = null;
-    lastEffectiveMouseWorldRef.current = null;
-    if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
+	    precisionAnchorRef.current = null;
+	    lastEffectiveMouseWorldRef.current = null;
+	    dragProxyOffsetWorldRef.current = null;
+	    if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
 
     const finalizedRecording = autoPoseRecordingRef.current;
     if (autoPoseRecordingTimerRef.current) {
@@ -3598,6 +3989,8 @@ export default function App() {
     groundRootDraggingLiveRef.current = false;
     setRootLeverDraggingId(null);
     rootLeverDraggingLiveRef.current = null;
+    setRootRotateDragging(null);
+    rootRotateDraggingLiveRef.current = null;
     rootDragKindLiveRef.current = 'none';
     draggingIdLiveRef.current = null;
     effectiveDraggingIdLiveRef.current = null;
@@ -3628,35 +4021,55 @@ export default function App() {
 
   const setJointAngleDeg = useCallback((jointId: string, angleDeg: number) => {
     setState((prev) => {
-      const joint = prev.joints[jointId];
-      if (!joint || !joint.parent) return prev;
+      const applyToOneJoint = (draft: SkeletonState, id: string, targetAngleDeg: number): SkeletonState => {
+        const joint = draft.joints[id];
+        if (!joint || !joint.parent) return draft;
 
-      const baseLen = vectorLength(joint.baseOffset);
-      const currentLen = vectorLength(joint.previewOffset);
-      const len = prev.stretchEnabled ? (currentLen || baseLen) : (baseLen || currentLen);
-      if (!len) return prev;
+        const baseLen = vectorLength(joint.baseOffset);
+        const currentLen = vectorLength(joint.previewOffset);
+        const desiredLen = draft.stretchEnabled ? (currentLen || baseLen) : (baseLen || currentLen);
+        if (!Number.isFinite(desiredLen) || desiredLen <= 1e-9) return draft;
 
-      const nextOffset = fromAngleDeg(angleDeg, len);
-      const nextJoints = { ...prev.joints };
-      nextJoints[jointId] = {
-        ...joint,
-        previewOffset: nextOffset,
-        targetOffset: nextOffset,
-        currentOffset: nextOffset,
+        const pivot = getWorldPosition(joint.parent, draft.joints, INITIAL_JOINTS, 'preview');
+
+        const desiredAngleRadRaw = (targetAngleDeg * Math.PI) / 180;
+        const currentAngleRad = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
+        const targetAngleRad = unwrapAngleRad(currentAngleRad, desiredAngleRadRaw);
+
+        const currentOffsetLen = Number.isFinite(currentLen) ? currentLen : 0;
+        const deltaRad = currentOffsetLen <= 1e-9 ? 0 : targetAngleRad - currentAngleRad;
+
+        const desiredDir = { x: Math.cos(targetAngleRad), y: Math.sin(targetAngleRad) };
+        const dr = desiredLen - currentOffsetLen;
+        const translateWorld = { x: desiredDir.x * dr, y: desiredDir.y * dr };
+
+        const subsetIds = collectSubtreeJointIds(id, draft.joints);
+        if (!subsetIds.length) return draft;
+
+        const nextJoints = applyRigidTransformToJointSubset({
+          joints: draft.joints,
+          baseJoints: INITIAL_JOINTS,
+          subsetIds,
+          pivotWorld: pivot,
+          rotateRad: deltaRad,
+          translateWorld,
+        });
+
+        return nextJoints === draft.joints ? draft : { ...draft, joints: nextJoints };
       };
 
-      if (prev.mirroring && joint.mirrorId && nextJoints[joint.mirrorId]) {
-        const mirror = nextJoints[joint.mirrorId];
-        const mirroredOffset = { x: -nextOffset.x, y: nextOffset.y };
-        nextJoints[joint.mirrorId] = {
-          ...mirror,
-          previewOffset: mirroredOffset,
-          targetOffset: mirroredOffset,
-          currentOffset: mirroredOffset,
-        };
+      let next: SkeletonState = prev;
+      next = applyToOneJoint(next, jointId, angleDeg);
+
+      const joint = prev.joints[jointId];
+      if (prev.mirroring && joint?.mirrorId && prev.joints[joint.mirrorId]) {
+        const desired = fromAngleDeg(angleDeg, 1);
+        const mirrored = { x: -desired.x, y: desired.y };
+        const mirrorAngleDeg = (Math.atan2(mirrored.y, mirrored.x) * 180) / Math.PI;
+        next = applyToOneJoint(next, joint.mirrorId, mirrorAngleDeg);
       }
 
-      return { ...prev, joints: nextJoints };
+      return next;
     });
   }, []);
 
@@ -3888,6 +4301,8 @@ export default function App() {
     }
     setIsLongPress(false);
     setRubberbandPose(null);
+    setCanvasRotationDeg(0);
+    canvasRotationDegLiveRef.current = 0;
     
     pinTargetsRef.current = {};
     rubberbandAnchorPinRef.current = null;
@@ -3897,7 +4312,7 @@ export default function App() {
       ...prev,
       joints: nextJoints,
       activeRoots: [],
-      groundRootTarget: computeCogWorld(nextJoints, INITIAL_JOINTS),
+      groundRootTarget: computeGroundPivotWorld(nextJoints, INITIAL_JOINTS),
       viewScale: 1.0,
       viewOffset: { x: 0, y: 0 },
     }));
@@ -4198,12 +4613,13 @@ export default function App() {
             style={{ mixBlendMode: 'screen' }}
           />
         )}
-        <circle
-          cx={sx} cy={sy} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
-          fill={fillColor}
-          stroke={strokeColor}
-          strokeWidth={isSelected ? 3 : 2}
-          className="cursor-grab active:cursor-grabbing"
+	        <circle
+	          cx={sx} cy={sy} r={isRoot ? 6 : (draggingId === id ? 6 : 4)}
+	          data-joint-id={id}
+	          fill={fillColor}
+	          stroke={strokeColor}
+	          strokeWidth={isSelected ? 3 : 2}
+	          className="cursor-grab active:cursor-grabbing"
           onMouseDown={handleMouseDown(id)}
         />
       </g>
@@ -4248,18 +4664,81 @@ export default function App() {
 
     return (
       <g key="ground-root-handle">
+        <rect
+          x={snapPx(centerX - canvasSize.width * 4)}
+          y={sy}
+          width={snapPx(canvasSize.width * 8)}
+          height={snapPx(canvasSize.height * 8)}
+          fill="rgba(0, 0, 0, 0.06)"
+          pointerEvents="none"
+        />
+        <line
+          x1={snapPx(centerX - canvasSize.width * 4)}
+          y1={sy}
+          x2={snapPx(centerX + canvasSize.width * 4)}
+          y2={sy}
+          stroke="rgba(0, 255, 136, 0.25)"
+          strokeWidth={1}
+          strokeDasharray="6 6"
+          pointerEvents="none"
+        />
         <circle
           cx={sx}
           cy={sy}
           r={10}
-          fill="rgba(255, 255, 255, 0.06)"
-          stroke="rgba(255, 255, 255, 0.45)"
+          fill="rgba(0, 255, 136, 0.07)"
+          stroke="rgba(0, 255, 136, 0.55)"
           strokeWidth={2}
           className="cursor-grab active:cursor-grabbing"
           onMouseDown={handleGroundRootMouseDown}
         />
-        <line x1={sx - 8} y1={sy} x2={sx + 8} y2={sy} stroke="rgba(255, 255, 255, 0.55)" strokeWidth={2} pointerEvents="none" />
-        <line x1={sx} y1={sy - 8} x2={sx} y2={sy + 8} stroke="rgba(255, 255, 255, 0.55)" strokeWidth={2} pointerEvents="none" />
+        <line x1={sx - 8} y1={sy} x2={sx + 8} y2={sy} stroke="rgba(0, 255, 136, 0.7)" strokeWidth={2} pointerEvents="none" />
+        <line x1={sx} y1={sy - 8} x2={sx} y2={sy + 8} stroke="rgba(0, 255, 136, 0.7)" strokeWidth={2} pointerEvents="none" />
+      </g>
+    );
+  };
+
+  const renderRootLever = (rootId: string) => {
+    if (!state.activeRoots.includes(rootId)) return null;
+    const joint = state.joints[rootId];
+    if (!joint?.parent) return null;
+
+    const rootWorld = pinTargetsRef.current[rootId] ?? getWorldPosition(rootId, state.joints, INITIAL_JOINTS, 'preview');
+    const parentWorld = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS, 'preview');
+    const dx = parentWorld.x - rootWorld.x;
+    const dy = parentWorld.y - rootWorld.y;
+    const mag = Math.hypot(dx, dy);
+    if (!Number.isFinite(mag) || mag < 1e-6) return null;
+
+    const dir = { x: dx / mag, y: dy / mag };
+    const handleWorld = { x: rootWorld.x + dir.x * 1.75, y: rootWorld.y + dir.y * 1.75 };
+
+    const scale = 20;
+    const centerX = canvasSize.width / 2;
+    const centerY = canvasSize.height / 2;
+
+    const r0x = snapPx(rootWorld.x * scale + centerX);
+    const r0y = snapPx(rootWorld.y * scale + centerY);
+    const r1x = snapPx(handleWorld.x * scale + centerX);
+    const r1y = snapPx(handleWorld.y * scale + centerY);
+    if ([r0x, r0y, r1x, r1y].some((v) => isNaN(v))) return null;
+
+    const isDragging = rootLeverDraggingId === rootId || rootLeverDraggingLiveRef.current === rootId;
+    const stroke = '#00ff88';
+
+    return (
+      <g key={`root-lever:${rootId}`}>
+        <line x1={r0x} y1={r0y} x2={r1x} y2={r1y} stroke={stroke} strokeWidth={2} opacity={0.85} pointerEvents="none" />
+        <circle
+          cx={r1x}
+          cy={r1y}
+          r={isDragging ? 7 : 6}
+          fill={stroke}
+          stroke="rgba(0,0,0,0.35)"
+          strokeWidth={2}
+          className="cursor-grab active:cursor-grabbing"
+          onMouseDown={handleRootLeverMouseDown(rootId)}
+        />
       </g>
     );
   };
@@ -4598,6 +5077,9 @@ export default function App() {
     return hierarchy;
   };
 
+  // While placing/transforming masks, keep joints above masks so FK/IK manipulation stays accessible.
+  const jointsOverMasksEffective = state.jointsOverMasks || maskEditArmed;
+
   const jointsLayer = state.showJoints
     ? (() => {
         const regularJoints = Object.keys(state.joints)
@@ -4606,8 +5088,12 @@ export default function App() {
 
         const xMarkers = state.activeRoots.map((id) => renderXMarker(id, "#00ff88"));
 
+        const leverId = selectedJointId ? resolveEffectiveManipulationId(selectedJointId) : null;
+        const rootLever = leverId && state.activeRoots.includes(leverId) ? renderRootLever(leverId) : null;
+
         const groundRoot = renderGroundRootHandle();
-        return groundRoot ? [...regularJoints, ...xMarkers, groundRoot] : [...regularJoints, ...xMarkers];
+        const base = rootLever ? [...regularJoints, ...xMarkers, rootLever] : [...regularJoints, ...xMarkers];
+        return groundRoot ? [...base, groundRoot] : base;
       })()
     : null;
 
@@ -4640,9 +5126,11 @@ export default function App() {
         animate={{ width: sidebarOpen ? 360 : 0 }}
         className="relative bg-[#121212] border-r border-[#222] overflow-hidden flex flex-col"
         onDragOver={(e) => {
+          if (!WIDGET_DND_ENABLED) return;
           if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
         }}
         onDrop={(e) => {
+          if (!WIDGET_DND_ENABLED) return;
           const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
           if (!isWidgetId(payload)) return;
           e.preventDefault();
@@ -4666,6 +5154,132 @@ export default function App() {
                   v0.2 · build {BUILD_ID}
                 </p>
               </div>
+            </div>
+
+            <div className="mt-4 mb-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">Roots</div>
+                <div className="text-[9px] font-mono text-[#444]">{state.activeRoots.length} active</div>
+              </div>
+              <div className="flex gap-1">
+                {(['l_ankle', 'r_ankle', 'l_wrist', 'r_wrist'] as const).map((id) => {
+                  const active = state.activeRoots.includes(id);
+                  const label = id.replace('_', ' ').toUpperCase();
+                  return (
+                    <button
+                      key={`rootquick:${id}`}
+                      type="button"
+                      onClick={() => toggleRoot(id)}
+                      className={`flex-1 px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                        active ? 'bg-[#00ff88] text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                      }`}
+                      title={`Toggle root: ${label}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStateWithHistory('clear_roots_ground_root', (prev) => ({
+                      ...prev,
+                      activeRoots: [],
+                      groundRootTarget: computeGroundPivotWorld(prev.joints, INITIAL_JOINTS),
+                    }));
+                    pinTargetsRef.current = {};
+                  }}
+                  className="px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#181818] hover:bg-[#222] text-[#888]"
+                  title="Clear roots (use Ground Root)"
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666] shrink-0">Rotate</div>
+                <input
+                  type="range"
+                  min={-360}
+                  max={360}
+                  step={1}
+                  value={canvasRotationDeg}
+                  onPointerDown={() => {
+                    setTimelinePlaying(false);
+                    historyCtrlRef.current.beginAction('root_rotate', state);
+                  }}
+                  onPointerUp={() =>
+                    setState((prev) => {
+                      const changed = historyCtrlRef.current.commitAction(prev);
+                      return changed ? { ...prev } : prev;
+                    })
+                  }
+                  onPointerCancel={() =>
+                    setState((prev) => {
+                      const changed = historyCtrlRef.current.commitAction(prev);
+                      return changed ? { ...prev } : prev;
+                    })
+                  }
+                  onChange={(e) => {
+                    const nextDeg = parseFloat(e.target.value);
+                    if (!Number.isFinite(nextDeg)) return;
+                    const prevDeg = canvasRotationDegLiveRef.current;
+                    const deltaDeg = nextDeg - prevDeg;
+                    if (!Number.isFinite(deltaDeg) || Math.abs(deltaDeg) < 1e-9) return;
+
+                    const pivot =
+                      state.activeRoots.length > 0
+                        ? (() => {
+                            let sumW = 0;
+                            let sumX = 0;
+                            let sumY = 0;
+                            for (const id of state.activeRoots) {
+                              const p = pinTargetsRef.current[id] ?? getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
+                              if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+                              sumW += 1;
+                              sumX += p.x;
+                              sumY += p.y;
+                            }
+                            if (sumW <= 1e-9) return state.groundRootTarget;
+                            return { x: sumX / sumW, y: sumY / sumW };
+                          })()
+                        : state.groundRootTarget;
+
+                    setCanvasRotationDeg(nextDeg);
+                    canvasRotationDegLiveRef.current = nextDeg;
+
+                    setState((prev) => {
+                      const ids = Object.keys(prev.joints);
+                      const nextJoints = applyRigidTransformToJointSubset({
+                        joints: prev.joints,
+                        baseJoints: INITIAL_JOINTS,
+                        subsetIds: ids,
+                        pivotWorld: pivot,
+                        rotateRad: (deltaDeg * Math.PI) / 180,
+                        translateWorld: { x: 0, y: 0 },
+                      });
+                      return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
+                    });
+                  }}
+                  className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                />
+                <div className="text-[9px] font-mono text-[#444] w-14 text-right tabular-nums">{canvasRotationDeg.toFixed(0)}°</div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setRigidRootDragEnabled((v) => !v)}
+                className={`w-full px-3 py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                  rigidRootDragEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                }`}
+                title={
+                  rigidRootDragEnabled
+                    ? 'Rigid root dragging: rooted joints stay planted unless you hold Ctrl to move the root target.'
+                    : 'Physics root dragging: dragging a rooted joint moves its root target through the solver.'
+                }
+              >
+                Rigid Root Drag: {rigidRootDragEnabled ? 'On' : 'Off'}
+              </button>
             </div>
 
             <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
@@ -4706,20 +5320,30 @@ export default function App() {
                   const isFloating = floatingWidgetIds.has(id);
                   const active = activeWidgetId === id && !isFloating;
                   return (
-                    <button
-                      key={`widget:${id}`}
-                      type="button"
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData(DND_WIDGET_MIME, id);
-                        e.dataTransfer.effectAllowed = 'copy';
-                      }}
-                      onClick={() => activateWidget(id)}
-                      className={`relative py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${
-                        active ? 'bg-white text-black border-white' : 'bg-[#222] hover:bg-[#333] border-[#222] text-white'
-                      }`}
-                      title={isFloating ? 'Floating (click to focus)' : 'Click to activate; drag to pop out'}
-                    >
+	                    <button
+	                      key={`widget:${id}`}
+	                      type="button"
+	                      draggable={WIDGET_DND_ENABLED}
+	                      onDragStart={
+	                        WIDGET_DND_ENABLED
+	                          ? (e) => {
+	                              e.dataTransfer.setData(DND_WIDGET_MIME, id);
+	                              e.dataTransfer.effectAllowed = 'copy';
+	                            }
+	                          : undefined
+	                      }
+	                      onClick={() => activateWidget(id)}
+	                      className={`relative py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${
+	                        active ? 'bg-white text-black border-white' : 'bg-[#222] hover:bg-[#333] border-[#222] text-white'
+	                      }`}
+	                      title={
+	                        isFloating
+	                          ? 'Floating (click to focus)'
+	                          : WIDGET_DND_ENABLED
+	                            ? 'Click to activate; drag to pop out'
+	                            : 'Click to activate'
+	                      }
+	                    >
                       <span className="truncate">{WIDGETS[id].title}</span>
                       {isFloating && (
                         <span
@@ -4732,9 +5356,15 @@ export default function App() {
                 })}
               </div>
 
-              <div className="mt-3 text-[10px] text-[#444]">
-                Drag onto the canvas to pop out. Hold <span className="font-mono text-[#666]">Alt</span> while dragging/resizing to disable snapping.
-              </div>
+	              <div className="mt-3 text-[10px] text-[#444]">
+	                {WIDGET_DND_ENABLED ? (
+	                  <>
+	                    Drag onto the canvas to pop out. Hold <span className="font-mono text-[#666]">Alt</span> while dragging/resizing to disable snapping.
+	                  </>
+	                ) : (
+		                  <>Pop-out dragging is temporarily disabled (widgets stay docked in the sidebar).</>
+		                )}
+	              </div>
             </section>
 
             <section className="shrink-0 mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
@@ -4819,13 +5449,19 @@ export default function App() {
                       </h2>
                     </div>
                     <div className="p-3 rounded-xl bg-white/5 border border-white/10 text-[11px] text-[#bbb] space-y-2">
-                      <div>Widgets start docked in the side console to keep the canvas clean.</div>
-                      <ul className="list-disc pl-4 space-y-1 text-[#aaa]">
-                        <li>Activate widgets from the picker above.</li>
-                        <li>Drag a widget onto the canvas to pop it out.</li>
-                        <li>Drag a floating widget back onto the sidebar to dock it.</li>
-                        <li>Floating widgets snap to a {widgetSnapGridPx}px grid (hold Alt to disable).</li>
-                      </ul>
+	                      <div>Widgets start docked in the side console to keep the canvas clean.</div>
+	                      <ul className="list-disc pl-4 space-y-1 text-[#aaa]">
+	                        <li>Activate widgets from the picker above.</li>
+	                        {WIDGET_DND_ENABLED ? (
+	                          <>
+	                            <li>Drag a widget onto the canvas to pop it out.</li>
+	                            <li>Drag a floating widget back onto the sidebar to dock it.</li>
+	                            <li>Floating widgets snap to a {widgetSnapGridPx}px grid (hold Alt to disable).</li>
+	                          </>
+	                        ) : (
+	                          <li>Pop-out dragging is temporarily disabled (widgets stay docked for now).</li>
+	                        )}
+	                      </ul>
                       <div className="text-[#666] text-[10px] uppercase tracking-widest font-bold">Tip</div>
                       <div className="text-[#aaa] text-[11px]">Use the bottom-right corner to resize floating widgets.</div>
                     </div>
@@ -5537,7 +6173,13 @@ export default function App() {
                     key={mode}
                     onClick={() =>
                       applyEngineTransition('set_control_mode', (prev) =>
-                        prev.controlMode === mode ? prev : applyFluidHandshake(prev, { ...prev, controlMode: mode }),
+                        prev.controlMode === mode
+                          ? prev
+                          : applyFluidHandshake(prev, {
+                              ...prev,
+                              controlMode: mode,
+                              ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
+                            }),
                       )
                     }
                     className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'}`}
@@ -5595,6 +6237,74 @@ export default function App() {
                     )
                   }
                 />
+              </div>
+              <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Root Controls</div>
+                  <div className="text-[10px] font-mono text-[#666]">{state.activeRoots.length} active</div>
+                </div>
+
+                <button
+                  type="button"
+                            onClick={() => {
+                              setStateWithHistory('clear_roots_ground_root', (prev) => ({
+                                ...prev,
+                                activeRoots: [],
+                                groundRootTarget: computeGroundPivotWorld(prev.joints, INITIAL_JOINTS),
+                              }));
+                              pinTargetsRef.current = {};
+                            }}
+                  className="w-full px-3 py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5"
+                >
+                  Clear Roots (Ground Root)
+                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleRoot('l_ankle')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                      state.activeRoots.includes('l_ankle')
+                        ? 'bg-[#00ff88] text-black'
+                        : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                    }`}
+                  >
+                    Root L Ankle
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleRoot('r_ankle')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                      state.activeRoots.includes('r_ankle')
+                        ? 'bg-[#00ff88] text-black'
+                        : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                    }`}
+                  >
+                    Root R Ankle
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleRoot('l_wrist')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                      state.activeRoots.includes('l_wrist')
+                        ? 'bg-[#00ff88] text-black'
+                        : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                    }`}
+                  >
+                    Root L Wrist
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleRoot('r_wrist')}
+                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                      state.activeRoots.includes('r_wrist')
+                        ? 'bg-[#00ff88] text-black'
+                        : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                    }`}
+                  >
+                    Root R Wrist
+                  </button>
+                </div>
               </div>
 	            </section>
                 </WidgetPortal>
@@ -7090,79 +7800,6 @@ export default function App() {
             </section>
                 </WidgetPortal>
 
-                <WidgetPortal id="rig_controls">
-                    <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
-                        <Anchor size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Root Controls</h2>
-                      </div>
-                      <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-[#888]">Active Roots ({state.activeRoots.length})</span>
-                          <button
-                            onClick={() => {
-                              setStateWithHistory('clear_roots_ground_root', (prev) => ({
-                                ...prev,
-                                activeRoots: [],
-                                groundRootTarget: computeCogWorld(prev.joints, INITIAL_JOINTS),
-                              }));
-                              pinTargetsRef.current = {};
-                            }}
-                            className="px-3 py-2 bg-[#333] hover:bg-[#444] rounded-lg text-[10px] font-bold transition-all"
-                          >
-                            Clear Roots (Ground Root)
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            onClick={() => toggleRoot('l_ankle')}
-                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                              state.activeRoots.includes('l_ankle')
-                                ? 'bg-[#00ff88] text-white'
-                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                            }`}
-                          >
-                            Root L Ankle
-                          </button>
-                          <button
-                            onClick={() => toggleRoot('r_ankle')}
-                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                              state.activeRoots.includes('r_ankle')
-                                ? 'bg-[#00ff88] text-white'
-                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                            }`}
-                          >
-                            Root R Ankle
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            onClick={() => toggleRoot('l_wrist')}
-                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                              state.activeRoots.includes('l_wrist')
-                                ? 'bg-[#00ff88] text-white'
-                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                            }`}
-                          >
-                            Root L Wrist
-                          </button>
-                          <button
-                            onClick={() => toggleRoot('r_wrist')}
-                            className={`px-3 py-2 rounded-lg text-[10px] font-bold transition-all ${
-                              state.activeRoots.includes('r_wrist')
-                                ? 'bg-[#00ff88] text-white'
-                                : 'bg-[#333] hover:bg-[#444] text-[#888]'
-                            }`}
-                          >
-                            Root R Wrist
-                          </button>
-                        </div>
-                      </div>
-                    </section>
-                </WidgetPortal>
-
                 <WidgetPortal id="joint_hierarchy">
                     <section>
                       <div className="flex items-center gap-2 mb-4 text-[#666]">
@@ -7300,22 +7937,24 @@ export default function App() {
         <div 
           ref={canvasRef}
           className="flex-1 cursor-crosshair relative min-h-0 min-w-0 overflow-hidden"
-          onMouseDown={() => setSelectedJointId(null)}
+          onMouseDown={handleCanvasRootRotateMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => {
-            handleMouseUp();
-            hideCursorHud();
-          }}
-          onDragOver={(e) => {
-            if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
-          }}
-	          onDrop={(e) => {
-	            const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
-	            if (!isWidgetId(payload)) return;
-	            e.preventDefault();
-	            popOutWidget(payload, e.clientX, e.clientY);
+	          onMouseLeave={() => {
+	            handleMouseUp();
+	            hideCursorHud();
 	          }}
+	          onDragOver={(e) => {
+	            if (!WIDGET_DND_ENABLED) return;
+	            if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
+	          }}
+		          onDrop={(e) => {
+		            if (!WIDGET_DND_ENABLED) return;
+		            const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
+		            if (!isWidgetId(payload)) return;
+		            e.preventDefault();
+		            popOutWidget(payload, e.clientX, e.clientY);
+		          }}
         >
           <div ref={cursorHudRef} className="editor-cursor-hud">
             <div ref={cursorTargetRef} className="editor-cursor-target" />
@@ -7332,7 +7971,7 @@ export default function App() {
             onMouseMove={onCanvasMouseMove}
             onMouseDown={(e) => {
               if (e.button === 1) e.preventDefault(); // Prevent auto-scroll on middle click
-              setSelectedJointId(null);
+              handleCanvasRootRotateMouseDown(e);
             }}
             className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''}`}
           >
@@ -7540,7 +8179,7 @@ export default function App() {
               );
             })}
                     
-                    {!state.jointsOverMasks && (
+                    {!jointsOverMasksEffective && (
                       <>
                         {/* Joints */}
                         {jointsLayer}
@@ -7549,7 +8188,7 @@ export default function App() {
                       </>
                     )}
 
-                    {state.jointsOverMasks && (
+                    {jointsOverMasksEffective && (
                       <>
                         {/* Cutouts / Masks */}
                         {cutoutsLayer}
@@ -8010,7 +8649,7 @@ export default function App() {
           {/* Floating Widgets */}
           {floatingWidgets.map((widget) => {
             const title = WIDGETS[widget.id]?.title ?? widget.id;
-            const headerH = 34;
+            const headerH = floatingWidgetHeaderPx;
             return (
               <div
                 key={widget.id}
@@ -8089,7 +8728,7 @@ export default function App() {
                         style={{ height: widget.h - headerH }}
                       />
                       <div
-                        className="absolute right-1 bottom-1 h-4 w-4 cursor-se-resize rounded hover:bg-white/10"
+                        className="absolute right-0 bottom-0 h-6 w-6 cursor-se-resize"
                         onMouseDown={(e) => {
                           e.stopPropagation();
                           focusFloatingWidget(widget.id);
@@ -8102,7 +8741,9 @@ export default function App() {
                           });
                         }}
                         title="Resize"
-                      />
+                      >
+                        <div className="absolute right-1 bottom-1 h-3 w-3 border-r border-b border-white/20" />
+                      </div>
                     </>
                   )}
                 </div>

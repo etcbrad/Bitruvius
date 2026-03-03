@@ -37,3 +37,36 @@ Original prompt: get the joint tinkering from these files and add it to our curr
   - Updated cutout defaults: `Torso` (navel→sternum) + optional `Waist` (l_hip↔r_hip); removed degenerate pelvis slot.
 - Build: `npm run build` passes.
 - Playwright smoke: `web_game_playwright_client.js` fails to launch Chromium in this environment with `bootstrap_check_in ... Permission denied (1100)` / Crashpad permission errors, so no automated screenshot verification yet.
+
+2026-03-03
+- Root UX tweaks:
+  - Root target dragging is no longer the default interaction for rooted joints (hold Ctrl while dragging to move a root target).
+  - Added a green root “lever” handle for rotating around the selected root.
+  - Recolored selection/root highlights from orange to green across the UI.
+
+2026-03-03
+- Added canvas-background root rotation: clicking/dragging empty space rotates the whole rig around the current ground root (or around the average rooted targets when roots exist), letting the active physics mode determine how planted roots react.
+
+2026-03-03
+- Ground plane semantics: ground root now uses ankle-touchdown Y as the ground plane; ground shading/line renders beneath it, and ground target Y auto-updates downward when ankles step lower (so “everything beneath is ground”).
+
+2026-03-03
+- Widgets now activate immediately in the sidebar (default focuses `Edit` instead of the non-interactive `Tools` info widget).
+- Temporarily disabled widget drag/pop-out DnD since it was interfering with activation; can re-enable via `WIDGET_DND_ENABLED` once fixed.
+- TS check: imported missing `unwrapAngleRad`; disabled `tsconfig.json` incremental build-info output (was writing into `node_modules`).
+
+2026-03-03
+- Added joint-mask shape transform drag modes: `widen`, `expand`, `shrink` (in addition to existing move/rotate/scale/stretch/skew/anchor).
+- While mask placement/transform is armed, joints are forced above masks so FK rotation + IK dragging stays usable for locking poses.
+- Split FK vs IK-ish simulation toggles by caching `Auto-Bend`, `Elasticity`, `Lead`, `Hard Stop`, and `Snappiness` per mode-group (Cardboard vs everything else) via localStorage.
+- Build: `npm run check` + `npm run build` pass (server build still warns about `import.meta` under CJS).
+
+2026-03-03
+- Fix attempt for navel 180° flip on activation: when `navel` proxies manipulation to `sternum`, we now apply a drag target offset so the sternum doesn’t snap to the mouse-down world position.
+
+2026-03-03
+- Ground root target no longer auto-drifts downward to match the lowest ankle; the “ground” stays rigid/static and grounding only adjusts the figure (`client/src/App.tsx` ground-root correction effect).
+
+2026-03-03
+- Unified rotation math so canvas root-rotate and Joint Hierarchy angle edits use the same rigid world-space transform + re-derived local offsets (subtree rotates as a proper hierarchy instead of “only the one offset vector”).
+- Procedural Bitruvius: `bodyRotation` now applies as a global rotation around `root` by rotating all non-root local offsets (so gait/IK rotation and the rig share the same angle basis).

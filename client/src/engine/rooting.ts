@@ -41,6 +41,34 @@ export const computeCogWorld = (
   return { x: sumX / sumW, y: sumY / sumW };
 };
 
+export const computeTouchdownYWorld = (
+  joints: Record<string, Joint>,
+  baseJoints: Record<string, Joint>,
+  mode: 'current' | 'target' | 'preview' = 'preview',
+): number => {
+  // "Touchdown line" is defined by the lowest ankle (largest Y in our coordinate system).
+  const ids = ['l_ankle', 'r_ankle'] as const;
+  const ys: number[] = [];
+  for (const id of ids) {
+    if (!(id in joints) && !(id in baseJoints)) continue;
+    const p = getWorldPosition(id, joints, baseJoints, mode);
+    if (!isFinitePoint(p)) continue;
+    ys.push(p.y);
+  }
+  if (!ys.length) return 0;
+  return Math.max(...ys);
+};
+
+export const computeGroundPivotWorld = (
+  joints: Record<string, Joint>,
+  baseJoints: Record<string, Joint>,
+  mode: 'current' | 'target' | 'preview' = 'preview',
+): Point => {
+  const cog = computeCogWorld(joints, baseJoints, mode);
+  const y = computeTouchdownYWorld(joints, baseJoints, mode);
+  return { x: cog.x, y };
+};
+
 export const applyGroundRootCorrectionToJoints = (args: {
   joints: Record<string, Joint>;
   baseJoints: Record<string, Joint>;
@@ -55,7 +83,11 @@ export const applyGroundRootCorrectionToJoints = (args: {
 
   const cog = computeCogWorld(joints, baseJoints, 'preview');
   if (!isFinitePoint(cog)) return joints;
-  const delta = sub(groundRootTarget, cog);
+  const touchdownY = computeTouchdownYWorld(joints, baseJoints, 'preview');
+  if (!Number.isFinite(touchdownY)) return joints;
+
+  // Ground root anchors the CoG horizontally, and anchors the ankle touchdown line vertically.
+  const delta = { x: groundRootTarget.x - cog.x, y: groundRootTarget.y - touchdownY };
   if (!isFinitePoint(delta)) return joints;
 
   const mag = Math.abs(delta.x) + Math.abs(delta.y);
@@ -74,4 +106,3 @@ export const applyGroundRootCorrectionToJoints = (args: {
   };
   return next;
 };
-

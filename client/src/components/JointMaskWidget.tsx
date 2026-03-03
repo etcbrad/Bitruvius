@@ -5,7 +5,16 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Slider } from '@/components/ui/slider';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 
-export type MaskDragMode = 'move' | 'rotate' | 'scale' | 'stretch' | 'skew' | 'anchor';
+export type MaskDragMode =
+  | 'move'
+  | 'widen'
+  | 'expand'
+  | 'shrink'
+  | 'rotate'
+  | 'scale'
+  | 'stretch'
+  | 'skew'
+  | 'anchor';
 
 type Props = {
   state: SkeletonState;
@@ -640,10 +649,17 @@ export function JointMaskWidget({
             </div>
           </div>
 
+          {maskEditArmed && (
+            <div className="text-[9px] text-[#666]">
+              Joints stay draggable while placing; grab the mask away from the joint to transform it.
+            </div>
+          )}
+
           <div className="flex items-center justify-between gap-2">
             <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Drag Mode</div>
-            <div className="flex bg-[#222] rounded-md p-0.5">
-              {(['move', 'rotate', 'scale', 'stretch', 'skew', 'anchor'] as const).map((m) => (
+            <div className="flex flex-wrap bg-[#222] rounded-md p-0.5">
+              {(['move', 'widen', 'expand', 'shrink', 'rotate', 'scale', 'stretch', 'skew', 'anchor'] as const).map(
+                (m) => (
                 <button
                   key={m}
                   type="button"
@@ -654,6 +670,12 @@ export function JointMaskWidget({
                   title={
                     m === 'move'
                       ? 'Drag to move'
+                      : m === 'widen'
+                        ? 'Drag left/right to widen/narrow'
+                        : m === 'expand'
+                          ? 'Drag up/down to expand'
+                          : m === 'shrink'
+                            ? 'Drag up/down to shrink'
                       : m === 'rotate'
                         ? 'Drag left/right to rotate'
                         : m === 'scale'
@@ -667,7 +689,8 @@ export function JointMaskWidget({
                 >
                   {m}
                 </button>
-              ))}
+                ),
+              )}
             </div>
           </div>
 

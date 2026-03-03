@@ -2,7 +2,7 @@ import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
 import { clamp } from '../utils';
 import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
-import { computeCogWorld } from './rooting';
+import { computeGroundPivotWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset } from './types';
 import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
 import { DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, DEFAULT_PROCEDURAL_BITRUVIAN_IDLE } from './bitruvian/types';
@@ -307,7 +307,7 @@ export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
 export const makeDefaultState = (): SkeletonState => {
   const joints = sanitizeJoints(null);
   const defaultSlots = createDefaultCutoutSlots();
-  const groundRootTarget = computeCogWorld(joints, INITIAL_JOINTS, 'preview');
+  const groundRootTarget = computeGroundPivotWorld(joints, INITIAL_JOINTS, 'preview');
   
   // Create default views (Front, Side, Back, 3/4)
   const defaultViews = [
