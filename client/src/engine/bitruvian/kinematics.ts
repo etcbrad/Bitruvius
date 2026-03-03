@@ -50,21 +50,34 @@ export const solve2DJointIK = (
     len2: number,
     rootAngle: number,
 ): { angle1: number, angle2: number } | null => {
+    // Numerical guards: avoid NaNs from degenerate limbs or targets.
+    if (!Number.isFinite(len1) || !Number.isFinite(len2) || len1 <= 1e-9 || len2 <= 1e-9) return null;
     const dx = target.x - rootPos.x;
     const dy = target.y - rootPos.y;
     const distSq = dx * dx + dy * dy;
     const dist = Math.sqrt(distSq);
 
-    if (dist > len1 + len2 || dist < Math.abs(len1 - len2)) {
+    // Degenerate: target at the root. Any solution works; choose a stable default.
+    if (dist <= 1e-9) {
+        return { angle1: -rootAngle, angle2: 0 };
+    }
+
+    // Reachability with small epsilon to reduce flip-flopping near the boundary.
+    const eps = 1e-6;
+    if (dist > len1 + len2 + eps || dist < Math.abs(len1 - len2) - eps) {
         return null;
     }
 
     const angleToTarget = Math.atan2(dy, dx);
-    const cosAngle1Arg = clamp((distSq + len1 * len1 - len2 * len2) / (2 * dist * len1), -1, 1);
+    const denom1 = 2 * dist * len1;
+    if (Math.abs(denom1) <= 1e-12) return null;
+    const cosAngle1Arg = clamp((distSq + len1 * len1 - len2 * len2) / denom1, -1, 1);
     const angle1_internal = Math.acos(cosAngle1Arg);
     const angle1_global = angleToTarget - angle1_internal;
 
-    const cosAngle2Arg = clamp((len1 * len1 + len2 * len2 - distSq) / (2 * len1 * len2), -1, 1);
+    const denom2 = 2 * len1 * len2;
+    if (Math.abs(denom2) <= 1e-12) return null;
+    const cosAngle2Arg = clamp((len1 * len1 + len2 * len2 - distSq) / denom2, -1, 1);
     const angle2_internal = Math.acos(cosAngle2Arg);
 
     return {

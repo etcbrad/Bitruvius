@@ -2,6 +2,8 @@ import { fromAngleDeg, toAngleDeg, vectorLength } from './kinematics';
 import type { EnginePoseSnapshot, Point, ProcgenMode, ProcgenOptions, TimelineKeyframe } from './types';
 import { generateProceduralBitruviusPose } from './bitruvian/proceduralBitruvius';
 import type { IdleSettings, PhysicsControls, WalkingEngineGait } from './bitruvian/types';
+import { createRng, type Rng } from './rng';
+import { createBitruviusRuntimeState, resetBitruviusRuntimeState, type BitruviusRuntimeState } from './bitruvian/proceduralBitruvius';
 
 export type ProceduralMode = 'idle' | 'walk' | 'procedural-bitruvius';
 
@@ -34,7 +36,7 @@ export const generateProceduralPose = (args: {
       cycleFrames,
       strength,
       mode: 'walk', // Default to walk for Bitruvius
-      time: Date.now(),
+      timeMs: Date.now(),
     });
   }
 
@@ -90,14 +92,24 @@ export type ProcgenRuntime = {
   seed: number;
   tSec: number;
   frame: number;
+  rng: Rng;
+  bitruvius: BitruviusRuntimeState;
 };
 
-export const createProcgenRuntime = (seed: number): ProcgenRuntime => ({ seed, tSec: 0, frame: 0 });
+export const createProcgenRuntime = (seed: number): ProcgenRuntime => ({
+  seed,
+  tSec: 0,
+  frame: 0,
+  rng: createRng(seed >>> 0),
+  bitruvius: createBitruviusRuntimeState(),
+});
 
 export const resetProcgenRuntime = (runtime: ProcgenRuntime, seed?: number) => {
   runtime.seed = seed ?? runtime.seed;
   runtime.tSec = 0;
   runtime.frame = 0;
+  runtime.rng = createRng((runtime.seed >>> 0) || 0);
+  resetBitruviusRuntimeState(runtime.bitruvius);
 };
 
 export const stepProcgenPose = (args: {
@@ -112,12 +124,13 @@ export const stepProcgenPose = (args: {
   idle: IdleSettings;
   options: ProcgenOptions;
 }): EnginePoseSnapshot => {
-  const { runtime, mode, neutral, dtSec, strength, gait, gaitEnabled, physics, idle } = args;
+  const { runtime, mode, neutral, dtSec, strength, gait, gaitEnabled, physics, idle, options } = args;
   const fps = 60;
   const cycleFrames = 120;
   runtime.tSec += Math.max(0, dtSec);
   const nextFrame = Math.floor(runtime.tSec * fps);
   runtime.frame = nextFrame % cycleFrames;
+  const timeMs = Math.floor(runtime.tSec * 1000);
 
   const gaitOverrides: Partial<WalkingEngineGait> = {};
   (Object.keys(gait) as Array<keyof WalkingEngineGait>).forEach((k) => {
@@ -135,6 +148,10 @@ export const stepProcgenPose = (args: {
     gait: gaitOverrides,
     physics,
     idle,
+    options,
+    runtimeState: runtime.bitruvius,
+    rng: runtime.rng,
+    timeMs,
   });
 };
 
@@ -152,8 +169,9 @@ export const bakeProcgenLoop = (args: {
   options: ProcgenOptions;
   keyframeStep: number;
 }): TimelineKeyframe[] => {
-  const { neutral, fps, frameCount, strength, seed, mode, gait, gaitEnabled, physics, idle, keyframeStep } = args;
+  const { neutral, fps, frameCount, strength, seed, mode, gait, gaitEnabled, physics, idle, options, keyframeStep } = args;
   const runtime = createProcgenRuntime(seed);
+  resetBitruviusRuntimeState(runtime.bitruvius);
   const step = Math.max(1, Math.floor(keyframeStep));
   const safeFrameCount = Math.max(2, Math.floor(frameCount));
   const gaitOverrides: Partial<WalkingEngineGait> = {};
@@ -177,14 +195,17 @@ export const bakeProcgenLoop = (args: {
         gait: gaitOverrides,
         physics,
         idle,
-        time: Date.now(),
+        options,
+        runtimeState: runtime.bitruvius,
+        rng: runtime.rng,
+        timeMs: Math.floor((f / Math.max(1, fps)) * 1000),
       }),
     });
   }
 
   // Force a loop closure keyframe at the end frame.
   if (keyframes.length > 0 && keyframes[keyframes.length - 1]!.frame !== safeFrameCount - 1) {
-    keyframes.push({ frame: safeFrameCount - 1, pose: keyframes[0]!.pose });
+    keyframes.push({ frame: safeFrameCount - 1, pose: clonePose(keyframes[0]!.pose) });
   }
 
   return keyframes;

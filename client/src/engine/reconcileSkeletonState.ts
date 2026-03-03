@@ -9,6 +9,8 @@ type Fix = {
 };
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+const clampScale = (v: number) => Math.max(0.1, Math.min(10, v));
+const clampOffset = (v: number) => Math.max(-50_000, Math.min(50_000, v));
 
 export const reconcileSkeletonState = (state: SkeletonState): TransitionResult<SkeletonState> => {
   const fixes: Fix[] = [];
@@ -33,6 +35,35 @@ export const reconcileSkeletonState = (state: SkeletonState): TransitionResult<S
         title: 'Physics dial clamped',
         detail: `physicsRigidity was outside 0..1 and was clamped to ${clamped.toFixed(3)}.`,
         fields: ['simulation.physicsRigidity'],
+      });
+    }
+  }
+
+  const vs = typeof next.viewScale === 'number' ? next.viewScale : undefined;
+  if (vs !== undefined) {
+    const normalized = Number.isFinite(vs) ? clampScale(vs) : 1.0;
+    if (normalized !== vs) {
+      next = { ...next, viewScale: normalized };
+      fixes.push({
+        title: 'Camera zoom normalized',
+        detail: `viewScale was invalid/out of range and was normalized to ${normalized.toFixed(3)}.`,
+        fields: ['camera.viewScale'],
+      });
+    }
+  }
+
+  const vo = next.viewOffset as any;
+  if (vo && typeof vo === 'object') {
+    const xRaw = (vo as any).x;
+    const yRaw = (vo as any).y;
+    const x = typeof xRaw === 'number' && Number.isFinite(xRaw) ? clampOffset(xRaw) : 0;
+    const y = typeof yRaw === 'number' && Number.isFinite(yRaw) ? clampOffset(yRaw) : 0;
+    if (x !== xRaw || y !== yRaw) {
+      next = { ...next, viewOffset: { x, y } as any };
+      fixes.push({
+        title: 'Camera pan normalized',
+        detail: 'viewOffset was invalid/out of range and was normalized.',
+        fields: ['camera.viewOffset'],
       });
     }
   }
@@ -79,4 +110,3 @@ export const reconcileSkeletonState = (state: SkeletonState): TransitionResult<S
 
   return { state: next, issues };
 };
-

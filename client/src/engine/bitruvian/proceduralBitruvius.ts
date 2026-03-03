@@ -11,16 +11,26 @@ import {
   DEFAULT_PROCEDURAL_BITRUVIAN_PROPORTIONS,
 } from './types';
 import { updateLocomotionPhysics, INITIAL_LOCOMOTION_STATE, LocomotionState } from './locomotionEngine';
-import { updateIdlePhysics } from './idleEngine';
+import { createIdleRuntimeState, IdleRuntimeState, updateIdlePhysics } from './idleEngine';
 import { applyFootGrounding } from './groundingEngine';
-import { lerp } from './kinematics';
+import { lerp, rotateVecInternal } from './kinematics';
+import type { ProcgenOptions } from '../types';
+import type { Rng } from '../rng';
+import { createRng } from '../rng';
 
-let locomotionState: LocomotionState = { ...INITIAL_LOCOMOTION_STATE };
-let lastTime = 0;
+export type BitruviusRuntimeState = {
+  locomotion: LocomotionState;
+  idle: IdleRuntimeState;
+};
 
-export const resetBitruviusState = () => {
-  locomotionState = { ...INITIAL_LOCOMOTION_STATE };
-  lastTime = 0;
+export const createBitruviusRuntimeState = (): BitruviusRuntimeState => ({
+  locomotion: { ...INITIAL_LOCOMOTION_STATE },
+  idle: createIdleRuntimeState(),
+});
+
+export const resetBitruviusRuntimeState = (state: BitruviusRuntimeState) => {
+  state.locomotion = { ...INITIAL_LOCOMOTION_STATE };
+  state.idle = createIdleRuntimeState();
 };
 
 const bitruviusPoseToEnginePose = (bitruviusPose: Partial<WalkingEnginePose>, basePose: EnginePoseSnapshot): EnginePoseSnapshot => {
@@ -53,83 +63,28 @@ const bitruviusPoseToEnginePose = (bitruviusPose: Partial<WalkingEnginePose>, ba
     r_thigh: 'r_thigh',
   };
 
-  // Apply rotations as angular changes to joint positions
+  // EnginePoseSnapshot stores *local offsets* (not world positions). Apply pose angles by rotating
+  // each joint's offset vector, preserving its length.
   Object.entries(jointMap).forEach(([bitruviusKey, engineKey]) => {
-    const value = bitruviusPose[bitruviusKey as keyof WalkingEnginePose];
-    if (value !== undefined && basePose.joints[engineKey]) {
-      const baseJoint = basePose.joints[engineKey];
-      
-      // Find parent joint for proper rotation calculation
-      const parentJointId = getParentJoint(engineKey);
-      const parentJoint = parentJointId ? basePose.joints[parentJointId] : null;
-      
-      if (parentJoint) {
-        // Calculate rotation relative to parent
-        const dx = baseJoint.x - parentJoint.x;
-        const dy = baseJoint.y - parentJoint.y;
-        const currentLength = Math.sqrt(dx * dx + dy * dy);
-        
-        if (currentLength > 0) {
-          const angleRad = (value * Math.PI) / 180;
-          const currentAngle = Math.atan2(dy, dx);
-          const newAngle = currentAngle + angleRad;
-          
-          result.joints[engineKey] = {
-            x: parentJoint.x + Math.cos(newAngle) * currentLength,
-            y: parentJoint.y + Math.sin(newAngle) * currentLength
-          };
-        }
-      } else {
-        // For root-level joints, apply smaller offset
-        const angleRad = (value * Math.PI) / 180;
-        const offsetMagnitude = 5; // Increased offset for visibility
-        result.joints[engineKey] = {
-          x: baseJoint.x + Math.sin(angleRad) * offsetMagnitude,
-          y: baseJoint.y + (1 - Math.cos(angleRad)) * offsetMagnitude
-        };
-      }
-    }
+    const angleDeg = bitruviusPose[bitruviusKey as keyof WalkingEnginePose];
+    const baseOffset = basePose.joints[engineKey];
+    if (typeof angleDeg !== 'number' || !baseOffset) return;
+    result.joints[engineKey] = rotateVecInternal(baseOffset, angleDeg);
   });
 
-  // Apply body offset only to root joints (not all joints)
-  if (bitruviusPose.x_offset || bitruviusPose.y_offset) {
-    const rootJoints = ['navel', 'l_hip', 'r_hip']; // Only apply to body root joints
-    rootJoints.forEach(key => {
-      if (result.joints[key]) {
-        result.joints[key].x += bitruviusPose.x_offset || 0;
-        result.joints[key].y += bitruviusPose.y_offset || 0;
-      }
-    });
+  // Apply body translation to the skeleton root (navel). Applying it to child roots (hips)
+  // double-counts and causes sudden "sinking"/drift.
+  if (typeof bitruviusPose.x_offset === 'number' || typeof bitruviusPose.y_offset === 'number') {
+    const root = result.joints.navel;
+    if (root) {
+      result.joints.navel = {
+        x: root.x + (bitruviusPose.x_offset ?? 0),
+        y: root.y + (bitruviusPose.y_offset ?? 0),
+      };
+    }
   }
 
   return result;
-};
-
-// Helper function to get parent joint
-const getParentJoint = (jointId: string): string | null => {
-  const parentMap: Record<string, string> = {
-    'sternum': 'navel',
-    'collar': 'sternum',
-    'neck_base': 'collar',
-    'head': 'neck_base',
-    'l_shoulder': 'collar',
-    'l_elbow': 'l_shoulder',
-    'l_wrist': 'l_elbow',
-    'r_shoulder': 'collar',
-    'r_elbow': 'r_shoulder',
-    'r_wrist': 'r_elbow',
-    'l_hip': 'navel',
-    'l_knee': 'l_hip',
-    'l_ankle': 'l_knee',
-    'l_toe': 'l_ankle',
-    'r_hip': 'navel',
-    'r_knee': 'r_hip',
-    'r_ankle': 'r_knee',
-    'r_toe': 'r_ankle',
-    'l_thigh': 'l_hip',
-    'r_thigh': 'r_hip',
-  };
-  return parentMap[jointId] || null;
 };
 
 export const generateProceduralBitruviusPose = (args: {
@@ -139,21 +94,41 @@ export const generateProceduralBitruviusPose = (args: {
   cycleFrames: number;
   strength: number;
   mode: 'walk' | 'idle';
-  time?: number;
+  timeMs?: number;
   gait?: Partial<WalkingEngineGait>;
   physics?: Partial<PhysicsControls>;
   idle?: Partial<IdleSettings>;
   proportions?: Partial<WalkingEngineProportions>;
+  options?: ProcgenOptions;
+  runtimeState?: BitruviusRuntimeState;
+  rng?: Rng;
 }): EnginePoseSnapshot => {
-  const { neutral, frame, fps, cycleFrames, strength, mode, time = Date.now(), gait = {}, physics = {}, idle = {}, proportions = {} } = args;
+  const {
+    neutral,
+    frame,
+    fps,
+    cycleFrames,
+    strength,
+    mode,
+    timeMs,
+    gait = {},
+    physics = {},
+    idle = {},
+    proportions = {},
+    options,
+    runtimeState,
+    rng,
+  } = args;
   
   // Early return if strength is 0 - return neutral pose unchanged
   if (strength === 0) {
     return neutral;
   }
   
-  // Don't update lastTime here - it should be managed externally
-  const deltaTime = 16; // Assume ~60fps for stable animation
+  const deltaTimeMs = Math.max(0, (1000 / Math.max(1, fps)) | 0);
+  const safeTimeMs = timeMs ?? frame * deltaTimeMs;
+  const effectiveRng = rng ?? createRng(((safeTimeMs | 0) ^ 0x9e3779b9) >>> 0);
+  const state = runtimeState ?? createBitruviusRuntimeState();
 
   const safeCycle = Math.max(2, Math.floor(cycleFrames));
   const phase = ((frame % safeCycle) / safeCycle) * Math.PI * 2;
@@ -164,39 +139,50 @@ export const generateProceduralBitruviusPose = (args: {
   const mergedPhysics: PhysicsControls = { ...DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, ...physics };
   const mergedIdle: IdleSettings = { ...DEFAULT_PROCEDURAL_BITRUVIAN_IDLE, ...idle };
   const mergedProportions: WalkingEngineProportions = { ...DEFAULT_PROCEDURAL_BITRUVIAN_PROPORTIONS, ...proportions };
+  const mergedOptions: ProcgenOptions = {
+    inPlace: true,
+    groundingEnabled: true,
+    pauseWhileDragging: false,
+    ...(options ?? {}),
+  };
 
   let pose: Partial<WalkingEnginePose> = {};
 
   if (mode === 'walk') {
     const locomotionPose = updateLocomotionPhysics(
       phase,
-      locomotionState,
+      state.locomotion,
       mergedGait,
       mergedPhysics,
       mergedProportions,
       baseUnitH,
-      strength
+      1.0
     );
     
-    const groundingResults = applyFootGrounding(
-      locomotionPose,
-      mergedProportions,
-      baseUnitH,
-      mergedPhysics,
-      ['lAnkle', 'rAnkle'], // Active pins for grounding
-      mergedIdle,
-      'center',
-      1.0, // Full locomotion weight
-      deltaTime
-    );
-    
-    pose = groundingResults.adjustedPose;
+    if (mergedOptions.groundingEnabled) {
+      const groundingResults = applyFootGrounding(
+        locomotionPose,
+        mergedProportions,
+        baseUnitH,
+        mergedPhysics,
+        ['lAnkle', 'rAnkle'], // Active pins for grounding
+        mergedIdle,
+        'center',
+        1.0, // Full locomotion weight
+        deltaTimeMs
+      );
+      pose = groundingResults.adjustedPose;
+    } else {
+      pose = locomotionPose;
+    }
   } else {
     const idlePose = updateIdlePhysics(
-      time,
-      deltaTime,
+      safeTimeMs,
+      deltaTimeMs,
       mergedIdle,
-      0.0 // No locomotion weight for pure idle
+      0.0, // No locomotion weight for pure idle
+      state.idle,
+      effectiveRng,
     );
     
     pose = idlePose;
@@ -210,9 +196,13 @@ export const generateProceduralBitruviusPose = (args: {
     }
   });
 
-  // Remove any x_offset to prevent sliding
-  delete pose.x_offset;
-  delete pose.y_offset;
+  // Keep vertical grounding (y_offset) for walk mode; suppress lateral sliding by default.
+  if (mode === 'walk') {
+    if (mergedOptions.inPlace && typeof pose.x_offset === 'number') pose.x_offset = 0;
+  } else {
+    delete pose.x_offset;
+    delete pose.y_offset;
+  }
 
   return bitruviusPoseToEnginePose(pose, neutral);
 };
