@@ -47,7 +47,8 @@ export const calculateFootTipGlobalPosition = (
     angles: { hip: number; knee: number; foot: number; toe: number },
     props: WalkingEngineProportions,
     baseUnitH: number,
-    isRight: boolean
+    isRight: boolean,
+    includeFootLen: boolean = true,
 ) => {
     const thighKey = isRight ? 'r_upper_leg' : 'l_upper_leg';
     const calfKey = isRight ? 'r_lower_leg' : 'l_lower_leg';
@@ -60,9 +61,10 @@ export const calculateFootTipGlobalPosition = (
     const kneePos = rotateVecInternal({x: 0, y: thighLen}, angles.hip);
     const ankleRel = rotateVecInternal({x: 0, y: calfLen}, angles.hip + angles.knee);
     const anklePos = { x: kneePos.x + ankleRel.x, y: kneePos.y + ankleRel.y };
+    if (!includeFootLen) return anklePos;
+
     const tipRel = rotateVecInternal({x: 0, y: footLen}, angles.hip + angles.knee + angles.foot);
     const tipPos = { x: anklePos.x + tipRel.x, y: anklePos.y + tipRel.y };
-
     return tipPos;
 };
 

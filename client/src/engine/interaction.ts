@@ -459,7 +459,7 @@ export const applyBalanceDragToState = (
 ): SkeletonState => {
   const nextJoints = { ...prev.joints };
   const draggingJoint = nextJoints[draggingId];
-  const root = nextJoints.navel;
+  const root = nextJoints.root;
   if (!draggingJoint || !root) return prev;
   if (!isFinitePoint(mouseWorld)) return prev;
 
@@ -523,7 +523,7 @@ export const applyBalanceDragToState = (
   const delta = scalePoint(desiredDelta, t);
 
   const nextRootOffset = add(root.previewOffset, delta);
-  nextJoints.navel = {
+  nextJoints.root = {
     ...root,
     previewOffset: nextRootOffset,
     targetOffset: nextRootOffset,

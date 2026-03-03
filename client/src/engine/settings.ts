@@ -2,6 +2,7 @@ import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
 import { clamp } from '../utils';
 import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
+import { computeCogWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset } from './types';
 import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
 import { DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, DEFAULT_PROCEDURAL_BITRUVIAN_IDLE } from './bitruvian/types';
@@ -183,6 +184,18 @@ const sanitizeTextOverlays = (raw: unknown, frameCount: number): TextOverlay[] =
 };
 
 const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connectionOverrides'] => {
+  const ALLOWED_SHAPES = new Set([
+    'standard',
+    'bone',
+    'muscle',
+    'tapered',
+    'cylinder',
+    'wire',
+    'wireframe',
+    'capsule',
+    'diamond',
+    'ribbon',
+  ]);
   const out: SkeletonState['connectionOverrides'] = {};
   if (!rawValue || typeof rawValue !== 'object') return out;
   const raw = rawValue as Record<string, unknown>;
@@ -194,12 +207,22 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
     if (!(a in INITIAL_JOINTS) || !(b in INITIAL_JOINTS)) continue;
     const v = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
     if (!v) continue;
+    const next: SkeletonState['connectionOverrides'][string] = {};
     const stretchMode = v.stretchMode;
-    if (stretchMode === 'rigid' || stretchMode === 'elastic' || stretchMode === 'stretch') {
-      out[key] = { stretchMode };
-    }
+    if (stretchMode === 'rigid' || stretchMode === 'elastic' || stretchMode === 'stretch') next.stretchMode = stretchMode;
+    const shape = v.shape;
+    if (typeof shape === 'string' && ALLOWED_SHAPES.has(shape)) next.shape = shape;
+    if (Object.keys(next).length > 0) out[key] = next;
   }
   return out;
+};
+
+const sanitizeBoneStyle = (rawValue: unknown, base: SkeletonState['boneStyle']): SkeletonState['boneStyle'] => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+  const hueT = isFiniteNumber(raw.hueT) ? clamp(raw.hueT, 0, 1) : base.hueT;
+  const lightness = isFiniteNumber(raw.lightness) ? clamp(raw.lightness, -1, 1) : base.lightness;
+  return { hueT, lightness };
 };
 
 const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
@@ -232,9 +255,44 @@ const CONTROL_MODE_SET = new Set<ControlMode>(['Cardboard', 'Rubberband', 'IK', 
 export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
   const raw = rawJoints && typeof rawJoints === 'object' ? (rawJoints as Record<string, Partial<Joint>>) : {};
   const next: Record<string, Joint> = {};
+  const hasSavedRoot = Boolean(raw.root && typeof raw.root === 'object');
+  const hasSavedNavel = Boolean(raw.navel && typeof raw.navel === 'object');
+
+  const legacyWorldOffsets = (() => {
+    if (hasSavedRoot) return null;
+    if (!hasSavedNavel) return null;
+    const savedNavel = raw.navel as Partial<Joint> | undefined;
+    if (!savedNavel) return null;
+    return {
+      currentOffset: safePoint(savedNavel.currentOffset, INITIAL_JOINTS.navel.currentOffset),
+      targetOffset: safePoint(savedNavel.targetOffset, INITIAL_JOINTS.navel.targetOffset),
+      previewOffset: safePoint(savedNavel.previewOffset ?? savedNavel.targetOffset, INITIAL_JOINTS.navel.previewOffset),
+    };
+  })();
+
   for (const id of Object.keys(INITIAL_JOINTS)) {
     const base = INITIAL_JOINTS[id];
     const saved = raw[id] as Partial<Joint> | undefined;
+    if (id === 'root' && legacyWorldOffsets) {
+      next[id] = {
+        ...base,
+        currentOffset: legacyWorldOffsets.currentOffset,
+        targetOffset: legacyWorldOffsets.targetOffset,
+        previewOffset: legacyWorldOffsets.previewOffset,
+        rotation: isFiniteNumber(saved?.rotation) ? saved.rotation : (base.rotation ?? 0),
+      };
+      continue;
+    }
+    if (id === 'navel' && legacyWorldOffsets) {
+      next[id] = {
+        ...base,
+        currentOffset: { ...base.currentOffset },
+        targetOffset: { ...base.targetOffset },
+        previewOffset: { ...base.previewOffset },
+        rotation: isFiniteNumber(saved?.rotation) ? saved.rotation : (base.rotation ?? 0),
+      };
+      continue;
+    }
     next[id] = {
       ...base,
       currentOffset: safePoint(saved?.currentOffset, base.currentOffset),
@@ -249,6 +307,7 @@ export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
 export const makeDefaultState = (): SkeletonState => {
   const joints = sanitizeJoints(null);
   const defaultSlots = createDefaultCutoutSlots();
+  const groundRootTarget = computeCogWorld(joints, INITIAL_JOINTS, 'preview');
   
   // Create default views (Front, Side, Back, 3/4)
   const defaultViews = [
@@ -290,7 +349,8 @@ export const makeDefaultState = (): SkeletonState => {
     leadEnabled: true,
     hardStop: true, // Enable hard stops for rigid joint limits
     physicsRigidity: 0, // 0..1 macro slider (0=rigid)
-    activePins: [],
+    activeRoots: [],
+    groundRootTarget,
     showJoints: true,
     jointsOverMasks: false,
     lookMode: 'default',
@@ -306,7 +366,7 @@ export const makeDefaultState = (): SkeletonState => {
       seed: 1,
       neutralPose: null,
       bake: { cycleFrames: 48, keyframeStep: 4 },
-      options: { inPlace: true, groundingEnabled: true, pauseWhileDragging: true },
+      options: { inPlace: true, groundingEnabled: true, pauseWhileDragging: true, groundPlaneY: 13, groundPlaneVisible: true },
       gait: { ...DEFAULT_PROCEDURAL_BITRUVIAN_GAIT },
       gaitEnabled: {},
       physics: { ...DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS },
@@ -380,6 +440,7 @@ export const makeDefaultState = (): SkeletonState => {
     cutoutSlots: defaultSlots,
     views: defaultViews,
     activeViewId: 'front',
+    boneStyle: { hueT: 0, lightness: 0 },
     connectionOverrides: {},
   };
 };
@@ -568,11 +629,15 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     ? clamp((raw as any).physicsRigidity as number, 0, 1)
     : base.physicsRigidity;
 
-  const activePins = Array.isArray(raw.activePins)
-    ? Array.from(
-        new Set(raw.activePins.filter((id): id is string => typeof id === 'string' && id in INITIAL_JOINTS))
-      )
-    : base.activePins;
+  const rawRoots = Array.isArray((raw as any).activeRoots)
+    ? (raw as any).activeRoots
+    : Array.isArray((raw as any).activePins)
+      ? (raw as any).activePins
+      : null;
+
+  const activeRoots = Array.isArray(rawRoots)
+    ? Array.from(new Set(rawRoots.filter((id): id is string => typeof id === 'string' && id in INITIAL_JOINTS)))
+    : base.activeRoots;
 
   const rawTimeline =
     raw.timeline && typeof raw.timeline === 'object' ? (raw.timeline as unknown as Record<string, unknown>) : null;
@@ -682,7 +747,8 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
       : null;
 
   const procgen = (() => {
-    const safeMode = (value: unknown) => (value === 'walk_in_place' || value === 'idle' ? value : null);
+    const safeMode = (value: unknown) =>
+      value === 'walk_in_place' || value === 'run_in_place' || value === 'idle' ? value : null;
     const safeIdlePinnedFeet = (value: unknown) =>
       value === 'left' || value === 'right' || value === 'both' || value === 'none' ? value : null;
 
@@ -714,6 +780,13 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
         typeof rawOptions?.pauseWhileDragging === 'boolean'
           ? (rawOptions.pauseWhileDragging as boolean)
           : base.procgen.options.pauseWhileDragging,
+      groundPlaneY: isFiniteNumber(rawOptions?.groundPlaneY)
+        ? clamp(rawOptions.groundPlaneY as number, -200, 200)
+        : base.procgen.options.groundPlaneY,
+      groundPlaneVisible:
+        typeof rawOptions?.groundPlaneVisible === 'boolean'
+          ? (rawOptions.groundPlaneVisible as boolean)
+          : base.procgen.options.groundPlaneVisible,
     };
 
     const gait = (() => {
@@ -790,7 +863,8 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     leadEnabled: typeof raw.leadEnabled === 'boolean' ? raw.leadEnabled : base.leadEnabled,
     hardStop: finalHardStop,
     physicsRigidity: finalPhysicsRigidity,
-    activePins,
+    activeRoots,
+    groundRootTarget: safePointClamped((raw as any).groundRootTarget, base.groundRootTarget, { min: -50_000, max: 50_000 }),
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,
     jointsOverMasks: typeof raw.jointsOverMasks === 'boolean' ? raw.jointsOverMasks : base.jointsOverMasks,
     lookMode,
@@ -823,6 +897,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     cutoutSlots,
     views,
     activeViewId,
+    boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),
     connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
     viewScale,
     viewOffset,

@@ -15,7 +15,7 @@ export type VideoExportArgs = VideoExportOptions & {
   baseJoints: Record<string, Joint>;
   connections: Connection[];
   scene: SceneState;
-  activePins: string[];
+  activeRoots: string[];
   stretchEnabled: boolean;
   fallbackPose?: EnginePoseSnapshot;
 };
@@ -149,7 +149,7 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
     baseJoints,
     connections,
     scene,
-    activePins,
+    activeRoots,
     stretchEnabled,
     fallbackPose,
   } = args;
@@ -443,7 +443,7 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
 
       const isRoot = !j.parent;
       const r = (isRoot ? 6 : 4) * scale;
-      const pinned = activePins.includes(id);
+      const pinned = activeRoots.includes(id);
       ctx.fillStyle = isRoot ? 'rgba(255,255,255,1)' : pinned ? 'rgba(255, 0, 102, 1)' : 'rgba(255,255,255,0.9)';
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);

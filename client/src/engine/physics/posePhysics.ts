@@ -22,8 +22,8 @@ const offsetLen = (a: Point) => Math.hypot(a.x, a.y);
 export type PosePhysicsInput = {
   joints: Record<string, Joint>;
   baseJoints?: Record<string, Joint>;
-  activePins: string[];
-  pinTargets: Record<string, Point>;
+  activeRoots: string[];
+  rootTargets: Record<string, Point>;
   drag: { id: string; target: Point } | null;
   connectionOverrides?: SkeletonState['connectionOverrides'];
   options: {
@@ -183,9 +183,9 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
     });
   }
 
-  // Pins (hard).
-  for (const id of input.activePins) {
-    const target = input.pinTargets[id];
+  // Roots (hard).
+  for (const id of input.activeRoots) {
+    const target = input.rootTargets[id];
     if (!target) continue;
     const c: PinConstraint = { kind: 'pin', id, target, compliance: 0 };
     constraints.push(c);
@@ -258,5 +258,6 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
 export const shouldRunPosePhysics = (state: SkeletonState): boolean => {
   const cm = state.controlMode;
   if (cm === 'IK' || cm === 'Rubberband' || cm === 'JointDrag') return true;
+  if (state.activeRoots.length > 0) return true;
   return Boolean(state.stretchEnabled) || Boolean(state.bendEnabled);
 };

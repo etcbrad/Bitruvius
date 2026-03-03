@@ -245,9 +245,9 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
             {rel.hasMask && (
               <div className="flex items-center gap-1">
                 <div className={`w-2 h-2 rounded-full ${
-                  rel.maskVisible ? 'bg-[#ff8800]' : 'bg-[#666]'
+                  rel.maskVisible ? 'bg-[#00ff88]' : 'bg-[#666]'
                 }`} />
-                <Layers size={10} className={rel.maskVisible ? 'text-[#ff8800]' : 'text-[#666]'} />
+                <Layers size={10} className={rel.maskVisible ? 'text-[#00ff88]' : 'text-[#666]'} />
               </div>
             )}
 
@@ -272,7 +272,7 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
                 title={rel.maskVisible ? 'Hide mask' : 'Show mask'}
               >
                 {rel.maskVisible ? (
-                  <Eye size={10} className="text-[#ff8800]" />
+                  <Eye size={10} className="text-[#00ff88]" />
                 ) : (
                   <EyeOff size={10} className="text-[#666]" />
                 )}
@@ -320,7 +320,7 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
                 {rel.hasMask ? (
                   <div className="flex items-center gap-2 flex-1">
                     <div className={`w-2 h-2 rounded-full ${
-                      rel.maskVisible ? 'bg-[#ff8800]' : 'bg-[#666]'
+                      rel.maskVisible ? 'bg-[#00ff88]' : 'bg-[#666]'
                     }`} />
                     <span className="text-[10px] text-[#666]">
                       {rel.maskVisible ? 'Visible' : 'Hidden'}
@@ -394,7 +394,7 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
         </h3>
         <div className="flex items-center gap-2 text-[10px] text-[#666]">
           <div className="flex items-center gap-1">
-            <div className="w-2 h-2 rounded-full bg-[#ff8800]" />
+            <div className="w-2 h-2 rounded-full bg-[#00ff88]" />
             <span>Mask</span>
           </div>
           <div className="flex items-center gap-1">
@@ -417,7 +417,7 @@ export const CutoutRelationshipVisualizer: React.FC<CutoutRelationshipVisualizer
         </div>
         <div className="p-2 bg-[#181818] rounded text-center">
           <div className="text-[#666]">With Masks</div>
-          <div className="font-bold text-[#ff8800]">
+          <div className="font-bold text-[#00ff88]">
             {state.scene.jointMasks ? Object.values(state.scene.jointMasks).filter(m => m?.src).length : 0}
           </div>
         </div>
