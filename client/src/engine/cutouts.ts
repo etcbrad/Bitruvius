@@ -53,12 +53,12 @@ export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
   // Left leg slots
   slots['l_thigh'] = createSlot('l_thigh', 'L Thigh', 'l_hip', 'l_knee', 45);
   slots['l_calf'] = createSlot('l_calf', 'L Calf', 'l_knee', 'l_ankle', 40);
-  slots['l_foot'] = createSlot('l_foot', 'L Foot', 'l_ankle', 'l_ankle', 10); // Foot uses same joint as endpoint
+  slots['l_foot'] = createSlot('l_foot', 'L Foot', 'l_ankle', 'l_toe', 10);
 
   // Right leg slots
   slots['r_thigh'] = createSlot('r_thigh', 'R Thigh', 'r_hip', 'r_knee', 45);
   slots['r_calf'] = createSlot('r_calf', 'R Calf', 'r_knee', 'r_ankle', 40);
-  slots['r_foot'] = createSlot('r_foot', 'R Foot', 'r_ankle', 'r_ankle', 10); // Foot uses same joint as endpoint
+  slots['r_foot'] = createSlot('r_foot', 'R Foot', 'r_ankle', 'r_toe', 10);
 
   // Torso slots
   slots['torso'] = createSlot('torso', 'Torso', 'navel', 'sternum', 50);

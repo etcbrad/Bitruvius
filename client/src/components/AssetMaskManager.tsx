@@ -349,13 +349,13 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                               <label className="text-[8px] text-[#666]">X</label>
                               <div className="flex items-center gap-1">
                                 <button
-                                  onClick={() => updateSlot(slotId, { x: (slot.x || 0) - 10 })}
+                                  onClick={() => updateSlot(slotId, { offsetX: (slot.offsetX || 0) - 10 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   -10
                                 </button>
                                 <button
-                                  onClick={() => updateSlot(slotId, { x: (slot.x || 0) - 1 })}
+                                  onClick={() => updateSlot(slotId, { offsetX: (slot.offsetX || 0) - 1 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   -1
@@ -363,18 +363,18 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                                 <input
                                   type="number"
                                   step="1"
-                                  value={slot.x || 0}
-                                  onChange={(e) => updateSlot(slotId, { x: parseInt(e.target.value) || 0 })}
+                                  value={slot.offsetX || 0}
+                                  onChange={(e) => updateSlot(slotId, { offsetX: parseFloat(e.target.value) || 0 })}
                                   className="flex-1 px-1 py-1 bg-[#222] rounded border border-[#333] text-[9px] text-center"
                                 />
                                 <button
-                                  onClick={() => updateSlot(slotId, { x: (slot.x || 0) + 1 })}
+                                  onClick={() => updateSlot(slotId, { offsetX: (slot.offsetX || 0) + 1 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   +1
                                 </button>
                                 <button
-                                  onClick={() => updateSlot(slotId, { x: (slot.x || 0) + 10 })}
+                                  onClick={() => updateSlot(slotId, { offsetX: (slot.offsetX || 0) + 10 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   +10
@@ -385,13 +385,13 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                               <label className="text-[8px] text-[#666]">Y</label>
                               <div className="flex items-center gap-1">
                                 <button
-                                  onClick={() => updateSlot(slotId, { y: (slot.y || 0) - 10 })}
+                                  onClick={() => updateSlot(slotId, { offsetY: (slot.offsetY || 0) - 10 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   -10
                                 </button>
                                 <button
-                                  onClick={() => updateSlot(slotId, { y: (slot.y || 0) - 1 })}
+                                  onClick={() => updateSlot(slotId, { offsetY: (slot.offsetY || 0) - 1 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   -1
@@ -399,18 +399,18 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                                 <input
                                   type="number"
                                   step="1"
-                                  value={slot.y || 0}
-                                  onChange={(e) => updateSlot(slotId, { y: parseInt(e.target.value) || 0 })}
+                                  value={slot.offsetY || 0}
+                                  onChange={(e) => updateSlot(slotId, { offsetY: parseFloat(e.target.value) || 0 })}
                                   className="flex-1 px-1 py-1 bg-[#222] rounded border border-[#333] text-[9px] text-center"
                                 />
                                 <button
-                                  onClick={() => updateSlot(slotId, { y: (slot.y || 0) + 1 })}
+                                  onClick={() => updateSlot(slotId, { offsetY: (slot.offsetY || 0) + 1 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   +1
                                 </button>
                                 <button
-                                  onClick={() => updateSlot(slotId, { y: (slot.y || 0) + 10 })}
+                                  onClick={() => updateSlot(slotId, { offsetY: (slot.offsetY || 0) + 10 })}
                                   className="px-1 py-1 bg-[#333] hover:bg-[#444] rounded text-[8px] font-bold"
                                 >
                                   +10
@@ -419,7 +419,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                             </div>
                           </div>
                           <button
-                            onClick={() => updateSlot(slotId, { x: 0, y: 0 })}
+                            onClick={() => updateSlot(slotId, { offsetX: 0, offsetY: 0 })}
                             className="w-full py-1 bg-[#222] hover:bg-[#333] rounded text-[8px] font-bold uppercase"
                           >
                             Reset Position

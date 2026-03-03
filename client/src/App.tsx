@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { Joint, Point, SkeletonState, ControlMode, Connection } from './engine/types';
 import { viewModes, ViewModeId } from './viewModes';
-import { throttle, normA, d2r, r2d, clamp } from './utils';
+import { throttle, normA, d2r, r2d, clamp, lerp } from './utils';
 import { applyBalanceDragToState, applyDragToState } from './engine/interaction';
 import { fromAngleDeg, getWorldPosition, getWorldPositionFromOffsets, toAngleDeg, vectorLength } from './engine/kinematics';
 import { HistoryController } from './engine/history';
@@ -36,18 +36,115 @@ import { downloadSvg } from './engine/export/svg';
 import { downloadPngFromSvg } from './engine/export/png';
 import { exportAsWebm } from './engine/export/video';
 import { applyPoseSnapshotToJoints, capturePoseSnapshot, sampleClipPose } from './engine/timeline';
+import {
+  bakeRecordingIntoTimeline,
+  buildRecordingFrames,
+  detectMovedJointIds,
+  simplifyRecordingFrames,
+  type DragRecordingSession,
+} from './engine/autoPoseCapture';
 import { makeDefaultState, sanitizeState, sanitizeJoints } from './engine/settings';
 import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
 import { generateProceduralPose, type ProceduralMode } from './engine/procedural';
+import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
+import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 
 const LOCAL_STORAGE_KEY = 'bitruvius_state';
 const IMAGE_CACHE_KEY = 'bitruvius_image_cache';
 const BACKGROUND_COLOR_KEY = 'bitruvius_background_color';
+const POSE_TRACE_KEY = 'bitruvius_pose_trace_enabled';
 const BUILD_ID = 'Bitruvius';
 const DND_WIDGET_MIME = 'text/bitruvius-widget';
+
+type ReferenceVideoMeta = { duration: number; width: number; height: number };
+
+const setVideoTimeSafe = (video: HTMLVideoElement, desiredTime: number) => {
+  if (!Number.isFinite(desiredTime)) return;
+  const duration = Number.isFinite(video.duration) ? video.duration : null;
+  const safeTime = duration !== null ? clamp(desiredTime, 0, Math.max(0, duration - 0.001)) : Math.max(0, desiredTime);
+  try {
+    if (Math.abs((video.currentTime || 0) - safeTime) > 1 / 240) {
+      video.currentTime = safeTime;
+    }
+  } catch {
+    // Seeking can fail if metadata isn't loaded yet; ignore and retry on next effect/event.
+  }
+};
+
+const SyncedReferenceVideo = React.forwardRef<
+  HTMLVideoElement,
+  {
+    src: string;
+    desiredTime: number;
+    playing: boolean;
+    playbackRate: number;
+    objectFit: React.CSSProperties['objectFit'];
+    onMeta?: (meta: ReferenceVideoMeta) => void;
+  }
+>(({ src, desiredTime, playing, playbackRate, objectFit, onMeta }, ref) => {
+  const innerRef = useRef<HTMLVideoElement | null>(null);
+  const lastDesiredRef = useRef<number>(Number.NaN);
+
+  React.useImperativeHandle(ref, () => innerRef.current as HTMLVideoElement);
+
+  useEffect(() => {
+    const video = innerRef.current;
+    if (!video) return;
+    video.playbackRate = Number.isFinite(playbackRate) ? playbackRate : 1;
+  }, [playbackRate]);
+
+  useEffect(() => {
+    const video = innerRef.current;
+    if (!video) return;
+
+    if (!playing) {
+      video.pause();
+      setVideoTimeSafe(video, desiredTime);
+      lastDesiredRef.current = desiredTime;
+      return;
+    }
+
+    // When entering play, align start time then allow natural playback.
+    const drift = Math.abs((video.currentTime || 0) - desiredTime);
+    const jumped = !Number.isFinite(lastDesiredRef.current) || Math.abs(lastDesiredRef.current - desiredTime) > 0.25;
+    if (jumped || drift > 0.15) setVideoTimeSafe(video, desiredTime);
+    lastDesiredRef.current = desiredTime;
+
+    const p = video.play();
+    if (p && typeof (p as Promise<void>).catch === 'function') {
+      (p as Promise<void>).catch(() => {
+        // Autoplay policies / decode hiccups; ignore.
+      });
+    }
+  }, [desiredTime, playing]);
+
+  return (
+    <video
+      ref={innerRef}
+      src={src}
+      muted
+      playsInline
+      preload="auto"
+      onLoadedMetadata={(e) => {
+        const video = e.currentTarget;
+        onMeta?.({
+          duration: Number.isFinite(video.duration) ? video.duration : 0,
+          width: video.videoWidth || 0,
+          height: video.videoHeight || 0,
+        });
+        setVideoTimeSafe(video, desiredTime);
+      }}
+      style={{
+        width: '100%',
+        height: '100%',
+        objectFit,
+      }}
+    />
+  );
+});
 
 // Image cache utilities for persisting uploads
 const convertBlobUrlToBase64 = async (blobUrl: string): Promise<string | null> => {
@@ -120,7 +217,7 @@ const cleanupImageCache = () => {
   }
 };
 
-type WidgetKind = 'joint_masks' | 'console' | 'camera' | 'procgen';
+type WidgetKind = 'joint_masks' | 'bone_inspector' | 'console' | 'camera' | 'procgen' | 'atomic_units';
 
 type FloatingWidget = {
   id: string;
@@ -131,6 +228,19 @@ type FloatingWidget = {
   h: number;
   minimized: boolean;
 };
+
+type RigTrack = 'body' | 'arms';
+type RigSide = 'front' | 'back'; // front=right, back=left
+type RigStage = 'joint' | 'bone' | 'mask';
+
+type RigFocus = {
+  track: RigTrack;
+  index: number;
+  side: RigSide;
+  stage: RigStage;
+};
+
+const canonicalConnKey = (a: string, b: string): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
 
 type ConsoleLogLevel = 'info' | 'warning' | 'error' | 'success';
 
@@ -236,7 +346,7 @@ return makeDefaultState();
     const next = { ...pinTargetsRef.current };
     let changed = false;
 
-    for (const id of active) {
+    for (const id of state.activePins) {
       if (!next[id]) {
         next[id] = getWorldPosition(id, state.joints, INITIAL_JOINTS, 'preview');
         changed = true;
@@ -267,12 +377,35 @@ return makeDefaultState();
   const [poseSnapshots, setPoseSnapshots] = useState<PoseSnapshot[]>([]);
   const [selectedPoseIndices, setSelectedPoseIndices] = useState<number[]>([]);
 
+  const [autoPoseCaptureEnabled, setAutoPoseCaptureEnabled] = useState(false);
+  const [autoPoseCaptureFps, setAutoPoseCaptureFps] = useState(24);
+  const [autoPoseCaptureOverlayWeight, setAutoPoseCaptureOverlayWeight] = useState(0.5);
+  const [autoPoseCaptureMovedThreshold, setAutoPoseCaptureMovedThreshold] = useState(0.002);
+  const [autoPoseCaptureMaxFrames, setAutoPoseCaptureMaxFrames] = useState(120);
+  const [autoPoseCaptureSimplifyEnabled, setAutoPoseCaptureSimplifyEnabled] = useState(true);
+  const [autoPoseCaptureSimplifyEpsilon, setAutoPoseCaptureSimplifyEpsilon] = useState(0.001);
+
+  const autoPoseRecordingRef = useRef<DragRecordingSession | null>(null);
+  const autoPoseRecordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (autoPoseRecordingTimerRef.current) {
+        clearInterval(autoPoseRecordingTimerRef.current);
+        autoPoseRecordingTimerRef.current = null;
+      }
+      autoPoseRecordingRef.current = null;
+    };
+  }, []);
+
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdLiveRef = useRef<string | null>(null);
   const pinWorldRef = useRef<Record<string, Point> | null>(null);
   const dragTargetRef = useRef<{ id: string; target: Point } | null>(null);
   const pinTargetsRef = useRef<Record<string, Point>>({});
   const hingeSignsRef = useRef<Record<string, number>>({});
+  const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
+  const physicsHandshakeRef = useRef<{ key: string; blend: number }>({ key: '', blend: 1 });
   
   // Rubberband mode state
   const [longPressTimer, setLongPressTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
@@ -291,9 +424,16 @@ return makeDefaultState();
   const maskDraggingLiveRef = useRef(false);
   const [maskJointId, setMaskJointId] = useState<string>('head');
   const [selectedJointId, setSelectedJointId] = useState<string | null>(null);
+  const [selectedConnectionKey, setSelectedConnectionKey] = useState<string | null>(null);
+  const [rigFocus, setRigFocus] = useState<RigFocus>({ track: 'body', index: 0, side: 'front', stage: 'joint' });
   const [timelineFrame, setTimelineFrame] = useState(0);
   const timelineFrameRef = useRef(0);
   const [timelinePlaying, setTimelinePlaying] = useState(false);
+  const [poseTracingEnabled, setPoseTracingEnabled] = useState(() => localStorage.getItem(POSE_TRACE_KEY) === '1');
+  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
+  const fgVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [bgVideoMeta, setBgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
+  const [fgVideoMeta, setFgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const canvasRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -311,6 +451,35 @@ return makeDefaultState();
     const saved = localStorage.getItem(BACKGROUND_COLOR_KEY);
     return saved || '#fff3d1'; // Faded paper yellowish default
   });
+
+  const stateLiveRef = useRef(state);
+  useEffect(() => {
+    stateLiveRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    maskJointIdRef.current = maskJointId;
+  }, [maskJointId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(POSE_TRACE_KEY, poseTracingEnabled ? '1' : '0');
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [poseTracingEnabled]);
+
+  const timelineFpsLive = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
+  const bgVideoDesiredTime =
+    state.scene.background.mediaType === 'video'
+      ? state.scene.background.videoStart +
+        (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.background.videoRate : 0)
+      : 0;
+  const fgVideoDesiredTime =
+    state.scene.foreground.mediaType === 'video'
+      ? state.scene.foreground.videoStart +
+        (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.foreground.videoRate : 0)
+      : 0;
           const [procgenMode, setProcgenMode] = useState<ProceduralMode>('walk');
           const [procgenCycleFrames, setProcgenCycleFrames] = useState(48);
           const [procgenStrength, setProcgenStrength] = useState(1);
@@ -361,14 +530,36 @@ return makeDefaultState();
 
   const filteredConsoleLogs = consoleLogs.filter((log) => activeLogLevels.has(log.level));
 
-    const spawnFloatingWidget = useCallback(
-    (kind: WidgetKind, clientX: number, clientY: number) => {
+	    const spawnFloatingWidget = useCallback(
+	    (kind: WidgetKind, clientX: number, clientY: number) => {
       const rect = canvasRef.current?.getBoundingClientRect();
       const x = rect ? clientX - rect.left : clientX;
       const y = rect ? clientY - rect.top : clientY;
 
-      const w = kind === 'console' ? 420 : kind === 'camera' ? 200 : kind === 'procgen' ? 300 : 360;
-      const h = kind === 'console' ? 280 : kind === 'camera' ? 150 : kind === 'procgen' ? 200 : 420;
+	      const w =
+	        kind === 'console'
+	          ? 420
+	          : kind === 'camera'
+	            ? 200
+	            : kind === 'procgen'
+	              ? 300
+	              : kind === 'atomic_units'
+	                ? 380
+                  : kind === 'bone_inspector'
+                    ? 320
+	                : 360;
+	      const h =
+	        kind === 'console'
+	          ? 280
+	          : kind === 'camera'
+	            ? 150
+	            : kind === 'procgen'
+	              ? 200
+	              : kind === 'atomic_units'
+	                ? 520
+                  : kind === 'bone_inspector'
+                    ? 240
+	                : 420;
       const id = kind + '-' + Math.random().toString(36).slice(2, 9);
 
       setFloatingWidgets((prev) => [
@@ -386,6 +577,150 @@ return makeDefaultState();
     },
     [],
   );
+
+  const focusJointId = useCallback((focus: RigFocus): string => {
+    if (focus.track === 'body') {
+      switch (focus.index) {
+        case 0:
+          return 'head';
+        case 1:
+          return 'collar';
+        case 2:
+          return 'navel';
+        case 3:
+          return focus.side === 'front' ? 'r_hip' : 'l_hip';
+        case 4:
+          return focus.side === 'front' ? 'r_knee' : 'l_knee';
+        case 5:
+          return focus.side === 'front' ? 'r_ankle' : 'l_ankle';
+        case 6:
+          return focus.side === 'front' ? 'r_toe' : 'l_toe';
+        default:
+          return 'head';
+      }
+    }
+
+    // arms
+    switch (focus.index) {
+      case 0:
+        return focus.side === 'front' ? 'r_shoulder' : 'l_shoulder';
+      case 1:
+        return focus.side === 'front' ? 'r_elbow' : 'l_elbow';
+      case 2:
+        return focus.side === 'front' ? 'r_wrist' : 'l_wrist';
+      case 3:
+        return focus.side === 'front' ? 'r_fingertip' : 'l_fingertip';
+      default:
+        return focus.side === 'front' ? 'r_shoulder' : 'l_shoulder';
+    }
+  }, []);
+
+  const focusBoneKeyForJointId = useCallback((jointId: string, joints: SkeletonState['joints']): string | null => {
+    if (jointId === 'navel' && joints.sternum) return canonicalConnKey('navel', 'sternum');
+    const parentId = joints[jointId]?.parent ?? null;
+    if (!parentId) return null;
+    return canonicalConnKey(parentId, jointId);
+  }, []);
+
+  const syncRigFocusFromJointId = useCallback((jointId: string) => {
+    const isRight = jointId.startsWith('r_');
+    const isLeft = jointId.startsWith('l_');
+    const side: RigSide | null = isRight ? 'front' : isLeft ? 'back' : null;
+
+    const bodyIndex = (() => {
+      if (jointId === 'head') return 0;
+      if (jointId === 'collar') return 1;
+      if (jointId === 'navel') return 2;
+      if (jointId.endsWith('_hip')) return 3;
+      if (jointId.endsWith('_knee')) return 4;
+      if (jointId.endsWith('_ankle')) return 5;
+      if (jointId.endsWith('_toe')) return 6;
+      return null;
+    })();
+
+    const armsIndex = (() => {
+      if (jointId.endsWith('_shoulder')) return 0;
+      if (jointId.endsWith('_elbow')) return 1;
+      if (jointId.endsWith('_wrist')) return 2;
+      if (jointId.endsWith('_fingertip')) return 3;
+      return null;
+    })();
+
+    setRigFocus((prev) => {
+      if (bodyIndex !== null) {
+        return {
+          ...prev,
+          track: 'body',
+          index: bodyIndex,
+          side: side ?? prev.side,
+        };
+      }
+      if (armsIndex !== null && side) {
+        return {
+          ...prev,
+          track: 'arms',
+          index: armsIndex,
+          side,
+        };
+      }
+      return prev;
+    });
+  }, []);
+
+  const getCanvasCenterClient = useCallback((): { x: number; y: number } => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const y = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+    return { x, y };
+  }, []);
+
+  const ensureFloatingWidgetOpen = useCallback((kind: WidgetKind) => {
+    let found = false;
+    setFloatingWidgets((prev) => {
+      const idx = prev.findIndex((w) => w.kind === kind);
+      if (idx < 0) return prev;
+      found = true;
+      const w = prev[idx]!;
+      const next = prev.slice();
+      next.splice(idx, 1);
+      next.push({ ...w, minimized: false });
+      return next;
+    });
+
+    if (!found) {
+      const c = getCanvasCenterClient();
+      spawnFloatingWidget(kind, c.x, c.y);
+    }
+  }, [getCanvasCenterClient, spawnFloatingWidget]);
+
+  const applyRigFocus = useCallback((focus: RigFocus) => {
+    const live = stateLiveRef.current;
+    const jointId = focusJointId(focus);
+    if (!(jointId in live.joints)) return;
+
+    setSelectedJointId(jointId);
+    setMaskJointId(jointId);
+    setSelectedConnectionKey(focusBoneKeyForJointId(jointId, live.joints));
+
+    if (focus.stage === 'joint') {
+      if (!live.showJoints) {
+        setState((prev) => (prev.showJoints ? prev : { ...prev, showJoints: true }));
+      }
+      return;
+    }
+
+    if (focus.stage === 'bone') {
+      ensureFloatingWidgetOpen('bone_inspector');
+      return;
+    }
+
+    ensureFloatingWidgetOpen('joint_masks');
+  }, [ensureFloatingWidgetOpen, focusBoneKeyForJointId, focusJointId, setState]);
+
+  useEffect(() => {
+    applyRigFocus(rigFocus);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!widgetDragging) return;
@@ -457,6 +792,42 @@ return makeDefaultState();
     },
     [],
   );
+
+  const applyFluidHandshake = useCallback((prev: SkeletonState, next: SkeletonState): SkeletonState => {
+    const settingsChanged =
+      prev.controlMode !== next.controlMode ||
+      prev.rigidity !== next.rigidity ||
+      prev.physicsMode !== next.physicsMode ||
+      Boolean(prev.stretchEnabled) !== Boolean(next.stretchEnabled) ||
+      Boolean(prev.bendEnabled) !== Boolean(next.bendEnabled) ||
+      Boolean(prev.hardStop) !== Boolean(next.hardStop) ||
+      (prev.physicsRigidity ?? 0) !== (next.physicsRigidity ?? 0);
+
+    if (!settingsChanged) return next;
+
+    // Freeze the current visible pose as the new baseline so the next movement uses the new
+    // settings without snapping the rig immediately.
+    const currentPose = capturePoseSnapshot(prev.joints, 'current');
+    return { ...next, joints: applyPoseSnapshotToJoints(next.joints, currentPose) };
+  }, []);
+
+  const setStateNoHistory = useCallback((update: (prev: SkeletonState) => SkeletonState) => {
+    setState((prev) => update(prev));
+  }, []);
+
+  const beginHistoryAction = useCallback(
+    (actionId: string) => {
+      historyCtrlRef.current.beginAction(actionId, state);
+    },
+    [state],
+  );
+
+  const commitHistoryAction = useCallback(() => {
+    setState((prev) => {
+      const changed = historyCtrlRef.current.commitAction(prev);
+      return changed ? { ...prev } : prev;
+    });
+  }, []);
 
   const downloadStateJson = useCallback(() => {
     const json = serializeEngineState(state, { pretty: true });
@@ -697,6 +1068,39 @@ return makeDefaultState();
     addConsoleLog('info', 'Redo');
   }, [addConsoleLog]);
 
+  const jumpToAdjacentKeyframe = useCallback(
+    (direction: -1 | 1) => {
+      if (!state.timeline.enabled) return;
+      const frameCount = Math.max(1, Math.floor(state.timeline.clip.frameCount));
+      const keyframes = Array.isArray(state.timeline.clip.keyframes) ? state.timeline.clip.keyframes : [];
+      if (keyframes.length === 0) return;
+
+      const keys = keyframes
+        .map((k) => k.frame)
+        .filter((f) => Number.isFinite(f))
+        .map((f) => clamp(Math.floor(f), 0, frameCount - 1))
+        .sort((a, b) => a - b);
+
+      if (keys.length === 0) return;
+
+      setTimelinePlaying(false);
+      const current = clamp(timelineFrameRef.current, 0, frameCount - 1);
+
+      let next = current;
+      if (direction < 0) {
+        const prevKeys = keys.filter((f) => f < current);
+        next = prevKeys.length ? prevKeys[prevKeys.length - 1] : keys[0]!;
+      } else {
+        const nextKeys = keys.filter((f) => f > current);
+        next = nextKeys.length ? nextKeys[0]! : keys[keys.length - 1]!;
+      }
+
+      timelineFrameRef.current = next;
+      setTimelineFrame(next);
+    },
+    [state.timeline.enabled, state.timeline.clip.frameCount, state.timeline.clip.keyframes],
+  );
+
   useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
@@ -732,14 +1136,61 @@ return makeDefaultState();
       }
 
       // Non-modifier shortcuts.
+      if (key === 'tab') {
+        e.preventDefault();
+        const backwards = e.shiftKey;
+        const next: RigFocus = (() => {
+          if (!backwards) {
+            if (rigFocus.track === 'body') {
+              if (rigFocus.index < 6) return { ...rigFocus, index: rigFocus.index + 1 };
+              return { ...rigFocus, track: 'arms', index: 0 };
+            }
+            if (rigFocus.index < 3) return { ...rigFocus, index: rigFocus.index + 1 };
+            return { ...rigFocus, track: 'body', index: 0 };
+          }
+
+          // backwards
+          if (rigFocus.track === 'body') {
+            if (rigFocus.index > 0) return { ...rigFocus, index: rigFocus.index - 1 };
+            return { ...rigFocus, track: 'arms', index: 3 };
+          }
+          if (rigFocus.index > 0) return { ...rigFocus, index: rigFocus.index - 1 };
+          return { ...rigFocus, track: 'body', index: 6 };
+        })();
+        setRigFocus(next);
+        applyRigFocus(next);
+        return;
+      }
+
+      if (key === '1') {
+        e.preventDefault();
+        const next: RigFocus = { ...rigFocus, side: rigFocus.side === 'front' ? 'back' : 'front' };
+        setRigFocus(next);
+        applyRigFocus(next);
+        return;
+      }
+
+      if (key === '0' || key === '2' || key === '3') {
+        e.preventDefault();
+        const stage: RigStage = key === '0' ? 'joint' : key === '2' ? 'bone' : 'mask';
+        const next: RigFocus = { ...rigFocus, stage };
+        setRigFocus(next);
+        applyRigFocus(next);
+        return;
+      }
+
       if (key === 'b') {
         e.preventDefault();
-        setStateWithHistory('toggle_bend_shortcut', (prev) => ({ ...prev, bendEnabled: !prev.bendEnabled }));
+        setStateWithHistory('toggle_bend_shortcut', (prev) =>
+          applyFluidHandshake(prev, { ...prev, bendEnabled: !prev.bendEnabled }),
+        );
         return;
       }
       if (key === 's') {
         e.preventDefault();
-        setStateWithHistory('toggle_stretch_shortcut', (prev) => ({ ...prev, stretchEnabled: !prev.stretchEnabled }));
+        setStateWithHistory('toggle_stretch_shortcut', (prev) =>
+          applyFluidHandshake(prev, { ...prev, stretchEnabled: !prev.stretchEnabled }),
+        );
         return;
       }
       if (key === 'm') {
@@ -765,6 +1216,23 @@ return makeDefaultState();
         }));
         return;
       }
+      if (key === 'p') {
+        e.preventDefault();
+        setPoseTracingEnabled((prev) => !prev);
+        return;
+      }
+      if (key === '[') {
+        if (!state.timeline.enabled) return;
+        e.preventDefault();
+        jumpToAdjacentKeyframe(-1);
+        return;
+      }
+      if (key === ']') {
+        if (!state.timeline.enabled) return;
+        e.preventDefault();
+        jumpToAdjacentKeyframe(1);
+        return;
+      }
       if (e.key === ' ') {
         // Space toggles play/pause when timeline is enabled.
         if (!state.timeline.enabled) return;
@@ -780,6 +1248,10 @@ return makeDefaultState();
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         if (!state.timeline.enabled) return;
         e.preventDefault();
+        if (poseTracingEnabled && e.shiftKey) {
+          jumpToAdjacentKeyframe(e.key === 'ArrowLeft' ? -1 : 1);
+          return;
+        }
         setTimelinePlaying(false);
         const delta = e.key === 'ArrowLeft' ? -1 : 1;
         const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
@@ -792,10 +1264,16 @@ return makeDefaultState();
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    applyRigFocus,
+    applyFluidHandshake,
+    jumpToAdjacentKeyframe,
+    poseTracingEnabled,
     redo,
+    rigFocus,
     state.timeline.clip.frameCount,
     state.timeline.enabled,
     setStateWithHistory,
+    setRigFocus,
     timelineFrame,
     timelinePlaying,
     undo,
@@ -972,6 +1450,8 @@ return makeDefaultState();
         last = now;
 
         const drag = dragTargetRef.current;
+        const isDirectManipulation = Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current;
+        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
         const physicsActive = shouldRunPosePhysics(prev) && (Boolean(drag) || prev.activePins.length > 0);
         
         // Exclude navel and collar from physics when they're being dragged to prevent tension/jitter
@@ -979,6 +1459,21 @@ return makeDefaultState();
         const collarIsDragged = drag?.id === 'collar';
 
         if (physicsActive && !navelIsDragged && !collarIsDragged) {
+          const handshakeKey = [
+            prev.controlMode,
+            prev.rigidity,
+            prev.physicsMode,
+            prev.stretchEnabled ? 'S1' : 'S0',
+            prev.bendEnabled ? 'B1' : 'B0',
+            prev.hardStop ? 'H1' : 'H0',
+            String(Math.round((prev.physicsRigidity ?? 0) * 100)),
+          ].join('|');
+          if (physicsHandshakeRef.current.key !== handshakeKey) {
+            physicsHandshakeRef.current.key = handshakeKey;
+            physicsHandshakeRef.current.blend = 0;
+            hingeSignsRef.current = {};
+          }
+
           const drag = dragTargetRef.current;
           const pinTargets = pinTargetsRef.current;
           const activePinTargets: Record<string, Point> = {};
@@ -987,26 +1482,61 @@ return makeDefaultState();
             if (t) activePinTargets[id] = t;
           }
 
+          const rubberbandAnchor = rubberbandAnchorPinRef.current;
+          const activePins =
+            rubberbandAnchor && rubberbandAnchor.id in prev.joints
+              ? Array.from(new Set([...prev.activePins, rubberbandAnchor.id]))
+              : prev.activePins;
+          if (rubberbandAnchor && rubberbandAnchor.id in prev.joints) {
+            activePinTargets[rubberbandAnchor.id] = rubberbandAnchor.target;
+          }
+
           const result = stepPosePhysics({
             joints: prev.joints,
-            activePins: prev.activePins,
+            activePins,
             pinTargets: activePinTargets,
             drag: drag && drag.id in prev.joints ? drag : null,
+            connectionOverrides: prev.connectionOverrides,
             options: {
-              dt,
-              iterations: 16,
-              damping: 0.12,
+              dt: isRigidDragMode ? Math.min(dt, 1 / 60) : dt,
+              iterations: isRigidDragMode ? 28 : 16,
+              damping: isRigidDragMode ? 0.18 : 0.12,
               wireCompliance: 0.0015,
               rigidity: prev.rigidity,
               hardStop: prev.hardStop,
-              autoBend: prev.bendEnabled,
+              // Auto-bend is great for settle/idle, but it can fight cursor-locked FK drags and create jitter.
+              autoBend: prev.bendEnabled && !(isRigidDragMode && isDirectManipulation),
               hingeSigns: hingeSignsRef.current,
               physicsMode: prev.physicsMode,
               stretchEnabled: prev.stretchEnabled,
             },
           });
           hingeSignsRef.current = result.hingeSigns;
-          return { ...prev, joints: result.joints };
+
+          // Blend physics results in over a short ramp when settings change, so toggling
+          // stretch/bend/rigidity doesn't hard-pop the current pose.
+          const transitionSec = prev.rigidity === 'cardboard' ? 0.08 : 0.14;
+          if (isDirectManipulation || drag) {
+            physicsHandshakeRef.current.blend = 1;
+          } else {
+            const inc = transitionSec > 1e-6 ? dt / transitionSec : 1;
+            physicsHandshakeRef.current.blend = clamp(physicsHandshakeRef.current.blend + inc, 0, 1);
+          }
+          const t = clamp(physicsHandshakeRef.current.blend, 0, 1);
+          if (t >= 0.999) return { ...prev, joints: result.joints };
+
+          const blended: Record<string, Joint> = { ...prev.joints };
+          for (const id of Object.keys(result.joints)) {
+            const before = prev.joints[id] ?? result.joints[id]!;
+            const after = result.joints[id]!;
+            const off = {
+              x: lerp(before.previewOffset.x, after.previewOffset.x, t),
+              y: lerp(before.previewOffset.y, after.previewOffset.y, t),
+            };
+            blended[id] = { ...after, previewOffset: off, targetOffset: off, currentOffset: off };
+          }
+
+          return { ...prev, joints: blended };
         }
 
         const nextJoints = { ...prev.joints };
@@ -1014,8 +1544,6 @@ return makeDefaultState();
 
         // While the user is actively dragging (joint or mask), the rig should
         // track the cursor exactly (no smoothing/lead lag).
-        const isDirectManipulation = Boolean(draggingIdLiveRef.current) || maskDraggingLiveRef.current;
-
         // Convert snappiness into a stable per-frame alpha.
         // - When snappiness=1, snaps immediately.
         // - When snappiness is small, follows smoothly; dt keeps it consistent across FPS.
@@ -1061,6 +1589,15 @@ return makeDefaultState();
     frameId = requestAnimationFrame(update);
     return () => cancelAnimationFrame(frameId);
   }, []);
+
+  const pickRubberbandAnchorId = useCallback((dragId: string): string | null => {
+    if (dragId === 'head') return 'neck_base';
+    if (dragId === 'l_wrist' || dragId === 'l_fingertip') return 'l_shoulder';
+    if (dragId === 'r_wrist' || dragId === 'r_fingertip') return 'r_shoulder';
+    if (dragId === 'l_ankle') return 'l_hip';
+    if (dragId === 'r_ankle') return 'r_hip';
+    return state.joints[dragId]?.parent ?? null;
+  }, [state.joints]);
 
   useEffect(() => {
     if (!state.timeline.enabled) return;
@@ -1131,11 +1668,71 @@ return makeDefaultState();
     e.stopPropagation();
     setTimelinePlaying(false);
     setSelectedJointId(id);
+    setMaskJointId(id);
+    setSelectedConnectionKey(focusBoneKeyForJointId(id, state.joints));
+    syncRigFocusFromJointId(id);
     historyCtrlRef.current.beginAction(`drag:${id}`, state);
     draggingIdLiveRef.current = id;
+
+    if (autoPoseCaptureEnabled) {
+      if (autoPoseRecordingTimerRef.current) {
+        clearInterval(autoPoseRecordingTimerRef.current);
+        autoPoseRecordingTimerRef.current = null;
+      }
+
+      const fps = clamp(Math.floor(autoPoseCaptureFps), 1, 60);
+      const startMs = performance.now();
+      const startFrame = state.timeline.enabled ? clamp(timelineFrame, 0, Math.max(0, state.timeline.clip.frameCount - 1)) : 0;
+      const basePose = capturePoseSnapshot(state.joints, 'preview');
+      const session: DragRecordingSession = {
+        draggingId: id,
+        startMs,
+        startFrame,
+        fps,
+        basePose,
+        samples: [{ tMs: startMs, pose: basePose }],
+        movedJointIds: new Set<string>(),
+      };
+
+      autoPoseRecordingRef.current = session;
+
+      const movedThreshold = clamp(autoPoseCaptureMovedThreshold, 0, 0.1);
+      const maxFramesPerDrag = clamp(Math.floor(autoPoseCaptureMaxFrames), 2, 600);
+
+      autoPoseRecordingTimerRef.current = setInterval(() => {
+        const active = autoPoseRecordingRef.current;
+        if (!active || active.draggingId !== id) return;
+
+        const now = performance.now();
+        const dt = Math.max(0, (now - active.startMs) / 1000);
+        const offset = Math.round(dt * active.fps);
+        const maxOffset = maxFramesPerDrag - 1;
+
+        const pose = capturePoseSnapshot(stateLiveRef.current.joints, 'preview');
+
+        if (offset >= maxOffset) {
+          // Capture a last sample at the max frame, then stop sampling.
+          const lastTMs = active.startMs + (maxOffset / active.fps) * 1000;
+          active.samples.push({ tMs: lastTMs, pose });
+          const moved = detectMovedJointIds(active.basePose, pose, movedThreshold);
+          moved.forEach((jid) => active.movedJointIds.add(jid));
+
+          if (autoPoseRecordingTimerRef.current) {
+            clearInterval(autoPoseRecordingTimerRef.current);
+            autoPoseRecordingTimerRef.current = null;
+          }
+          return;
+        }
+
+        active.samples.push({ tMs: now, pose });
+        const moved = detectMovedJointIds(active.basePose, pose, movedThreshold);
+        moved.forEach((jid) => active.movedJointIds.add(jid));
+      }, Math.max(16, Math.floor(1000 / fps)));
+    }
     
     // Start long press timer for rubberband mode
     if (state.controlMode === 'Rubberband') {
+      rubberbandAnchorPinRef.current = null;
       dragStartTimeRef.current = Date.now();
       setIsLongPress(false);
       
@@ -1146,6 +1743,13 @@ return makeDefaultState();
       
       const timer = setTimeout(() => {
         setIsLongPress(true);
+        const anchorId = pickRubberbandAnchorId(id);
+        if (anchorId && state.joints[anchorId]) {
+          rubberbandAnchorPinRef.current = {
+            id: anchorId,
+            target: getWorldPosition(anchorId, state.joints, INITIAL_JOINTS, 'preview'),
+          };
+        }
         // Store current pose for rubberband stretching (deep clone)
         setRubberbandPose(JSON.parse(JSON.stringify(state)));
       }, 500); // 500ms for long press
@@ -1170,6 +1774,9 @@ return makeDefaultState();
     e.stopPropagation();
     setTimelinePlaying(false);
     setSelectedJointId(jointId);
+    setMaskJointId(jointId);
+    setSelectedConnectionKey(focusBoneKeyForJointId(jointId, state.joints));
+    syncRigFocusFromJointId(jointId);
     const mask = state.scene.jointMasks[jointId];
     if (!mask?.src || !mask.visible) return;
     historyCtrlRef.current.beginAction(`mask_drag:${jointId}`, state);
@@ -1178,8 +1785,8 @@ return makeDefaultState();
       jointId,
       startClientX: e.clientX,
       startClientY: e.clientY,
-      startOffsetX: mask.offsetX,
-      startOffsetY: mask.offsetY,
+      startOffsetX: mask.offsetX ?? 0,
+      startOffsetY: mask.offsetY ?? 0,
     });
   };
 
@@ -1209,16 +1816,16 @@ return makeDefaultState();
 
         if (maskDragging) {
           maskDraggingLiveRef.current = true;
-          const rect = canvasRef.current.getBoundingClientRect();
-          const screenX = e.clientX - rect.left;
-          const screenY = e.clientY - rect.top;
-          
-          const dx = (e.clientX - maskDragging.startClientX) / state.viewScale;
-          const dy = (e.clientY - maskDragging.startClientY) / state.viewScale;
+          // `offsetX/offsetY` are stored in *screen pixels* so mask movement feels consistent
+          // regardless of the current zoom (`viewScale` is applied to the whole SVG group).
+          const dx = e.clientX - maskDragging.startClientX;
+          const dy = e.clientY - maskDragging.startClientY;
           const jointId = maskDragging.jointId;
           setState((prev) => {
             const mask = prev.scene.jointMasks[jointId];
             if (!mask) return prev;
+            const nextOffsetX = maskDragging.startOffsetX + dx;
+            const nextOffsetY = maskDragging.startOffsetY + dy;
             return {
               ...prev,
               scene: {
@@ -1227,8 +1834,8 @@ return makeDefaultState();
                   ...prev.scene.jointMasks,
                   [jointId]: {
                     ...mask,
-                    offsetX: maskDragging.startOffsetX + dx,
-                    offsetY: maskDragging.startOffsetY + dy,
+                    offsetX: Number.isFinite(nextOffsetX) ? nextOffsetX : 0,
+                    offsetY: Number.isFinite(nextOffsetY) ? nextOffsetY : 0,
                   },
                 },
               },
@@ -1251,15 +1858,13 @@ return makeDefaultState();
 
         const pinWorld = pinWorldRef.current;
         const hasPinnedFeet = Boolean(pinWorld && ('l_ankle' in pinWorld || 'r_ankle' in pinWorld));
-        const isBalanceHandle =
-          draggingId === 'head' ||
-          draggingId === 'cranium' ||
-          draggingId === 'neck_base' ||
-          draggingId === 'sternum' ||
-          draggingId === 'navel' ||
-          draggingId === 'sacrum' ||
-          draggingId === 'l_hip' ||
-          draggingId === 'r_hip';
+	        const isBalanceHandle =
+	          draggingId === 'head' ||
+	          draggingId === 'neck_base' ||
+	          draggingId === 'sternum' ||
+	          draggingId === 'navel' ||
+	          draggingId === 'l_hip' ||
+	          draggingId === 'r_hip';
 
         if (hasPinnedFeet && isBalanceHandle) {
           setState((prev) =>
@@ -1284,6 +1889,26 @@ return makeDefaultState();
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+
+    const finalizedRecording = autoPoseRecordingRef.current;
+    if (autoPoseRecordingTimerRef.current) {
+      clearInterval(autoPoseRecordingTimerRef.current);
+      autoPoseRecordingTimerRef.current = null;
+    }
+    autoPoseRecordingRef.current = null;
+
+    let recordingFrames = finalizedRecording
+      ? buildRecordingFrames(finalizedRecording, { maxFramesPerDrag: autoPoseCaptureMaxFrames })
+      : [];
+    if (finalizedRecording && autoPoseCaptureSimplifyEnabled) {
+      recordingFrames = simplifyRecordingFrames(
+        recordingFrames,
+        finalizedRecording.movedJointIds,
+        clamp(autoPoseCaptureSimplifyEpsilon, 0, 0.1),
+      );
+    }
+    const endFrameToJump =
+      finalizedRecording && recordingFrames.length ? recordingFrames[recordingFrames.length - 1]!.frame : null;
     
     // Handle rubberband snap behavior
     if (state.controlMode === 'Rubberband' && isLongPress && rubberbandPose) {
@@ -1305,6 +1930,7 @@ return makeDefaultState();
     // Reset rubberband state
     setIsLongPress(false);
     setRubberbandPose(null);
+    rubberbandAnchorPinRef.current = null;
     
     if (maskDragging) {
       setMaskDragging(null);
@@ -1323,9 +1949,25 @@ return makeDefaultState();
     }
     setDraggingId(null);
     setState((prev) => {
-      const changed = historyCtrlRef.current.commitAction(prev);
-      return changed ? { ...prev } : prev;
+      let next = prev;
+      if (finalizedRecording && recordingFrames.length && finalizedRecording.movedJointIds.size) {
+        next = bakeRecordingIntoTimeline(
+          next,
+          recordingFrames,
+          finalizedRecording.movedJointIds,
+          finalizedRecording.basePose,
+          autoPoseCaptureOverlayWeight,
+        ).nextState;
+      }
+      const changed = historyCtrlRef.current.commitAction(next);
+      return changed ? { ...next } : next;
     });
+
+    if (endFrameToJump !== null && finalizedRecording?.movedJointIds.size) {
+      setTimelinePlaying(false);
+      timelineFrameRef.current = endFrameToJump;
+      setTimelineFrame(endFrameToJump);
+    }
   };
 
   const setJointAngleDeg = useCallback((jointId: string, angleDeg: number) => {
@@ -1372,6 +2014,59 @@ return makeDefaultState();
     },
     [state.timeline.clip.frameCount],
   );
+
+  const fitTimelineToBackgroundVideo = useCallback(() => {
+    if (state.scene.background.mediaType !== 'video' || !state.scene.background.src) {
+      alert('Set a background video first.');
+      return;
+    }
+    const duration = bgVideoMeta?.duration ?? 0;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      alert('Background video metadata not loaded yet. Try toggling the background visibility or Pose Trace on/off.');
+      return;
+    }
+
+    setTimelinePlaying(false);
+    timelineFrameRef.current = 0;
+    setTimelineFrame(0);
+
+    setStateWithHistory('timeline_fit_to_bg_video', (prev) => {
+      const baseFps = clamp(Math.floor(prev.timeline.clip.fps || 24), 1, 60);
+      const videoStart = clamp(prev.scene.background.videoStart, 0, Math.max(0, duration));
+      const videoRate = clamp(prev.scene.background.videoRate, 0.05, 4);
+      const totalTimelineSeconds = Math.max(0, (duration - videoStart) / Math.max(0.0001, videoRate));
+
+      const maxFrames = 600;
+      let fps = baseFps;
+      let frameCount = Math.ceil(totalTimelineSeconds * fps);
+
+      if (frameCount > maxFrames) {
+        fps = clamp(Math.floor(maxFrames / Math.max(0.001, totalTimelineSeconds)), 1, 60);
+        frameCount = Math.ceil(totalTimelineSeconds * fps);
+      }
+
+      frameCount = clamp(frameCount, 2, maxFrames);
+
+      return {
+        ...prev,
+        timeline: {
+          ...prev.timeline,
+          enabled: true,
+          clip: {
+            ...prev.timeline.clip,
+            fps,
+            frameCount,
+            keyframes: prev.timeline.clip.keyframes.filter((k) => k.frame < frameCount),
+          },
+        },
+      };
+    });
+  }, [
+    bgVideoMeta?.duration,
+    setStateWithHistory,
+    state.scene.background.mediaType,
+    state.scene.background.src,
+  ]);
 
   const setKeyframeHere = useCallback(() => {
     setTimelinePlaying(false);
@@ -1448,7 +2143,11 @@ return makeDefaultState();
     if (selectedPoses.length < 2) return;
 
     setStateWithHistory('interpolate_selected_poses', (prev) => {
-      const newFrameCount = Math.max(prev.timeline.clip.frameCount || 60, (selectedPoses.length - 1) * 10 + 1);
+      const spacing = 10;
+      const baseFrameCount = clamp(Math.floor(prev.timeline.clip.frameCount || 120), 2, 600);
+      const startFrame = prev.timeline.enabled ? clamp(timelineFrame, 0, baseFrameCount - 1) : 0;
+      const endFrame = clamp(startFrame + (selectedPoses.length - 1) * spacing, 0, 599);
+      const nextFrameCount = clamp(Math.max(baseFrameCount, endFrame + 1), 2, 600);
       
       if (!prev.timeline.enabled) {
         return {
@@ -1458,9 +2157,9 @@ return makeDefaultState();
             enabled: true,
             clip: {
               ...prev.timeline.clip,
-              frameCount: newFrameCount,
+              frameCount: nextFrameCount,
               keyframes: selectedPoses.map((pose, index) => ({
-                frame: index * 10, // Space poses 10 frames apart
+                frame: index * spacing,
                 pose: capturePoseSnapshot(pose.joints, 'preview'),
               })),
             },
@@ -1468,34 +2167,32 @@ return makeDefaultState();
         };
       }
 
-      const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
-      const totalFrames = Math.max(frameCount, (selectedPoses.length - 1) * 10 + 1);
-      const frameStep = totalFrames / (selectedPoses.length - 1);
-      
-      const keyframes = selectedPoses.map((pose, index) => {
-        const frame = Math.round(index * frameStep);
-        return {
-          frame: clamp(frame, 0, totalFrames),
-          pose: capturePoseSnapshot(pose.joints, 'preview'),
-        };
-      });
+      const newKeyByFrame = new Map<number, { frame: number; pose: ReturnType<typeof capturePoseSnapshot> }>();
+      for (let i = 0; i < selectedPoses.length; i += 1) {
+        const frame = clamp(startFrame + i * spacing, 0, nextFrameCount - 1);
+        newKeyByFrame.set(frame, { frame, pose: capturePoseSnapshot(selectedPoses[i]!.joints, 'preview') });
+      }
+      const newFrames = new Set(newKeyByFrame.keys());
+      const mergedKeyframes = (prev.timeline.clip.keyframes ?? [])
+        .filter((k) => !newFrames.has(k.frame))
+        .concat(Array.from(newKeyByFrame.values()))
+        .sort((a, b) => a.frame - b.frame);
 
       return {
         ...prev,
         timeline: {
           ...prev.timeline,
-          frameCount: totalFrames + 1,
           clip: {
             ...prev.timeline.clip,
-            frameCount: totalFrames + 1,
-            keyframes: keyframes.sort((a, b) => a.frame - b.frame),
+            frameCount: nextFrameCount,
+            keyframes: mergedKeyframes,
           },
         },
       };
     });
 
     setSelectedPoseIndices([]);
-  }, [selectedPoseIndices, poseSnapshots, setStateWithHistory]);
+  }, [selectedPoseIndices, poseSnapshots, setStateWithHistory, timelineFrame]);
 
   const togglePoseSelection = useCallback((index: number) => {
     setSelectedPoseIndices(prev => {
@@ -1582,6 +2279,8 @@ return makeDefaultState();
     let strokeWidth = 4;
     let opacity = 0.9;
     let dashArray = "";
+    const connKey = canonicalConnKey(conn.from, conn.to);
+    const isSelectedConn = selectedConnectionKey === connKey;
 
     if (conn.type === 'soft_limit') {
       strokeWidth = 2;
@@ -1591,6 +2290,13 @@ return makeDefaultState();
       strokeWidth = 1;
       opacity = 0.3;
       strokeColor = useGridPalette ? "rgba(43, 0, 87, 0.55)" : "#666";
+    }
+
+    if (isSelectedConn) {
+      strokeColor = '#ff8800';
+      opacity = 1.0;
+      strokeWidth = Math.max(strokeWidth, 4) + 2;
+      dashArray = '';
     }
 
     const renderShape = () => {
@@ -2063,13 +2769,15 @@ return makeDefaultState();
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {(
-                  [
-                    { kind: 'joint_masks' as const, label: 'Joint Masks' },
-                    { kind: 'console' as const, label: 'Console' },
-                    { kind: 'camera' as const, label: 'Camera' },
-                  { kind: 'procgen' as const, label: 'Procedural' },
-                  ] as const
-                ).map(({ kind, label }) => (
+	                  [
+	                    { kind: 'joint_masks' as const, label: 'Joint Masks' },
+                      { kind: 'bone_inspector' as const, label: 'Bone Inspector' },
+	                    { kind: 'console' as const, label: 'Console' },
+	                    { kind: 'camera' as const, label: 'Camera' },
+	                  { kind: 'procgen' as const, label: 'Procedural' },
+	                    { kind: 'atomic_units' as const, label: 'Atomic Units' },
+	                  ] as const
+	                ).map(({ kind, label }) => (
                   <button
                     key={kind}
                     type="button"
@@ -2096,10 +2804,10 @@ return makeDefaultState();
               </p>
             </section>
 
-            <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
-                <Settings2 size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rigidity & Control</h2>
+	            <section>
+	              <div className="flex items-center gap-2 mb-4 text-[#666]">
+	                <Settings2 size={14} />
+	                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rigidity & Control</h2>
                 <HelpTip
                   text={
                     <>
@@ -2117,12 +2825,54 @@ return makeDefaultState();
                     </>
                   }
                 />
-              </div>
-              <div className="mb-4">
+	              </div>
+	              <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
+	                <div className="flex items-center justify-between mb-2">
+	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Physics Dial</div>
+	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+	                    {getPhysicsBlendMode(state).toUpperCase()} • {Math.round((state.physicsRigidity ?? 0) * 100)}%
+	                  </div>
+	                </div>
+	                <input
+	                  type="range"
+	                  min="0"
+	                  max="1"
+	                  step="0.01"
+	                  value={state.physicsRigidity ?? 0}
+	                  onChange={(e) => {
+	                    const v = parseFloat(e.target.value);
+	                    setStateWithHistory('physics_dial', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
+	                  }}
+	                  className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+	                />
+	                <div className="mt-3 grid grid-cols-2 gap-2">
+	                  <button
+	                    type="button"
+	                    onClick={() =>
+                        setStateWithHistory('physics_dial_rigid', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, 0)))
+                      }
+	                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+	                  >
+	                    Snap Rigid
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={() => setStateWithHistory('rigid_start_point', (prev) => createRigidStartPoint(prev))}
+	                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+	                  >
+	                    Rigid Start
+	                  </button>
+	                </div>
+	              </div>
+	              <div className="mb-4">
                 <select
                   value={state.rigidity}
-                  onChange={(e) => setStateWithHistory('rigidity', prev => ({ ...prev, rigidity: e.target.value as any }))}
-                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
+	                  onChange={(e) =>
+                      setStateWithHistory('rigidity', (prev) =>
+                        applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
+                      )
+                    }
+	                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
                 >
                   <option value="cardboard">Cardboard (Rigid)</option>
                   <option value="realistic">Realistic (Hybrid)</option>
@@ -2135,7 +2885,7 @@ return makeDefaultState();
                     key={mode}
                     onClick={() =>
                       setStateWithHistory('set_control_mode', (prev) =>
-                        prev.controlMode === mode ? prev : { ...prev, controlMode: mode },
+                        prev.controlMode === mode ? prev : applyFluidHandshake(prev, { ...prev, controlMode: mode }),
                       )
                     }
                     className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'}`}
@@ -2159,20 +2909,18 @@ return makeDefaultState();
                   label="Auto-Bend (B)" 
                   active={state.bendEnabled} 
                   onClick={() =>
-                    setStateWithHistory('toggle_bend', (prev) => ({
-                      ...prev,
-                      bendEnabled: !prev.bendEnabled,
-                    }))
+                    setStateWithHistory('toggle_bend', (prev) =>
+                      applyFluidHandshake(prev, { ...prev, bendEnabled: !prev.bendEnabled }),
+                    )
                   }
                 />
                         <Toggle 
                           label="Elasticity (S)" 
                           active={state.stretchEnabled} 
                           onClick={() =>
-                            setStateWithHistory('toggle_stretch', (prev) => ({
-                              ...prev,
-                              stretchEnabled: !prev.stretchEnabled,
-                            }))
+                            setStateWithHistory('toggle_stretch', (prev) =>
+                              applyFluidHandshake(prev, { ...prev, stretchEnabled: !prev.stretchEnabled }),
+                            )
                           }
                         />
                   <Toggle
@@ -2189,10 +2937,9 @@ return makeDefaultState();
                           label="Hard Stop" 
                           active={state.hardStop} 
                           onClick={() =>
-                    setStateWithHistory('toggle_hard_stop', (prev) => ({
-                      ...prev,
-                      hardStop: !prev.hardStop,
-                    }))
+                    setStateWithHistory('toggle_hard_stop', (prev) =>
+                      applyFluidHandshake(prev, { ...prev, hardStop: !prev.hardStop }),
+                    )
                   }
                 />
               </div>
@@ -2465,6 +3212,123 @@ return makeDefaultState();
                 >
                   Capture Pose
                 </button>
+
+                <div className="p-2 bg-white/5 rounded-lg space-y-2">
+                  <label className="flex items-center justify-between gap-3 text-[10px] select-none">
+                    <span className="font-bold uppercase tracking-widest text-[#666]">Auto Pose Capture</span>
+                    <input
+                      type="checkbox"
+                      checked={autoPoseCaptureEnabled}
+                      onChange={(e) => setAutoPoseCaptureEnabled(e.target.checked)}
+                      className="rounded accent-white"
+                    />
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Record FPS</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={autoPoseCaptureFps}
+                        disabled={!autoPoseCaptureEnabled}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value || '24', 10);
+                          if (!Number.isFinite(v)) return;
+                          setAutoPoseCaptureFps(clamp(v, 1, 60));
+                        }}
+                        className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Max Frames</div>
+                      <input
+                        type="number"
+                        min={2}
+                        max={600}
+                        value={autoPoseCaptureMaxFrames}
+                        disabled={!autoPoseCaptureEnabled}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value || '120', 10);
+                          if (!Number.isFinite(v)) return;
+                          setAutoPoseCaptureMaxFrames(clamp(v, 2, 600));
+                        }}
+                        className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">
+                      <span>Overlay Weight</span>
+                      <span className="font-mono text-[10px] text-[#888] normal-case">{autoPoseCaptureOverlayWeight.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={autoPoseCaptureOverlayWeight}
+                      disabled={!autoPoseCaptureEnabled}
+                      onChange={(e) => setAutoPoseCaptureOverlayWeight(clamp(parseFloat(e.target.value), 0, 1))}
+                      className="w-full accent-white disabled:opacity-50"
+                    />
+                    <div className="text-[#666] text-[9px] mt-1">0 = keep base • 1 = overwrite moved joints</div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Moved Thresh</div>
+                      <input
+                        type="number"
+                        step={0.001}
+                        min={0}
+                        max={0.1}
+                        value={autoPoseCaptureMovedThreshold}
+                        disabled={!autoPoseCaptureEnabled}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value || '0');
+                          if (!Number.isFinite(v)) return;
+                          setAutoPoseCaptureMovedThreshold(clamp(v, 0, 0.1));
+                        }}
+                        className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
+                        <input
+                          type="checkbox"
+                          checked={autoPoseCaptureSimplifyEnabled}
+                          disabled={!autoPoseCaptureEnabled}
+                          onChange={(e) => setAutoPoseCaptureSimplifyEnabled(e.target.checked)}
+                          className="accent-white"
+                        />
+                        Simplify
+                      </label>
+                    </div>
+                  </div>
+
+                  {autoPoseCaptureSimplifyEnabled && (
+                    <div>
+                      <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Simplify Eps</div>
+                      <input
+                        type="number"
+                        step={0.001}
+                        min={0}
+                        max={0.1}
+                        value={autoPoseCaptureSimplifyEpsilon}
+                        disabled={!autoPoseCaptureEnabled}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value || '0');
+                          if (!Number.isFinite(v)) return;
+                          setAutoPoseCaptureSimplifyEpsilon(clamp(v, 0, 0.1));
+                        }}
+                        className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+                      />
+                    </div>
+                  )}
+                </div>
                 
                 {/* Interpolation button */}
                 {selectedPoseIndices.length >= 2 && (
@@ -2511,7 +3375,7 @@ return makeDefaultState();
                         </span>
                       </button>
                     );
-                  })}
+			          })}
                 </div>
                 
                 {poseSnapshots.length > 0 && (
@@ -4242,7 +5106,7 @@ return makeDefaultState();
                       </button>
                     </div>
                   );
-                })()}
+	          })()}
               </div>
             </section>
 
@@ -4437,11 +5301,19 @@ return makeDefaultState();
             if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
           }}
           onDrop={(e) => {
-            const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
-            if (payload !== 'joint_masks' && payload !== 'console' && payload !== 'camera' && payload !== 'procgen') return;
-            e.preventDefault();
-            spawnFloatingWidget(payload, e.clientX, e.clientY);
-          }}
+	            const payload = e.dataTransfer.getData(DND_WIDGET_MIME) as WidgetKind;
+	            if (
+	              payload !== 'joint_masks' &&
+	              payload !== 'console' &&
+	              payload !== 'camera' &&
+	              payload !== 'procgen' &&
+	              payload !== 'atomic_units'
+	            ) {
+	              return;
+	            }
+	            e.preventDefault();
+	            spawnFloatingWidget(payload, e.clientX, e.clientY);
+	          }}
         >
           <svg
             ref={svgRef}
@@ -4483,25 +5355,54 @@ return makeDefaultState();
                           style={{ pointerEvents: 'none' }}
                         >
                           <div style={{ width: '100%', height: '100%' }}>
-                            <video
-                              src={state.scene.background.src}
-                              muted
-                              loop
-                              autoPlay
-                              playsInline
-                              style={{
-                                width: '100%',
-                                height: '100%',
-                                objectFit:
+                            {poseTracingEnabled ? (
+                              <SyncedReferenceVideo
+                                ref={bgVideoRef}
+                                src={state.scene.background.src}
+                                desiredTime={bgVideoDesiredTime}
+                                playing={Boolean(state.timeline.enabled && timelinePlaying)}
+                                playbackRate={state.scene.background.videoRate}
+                                objectFit={
                                   state.scene.background.fitMode === 'cover'
                                     ? 'cover'
                                     : state.scene.background.fitMode === 'fill'
                                       ? 'fill'
                                       : state.scene.background.fitMode === 'none'
                                         ? 'none'
-                                        : 'contain',
-                              }}
-                            />
+                                        : 'contain'
+                                }
+                                onMeta={setBgVideoMeta}
+                              />
+                            ) : (
+                              <video
+                                src={state.scene.background.src}
+                                muted
+                                loop
+                                autoPlay
+                                playsInline
+                                preload="auto"
+                                onLoadedMetadata={(e) => {
+                                  const v = e.currentTarget;
+                                  setBgVideoMeta({
+                                    duration: Number.isFinite(v.duration) ? v.duration : 0,
+                                    width: v.videoWidth || 0,
+                                    height: v.videoHeight || 0,
+                                  });
+                                }}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  objectFit:
+                                    state.scene.background.fitMode === 'cover'
+                                      ? 'cover'
+                                      : state.scene.background.fitMode === 'fill'
+                                        ? 'fill'
+                                        : state.scene.background.fitMode === 'none'
+                                          ? 'none'
+                                          : 'contain',
+                                }}
+                              />
+                            )}
                           </div>
                         </foreignObject>
                       )}
@@ -4628,25 +5529,54 @@ return makeDefaultState();
                                 style={{ pointerEvents: 'none' }}
                               >
                                 <div style={{ width: '100%', height: '100%' }}>
-                                  <video
-                                    src={state.scene.foreground.src}
-                                    muted
-                                    loop
-                                    autoPlay
-                                    playsInline
-                                    style={{
-                                      width: '100%',
-                                      height: '100%',
-                                      objectFit:
+                                  {poseTracingEnabled ? (
+                                    <SyncedReferenceVideo
+                                      ref={fgVideoRef}
+                                      src={state.scene.foreground.src}
+                                      desiredTime={fgVideoDesiredTime}
+                                      playing={Boolean(state.timeline.enabled && timelinePlaying)}
+                                      playbackRate={state.scene.foreground.videoRate}
+                                      objectFit={
                                         state.scene.foreground.fitMode === 'cover'
                                           ? 'cover'
                                           : state.scene.foreground.fitMode === 'fill'
                                             ? 'fill'
                                             : state.scene.foreground.fitMode === 'none'
                                               ? 'none'
-                                              : 'contain',
-                                    }}
-                                  />
+                                              : 'contain'
+                                      }
+                                      onMeta={setFgVideoMeta}
+                                    />
+                                  ) : (
+                                    <video
+                                      src={state.scene.foreground.src}
+                                      muted
+                                      loop
+                                      autoPlay
+                                      playsInline
+                                      preload="auto"
+                                      onLoadedMetadata={(e) => {
+                                        const v = e.currentTarget;
+                                        setFgVideoMeta({
+                                          duration: Number.isFinite(v.duration) ? v.duration : 0,
+                                          width: v.videoWidth || 0,
+                                          height: v.videoHeight || 0,
+                                        });
+                                      }}
+                                      style={{
+                                        width: '100%',
+                                        height: '100%',
+                                        objectFit:
+                                          state.scene.foreground.fitMode === 'cover'
+                                            ? 'cover'
+                                            : state.scene.foreground.fitMode === 'fill'
+                                              ? 'fill'
+                                              : state.scene.foreground.fitMode === 'none'
+                                                ? 'none'
+                                                : 'contain',
+                                      }}
+                                    />
+                                  )}
                                 </div>
                               </foreignObject>
                             )}
@@ -4943,7 +5873,18 @@ return makeDefaultState();
 
           {/* Floating Widgets */}
           {floatingWidgets.map((widget) => {
-            const title = widget.kind === 'console' ? 'Console' : widget.kind === 'camera' ? 'Camera' : widget.kind === 'procgen' ? 'Procedural Generation' : 'Joint Masks';
+            const title =
+              widget.kind === 'console'
+                ? 'Console'
+                : widget.kind === 'bone_inspector'
+                  ? 'Bone Inspector'
+                : widget.kind === 'camera'
+                  ? 'Camera'
+                  : widget.kind === 'procgen'
+                    ? 'Procedural Generation'
+                    : widget.kind === 'atomic_units'
+                      ? 'Atomic Units'
+                      : 'Joint Masks';
             const headerH = 34;
             return (
               <div
@@ -4972,10 +5913,14 @@ return makeDefaultState();
                     <div className="flex items-center gap-2">
                       {widget.kind === 'console' ? (
                         <Terminal size={14} className="text-[#666]" />
+                      ) : widget.kind === 'bone_inspector' ? (
+                        <Layers size={14} className="text-[#666]" />
                       ) : widget.kind === 'camera' ? (
                         <Maximize2 size={14} className="text-[#666]" />
                       ) : widget.kind === 'procgen' ? (
                         <Sparkles size={14} className="text-[#666]" />
+                      ) : widget.kind === 'atomic_units' ? (
+                        <Grid size={14} className="text-[#666]" />
                       ) : (
                         <Anchor size={14} className="text-[#666]" />
                       )}
@@ -5008,7 +5953,7 @@ return makeDefaultState();
                   </div>
 
           <div className="p-3 overflow-auto" style={{ height: widget.h - headerH }}>
-            {widget.kind === 'console' ? (
+	            {widget.kind === 'console' ? (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -5066,6 +6011,177 @@ return makeDefaultState();
                     <div className="text-[#444]">No logs (filters may be hiding everything).</div>
                   )}
                 </div>
+              </div>
+            ) : widget.kind === 'bone_inspector' ? (
+              <div className="space-y-3">
+                {(() => {
+                  const connKey = selectedConnectionKey;
+                  if (!connKey) {
+                    return <div className="text-[10px] text-[#444]">No bone selected. Use Tab/Shift+Tab, or press 2.</div>;
+                  }
+
+                  const [a, b] = connKey.split(':');
+                  const conn = CONNECTIONS.find((c) => canonicalConnKey(c.from, c.to) === connKey) ?? null;
+                  const override = state.connectionOverrides?.[connKey];
+                  const currentMode = override?.stretchMode ?? conn?.stretchMode ?? 'rigid';
+                  const label = conn?.label || `${a} ↔ ${b}`;
+
+                  const deriveFocusForJoint = (jointId: string): RigFocus | null => {
+                    const isRight = jointId.startsWith('r_');
+                    const isLeft = jointId.startsWith('l_');
+                    const side: RigSide | null = isRight ? 'front' : isLeft ? 'back' : null;
+
+                    const bodyIndex = (() => {
+                      if (jointId === 'head') return 0;
+                      if (jointId === 'collar') return 1;
+                      if (jointId === 'navel') return 2;
+                      if (jointId.endsWith('_hip')) return 3;
+                      if (jointId.endsWith('_knee')) return 4;
+                      if (jointId.endsWith('_ankle')) return 5;
+                      if (jointId.endsWith('_toe')) return 6;
+                      return null;
+                    })();
+
+                    if (bodyIndex !== null) {
+                      return {
+                        ...rigFocus,
+                        stage: 'bone',
+                        track: 'body',
+                        index: bodyIndex,
+                        side: side ?? rigFocus.side,
+                      };
+                    }
+
+                    const armsIndex = (() => {
+                      if (jointId.endsWith('_shoulder')) return 0;
+                      if (jointId.endsWith('_elbow')) return 1;
+                      if (jointId.endsWith('_wrist')) return 2;
+                      if (jointId.endsWith('_fingertip')) return 3;
+                      return null;
+                    })();
+
+                    if (armsIndex !== null && side) {
+                      return {
+                        ...rigFocus,
+                        stage: 'bone',
+                        track: 'arms',
+                        index: armsIndex,
+                        side,
+                      };
+                    }
+
+                    if (jointId === 'navel') {
+                      return { ...rigFocus, stage: 'bone', track: 'body', index: 2 };
+                    }
+
+                    return null;
+                  };
+
+                  const relatedKeys = (() => {
+                    const sidePrefix = rigFocus.side === 'front' ? 'r' : 'l';
+                    if (rigFocus.track === 'body') {
+                      return [
+                        canonicalConnKey('navel', 'sternum'),
+                        canonicalConnKey('sternum', 'collar'),
+                        canonicalConnKey('collar', 'neck_base'),
+                        canonicalConnKey('neck_base', 'head'),
+                        canonicalConnKey('navel', `${sidePrefix}_hip`),
+                        canonicalConnKey(`${sidePrefix}_hip`, `${sidePrefix}_knee`),
+                        canonicalConnKey(`${sidePrefix}_knee`, `${sidePrefix}_ankle`),
+                        canonicalConnKey(`${sidePrefix}_ankle`, `${sidePrefix}_toe`),
+                      ];
+                    }
+
+                    return [
+                      canonicalConnKey('collar', `${sidePrefix}_shoulder`),
+                      canonicalConnKey(`${sidePrefix}_shoulder`, `${sidePrefix}_elbow`),
+                      canonicalConnKey(`${sidePrefix}_elbow`, `${sidePrefix}_wrist`),
+                      canonicalConnKey(`${sidePrefix}_wrist`, `${sidePrefix}_fingertip`),
+                    ];
+                  })().filter((k) => {
+                    const parts = k.split(':');
+                    if (parts.length !== 2) return false;
+                    return parts[0] in state.joints && parts[1] in state.joints;
+                  });
+
+                  return (
+                    <>
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Selected Bone</div>
+                        <div className="text-[11px] text-white font-mono">{label}</div>
+                        <div className="text-[10px] text-[#555] font-mono">{connKey}</div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Stretch Mode</div>
+                        <div className="flex bg-[#222] rounded-md p-0.5">
+                          {(['rigid', 'elastic', 'stretch'] as const).map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => {
+                                setStateWithHistory(`conn_mode:${connKey}`, (prev) => ({
+                                  ...prev,
+                                  connectionOverrides: {
+                                    ...prev.connectionOverrides,
+                                    [connKey]: { ...(prev.connectionOverrides[connKey] ?? {}), stretchMode: m },
+                                  },
+                                }));
+                              }}
+                              className={`px-2 py-1 rounded text-[8px] font-bold uppercase transition-all ${
+                                currentMode === m ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="text-[10px] text-[#444] italic">
+                          Overrides persist in the project state (no global mutation).
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                          Related ({rigFocus.track} • {rigFocus.side})
+                        </div>
+                        <div className="space-y-1">
+                          {relatedKeys.map((k) => {
+                            const [ka, kb] = k.split(':');
+                            const c = CONNECTIONS.find((x) => canonicalConnKey(x.from, x.to) === k) ?? null;
+                            const name = c?.label || `${ka} ↔ ${kb}`;
+                            const active = k === connKey;
+                            return (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => {
+                                  const joints = stateLiveRef.current.joints;
+                                  const child =
+                                    joints[ka]?.parent === kb ? ka : joints[kb]?.parent === ka ? kb : (kb || ka);
+                                  const nextFocus = deriveFocusForJoint(child);
+                                  if (nextFocus) {
+                                    setRigFocus(nextFocus);
+                                    applyRigFocus(nextFocus);
+                                  } else {
+                                    setSelectedJointId(child);
+                                    setMaskJointId(child);
+                                    setSelectedConnectionKey(k);
+                                  }
+                                }}
+                                className={`w-full text-left px-2 py-1 rounded text-[10px] font-mono transition-colors ${
+                                  active ? 'bg-[#ff8800]/20 text-[#ff8800]' : 'bg-white/5 hover:bg-white/10 text-[#ddd]'
+                                }`}
+                              >
+                                {name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             ) : widget.kind === 'camera' ? (
                           <div className="space-y-4">
@@ -5135,7 +6251,7 @@ return makeDefaultState();
                               <span className="text-white/40">Pan:</span> MMB or Space+Drag
                             </div>
                           </div>
-                    ) : widget.kind === 'procgen' ? (
+	                    ) : widget.kind === 'procgen' ? (
                       <div className="space-y-4">
                         <div className="text-[10px] text-[#666]">Procedural Engine</div>
 
@@ -5265,7 +6381,16 @@ return makeDefaultState();
                           </div>
                         </div>
                       </div>
-                    ) : (
+	                    ) : widget.kind === 'atomic_units' ? (
+	                      <AtomicUnitsControl
+	                        state={state}
+	                        setStateNoHistory={setStateNoHistory}
+	                        setStateWithHistory={setStateWithHistory}
+	                        beginHistoryAction={beginHistoryAction}
+	                        commitHistoryAction={commitHistoryAction}
+	                        addConsoleLog={addConsoleLog}
+	                      />
+	                    ) : (
               <div className="space-y-4">
                 <div className="text-[10px] text-[#666]">
                   Bone Dynamics (Rigid / Elastic / Stretch)
@@ -5304,9 +6429,9 @@ return makeDefaultState();
                 </div>
               </div>
             );
-          })}
+	          })}
 
-          {/* HUD Overlay */}
+	          {/* HUD Overlay */}
           <div className="absolute bottom-8 left-8 flex gap-4 pointer-events-none">
             <div className="bg-[#121212]/80 backdrop-blur-md border border-[#222] p-4 rounded-2xl">
               <p className="text-[10px] text-[#666] uppercase font-bold mb-2 tracking-widest">State Vector</p>
@@ -5563,7 +6688,7 @@ return makeDefaultState();
                 )}
               </div>
             );
-          })}
+          })()}
   </main>
 </div>
 );

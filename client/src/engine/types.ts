@@ -1,6 +1,6 @@
+export type PhysicsMode = '2D' | '3D';
 
-
-import React from 'react';
+export type RigidityPreset = 'cardboard' | 'realistic' | 'rubberhose';
 
 export enum PartName {
   Torso = 'torso',
@@ -85,10 +85,12 @@ export type Connection = {
   type: string;
   label?: string;
   shape?: string;
-  stretchMode?: string;
+  stretchMode?: 'rigid' | 'elastic' | 'stretch';
 };
 
 export type MaskMode = 'cutout' | 'rubberhose' | 'roto';
+
+export type BoneStretchMode = 'rigid' | 'elastic' | 'stretch';
 
 type MaskBase = {
   src: string | null;
@@ -100,14 +102,14 @@ type MaskBase = {
   rotation: number;
   anchorX: number;
   anchorY: number;
-  mode: 'cutout',
-  lengthScale: 1,
-  volumePreserve: true,
+  mode: MaskMode;
+  lengthScale: number;
+  volumePreserve: boolean;
   // New transform properties
-  stretchX: 1,
-  stretchY: 1,
-  skewX: 0,
-  skewY: 0,
+  stretchX: number;
+  stretchY: number;
+  skewX: number;
+  skewY: number;
 };
 
 export type CutoutAsset = {
@@ -241,6 +243,7 @@ export type Joint = {
   currentOffset: Point;
   targetOffset: Point;
   previewOffset: Point;
+  rotation?: number;
   isEndEffector?: boolean;
   mirrorId?: string;
 };
@@ -295,13 +298,18 @@ export type SkeletonState = {
   stretchEnabled: boolean;
   leadEnabled: boolean;
   hardStop: boolean;
+  /**
+   * Optional 0..1 macro slider for blending between rigid and fluid presets.
+   * Used by `engine/physics-config.ts`.
+   */
+  physicsRigidity?: number;
   activePins: string[];
   showJoints: boolean;
   jointsOverMasks: boolean;
   viewMode: string;
-  controlMode: string;
-  rigidity: string;
-  physicsMode: string;
+  controlMode: ControlMode;
+  rigidity: RigidityPreset;
+  physicsMode: PhysicsMode;
   snappiness: number;
   viewScale: number;
   viewOffset: Point;
@@ -311,6 +319,11 @@ export type SkeletonState = {
   cutoutSlots: Record<string, CutoutSlot>;
   views: ViewPreset[];
   activeViewId: string;
+  /**
+   * Per-bone overrides keyed by canonical connection key `${min(a,b)}:${max(a,b)}`.
+   * Used for editor controls and physics behavior; avoids mutating module-level CONNECTIONS.
+   */
+  connectionOverrides: Record<string, { stretchMode?: BoneStretchMode }>;
 };
 export type Pose = {
   root: Vector2D;

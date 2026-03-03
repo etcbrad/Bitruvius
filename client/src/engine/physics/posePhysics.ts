@@ -25,6 +25,7 @@ export type PosePhysicsInput = {
   activePins: string[];
   pinTargets: Record<string, Point>;
   drag: { id: string; target: Point } | null;
+  connectionOverrides?: SkeletonState['connectionOverrides'];
   options: {
     iterations?: number;
     dt: number;
@@ -54,8 +55,8 @@ const HINGE_LIMITS_DEG: Record<
   l_knee: { a: 'l_hip', b: 'l_knee', c: 'l_ankle', min: 5, max: 175 },
   r_knee: { a: 'r_hip', b: 'r_knee', c: 'r_ankle', min: 5, max: 175 },
   // Core joints (conservative; can be tuned later)
-  neck_base: { a: 'sternum', b: 'neck_base', c: 'cranium', min: 20, max: 160 },
-  navel: { a: 'sacrum', b: 'navel', c: 'sternum', min: 30, max: 150 },
+  neck_base: { a: 'collar', b: 'neck_base', c: 'head', min: 20, max: 160 },
+  sternum: { a: 'navel', b: 'sternum', c: 'collar', min: 30, max: 150 },
 };
 
 const computeBaseHingeAngle = (a: string, b: string, c: string): number => {
@@ -90,6 +91,7 @@ export const stepPosePhysics = (input: PosePhysicsInput): PosePhysicsOutput => {
 const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => {
   const baseJoints = input.baseJoints ?? INITIAL_JOINTS;
   const joints = input.joints;
+  const connectionOverrides = input.connectionOverrides ?? {};
 
   const dt = clamp(input.options.dt, 1 / 120, 1 / 20);
   const cfg: XpbdConfig = {
@@ -103,7 +105,7 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
     rigidity === 'rubberhose'
       ? 0.02
       : rigidity === 'cardboard'
-        ? 0.0001
+        ? 0
         : Math.max(0, input.options.wireCompliance ?? 0.0015);
   const stretchEnabled = Boolean(input.options.stretchEnabled);
   const boneElasticCompliance =
@@ -133,7 +135,7 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
 
     const key = joint.parent < id ? `${joint.parent}:${id}` : `${id}:${joint.parent}`;
     const conn = connMap.get(key);
-    const stretchMode = conn?.stretchMode ?? 'rigid';
+    const stretchMode = connectionOverrides[key]?.stretchMode ?? conn?.stretchMode ?? 'rigid';
 
     const baseRest = baseLength(id, baseJoints);
     let rest = baseRest;
@@ -256,6 +258,6 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
 
 export const shouldRunPosePhysics = (state: SkeletonState): boolean => {
   const cm = state.controlMode;
-  if (cm === 'IK' || cm === 'Hybrid' || cm === 'JointDrag') return true;
+  if (cm === 'IK' || cm === 'Rubberband' || cm === 'JointDrag') return true;
   return Boolean(state.stretchEnabled) || Boolean(state.bendEnabled);
 };

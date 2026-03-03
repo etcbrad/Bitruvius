@@ -137,6 +137,26 @@ const sanitizeTextOverlays = (raw: unknown, frameCount: number): TextOverlay[] =
   return out;
 };
 
+const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connectionOverrides'] => {
+  const out: SkeletonState['connectionOverrides'] = {};
+  if (!rawValue || typeof rawValue !== 'object') return out;
+  const raw = rawValue as Record<string, unknown>;
+  for (const [key, value] of Object.entries(raw)) {
+    const parts = key.split(':');
+    if (parts.length !== 2) continue;
+    const [a, b] = parts;
+    if (!a || !b) continue;
+    if (!(a in INITIAL_JOINTS) || !(b in INITIAL_JOINTS)) continue;
+    const v = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+    if (!v) continue;
+    const stretchMode = v.stretchMode;
+    if (stretchMode === 'rigid' || stretchMode === 'elastic' || stretchMode === 'stretch') {
+      out[key] = { stretchMode };
+    }
+  }
+  return out;
+};
+
 const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
   if (!raw || typeof raw !== 'object') return base;
   const mask = raw as Partial<HeadMask>;
@@ -163,7 +183,7 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
 };
 
 const VIEW_MODE_ID_SET = new Set<ViewModeId>(viewModes.map((m) => m.id));
-const CONTROL_MODE_SET = new Set<ControlMode>(['FK', 'IK', 'Hybrid', 'JointDrag']);
+const CONTROL_MODE_SET = new Set<ControlMode>(['Cardboard', 'Rubberband', 'IK', 'JointDrag']);
 
 export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
   const raw = rawJoints && typeof rawJoints === 'object' ? (rawJoints as Record<string, Partial<Joint>>) : {};
@@ -176,6 +196,7 @@ export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
       currentOffset: safePoint(saved?.currentOffset, base.currentOffset),
       targetOffset: safePoint(saved?.targetOffset, base.targetOffset),
       previewOffset: safePoint(saved?.previewOffset ?? saved?.targetOffset, base.previewOffset),
+      rotation: isFiniteNumber(saved?.rotation) ? saved.rotation : (base.rotation ?? 0),
     };
   }
   return next;
@@ -220,15 +241,16 @@ export const makeDefaultState = (): SkeletonState => {
   return {
     joints,
     mirroring: true,
-    bendEnabled: false, // Disable bending for pure rigid FK
+    bendEnabled: false, // Default: no auto-bend (rigid)
     stretchEnabled: false, // Ensure stretching is disabled by default
     leadEnabled: true,
     hardStop: true, // Enable hard stops for rigid joint limits
+    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
     activePins: ['navel'],
     showJoints: true,
     jointsOverMasks: false,
     viewMode: '2D',
-    controlMode: 'FK', // Default to FK mode for rigid behavior
+    controlMode: 'Cardboard', // Default to rigid FK-like behavior
     rigidity: 'cardboard', // Most rigid setting by default
     physicsMode: '2D',
     snappiness: 1.0, // Maximum snappiness for crisp rigid movement
@@ -300,6 +322,7 @@ export const makeDefaultState = (): SkeletonState => {
     cutoutSlots: defaultSlots,
     views: defaultViews,
     activeViewId: 'front',
+    connectionOverrides: {},
   };
 };
 
@@ -407,9 +430,12 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
       ? (raw.viewMode as ViewModeId)
       : base.viewMode;
 
+  const rawControlMode = typeof (raw as any).controlMode === 'string' ? ((raw as any).controlMode as string) : null;
+  const normalizedControlMode =
+    rawControlMode === 'FK' ? 'Cardboard' : rawControlMode === 'Hybrid' ? 'IK' : rawControlMode;
   const controlMode =
-    typeof raw.controlMode === 'string' && CONTROL_MODE_SET.has(raw.controlMode as ControlMode)
-      ? (raw.controlMode as ControlMode)
+    typeof normalizedControlMode === 'string' && CONTROL_MODE_SET.has(normalizedControlMode as ControlMode)
+      ? (normalizedControlMode as ControlMode)
       : base.controlMode;
 
   const snappiness = isFiniteNumber(raw.snappiness) ? clamp(raw.snappiness, 0.05, 1.0) : base.snappiness;
@@ -417,6 +443,9 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
   const viewOffset = safePoint(raw.viewOffset, base.viewOffset);
   const rigidity = (raw.rigidity === 'cardboard' || raw.rigidity === 'rubberhose' || raw.rigidity === 'realistic') ? raw.rigidity : base.rigidity;
   const physicsMode = (raw.physicsMode === '2D' || raw.physicsMode === '3D') ? raw.physicsMode : base.physicsMode;
+  const physicsRigidity = isFiniteNumber((raw as any).physicsRigidity)
+    ? clamp((raw as any).physicsRigidity as number, 0, 1)
+    : base.physicsRigidity;
 
   const activePins = Array.isArray(raw.activePins)
     ? Array.from(
@@ -522,6 +551,7 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
     stretchEnabled: typeof raw.stretchEnabled === 'boolean' ? raw.stretchEnabled : base.stretchEnabled,
     leadEnabled: typeof raw.leadEnabled === 'boolean' ? raw.leadEnabled : base.leadEnabled,
     hardStop: typeof raw.hardStop === 'boolean' ? raw.hardStop : base.hardStop,
+    physicsRigidity,
     activePins,
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,
     jointsOverMasks: typeof raw.jointsOverMasks === 'boolean' ? raw.jointsOverMasks : base.jointsOverMasks,
@@ -555,6 +585,7 @@ export const sanitizeState = (rawState: unknown): SkeletonState => {
     cutoutSlots,
     views,
     activeViewId,
+    connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
     viewScale,
     viewOffset,
   };

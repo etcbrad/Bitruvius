@@ -37,11 +37,13 @@ const jointLength = (
 const getIkRootForEffector = (effectorId: string): string | null => {
   // Heuristic anchors (avoid pulling the whole spine around for limb IK).
   // These match the current rig in `src/engine/model.ts`.
-  if (effectorId === 'head') return 'cranium';
+  if (effectorId === 'head') return 'neck_base';
   if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_shoulder';
   if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_shoulder';
   if (effectorId === 'l_ankle') return 'l_hip';
   if (effectorId === 'r_ankle') return 'r_hip';
+  if (effectorId === 'l_toe') return 'l_hip';
+  if (effectorId === 'r_toe') return 'r_hip';
   return null;
 };
 
@@ -189,8 +191,8 @@ export const applyDragToState = (
   if (!joint) return prev;
 
   
-  // Special handling for collar in FK mode: ensure proper rotation with children
-  if (draggingId === 'collar' && prev.controlMode === 'FK') {
+  // Special handling for collar in rigid FK mode: ensure proper rotation with children
+  if (draggingId === 'collar' && prev.controlMode === 'Cardboard' && !prev.stretchEnabled) {
     // Get parent position (sternum)
     let parentPos = { x: 0, y: 0 };
     if (joint.parent) {
@@ -202,7 +204,7 @@ export const applyDragToState = (
     const dy = mouseWorld.y - parentPos.y;
     let newPreview = { x: dx, y: dy };
     
-    // Maintain bone length for rigid FK rotation
+    // Maintain bone length for rigid rotation
     const baseDist = Math.sqrt(joint.baseOffset.x ** 2 + joint.baseOffset.y ** 2);
     const currentDist = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
     if (currentDist > 0) {
@@ -232,8 +234,9 @@ export const applyDragToState = (
     return { ...prev, joints: nextJoints };
   }
   
-  // Special handling for sacrum: rotate everything above it instead of translating
-  if (draggingId === 'sacrum') {
+  // Special handling for sacrum: rotate everything above it instead of translating.
+  // Guarded because some rigs don't include a `sacrum` joint.
+  if (draggingId === 'sacrum' && nextJoints.sacrum && INITIAL_JOINTS.sacrum) {
     const sacrumWorld = getWorldPosition('sacrum', nextJoints, INITIAL_JOINTS, 'preview');
     
     // Calculate rotation based on mouse position relative to sacrum
@@ -316,8 +319,8 @@ export const applyDragToState = (
   if (prev.controlMode === 'IK') {
     // In IK, only end effectors can be dragged (sacrum handled above)
     if (!joint.isEndEffector) return prev;
-  } else if (prev.controlMode === 'Cardboard') {
-    // In Cardboard mode, enforce rigid bone lengths (no stretching)
+  } else if (prev.controlMode === 'Cardboard' && !prev.stretchEnabled) {
+    // In Cardboard mode, enforce rigid bone lengths unless stretching is enabled.
     if (joint.parent) {
       const baseDist = Math.sqrt(joint.baseOffset.x ** 2 + joint.baseOffset.y ** 2);
       const currentDist = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
@@ -367,6 +370,7 @@ export const applyDragToState = (
           previewOffset: mirrorNewOffset,
           targetOffset: mirrorNewOffset,
           currentOffset: mirrorNewOffset,
+          rotation: draggingJoint.rotation,
         };
       }
     }
@@ -389,7 +393,8 @@ export const applyDragToState = (
   // 1. IK Solver Logic (FABRIK, anchored per-limb)
   if ((prev.controlMode === 'IK' || prev.controlMode === 'Rubberband') && joint.isEndEffector && joint.parent) {
     const chainIds = collectChainRootToEffector(draggingId, nextJoints);
-    const offsets = solveFabrikChain(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, prev.stretchEnabled);
+    const allowStretch = prev.stretchEnabled || prev.controlMode === 'Rubberband';
+    const offsets = solveFabrikChain(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, allowStretch);
     if (offsets) {
       for (const [id, off] of Object.entries(offsets)) {
         const j = nextJoints[id];
@@ -454,8 +459,8 @@ export const applyBalanceDragToState = (
 ): SkeletonState => {
   const nextJoints = { ...prev.joints };
   const draggingJoint = nextJoints[draggingId];
-  const sacrum = nextJoints.sacrum;
-  if (!draggingJoint || !sacrum) return prev;
+  const root = nextJoints.navel;
+  if (!draggingJoint || !root) return prev;
   if (!isFinitePoint(mouseWorld)) return prev;
 
   const pinnedAnkles = [
@@ -517,12 +522,12 @@ export const applyBalanceDragToState = (
 
   const delta = scalePoint(desiredDelta, t);
 
-  const nextSacrumOffset = add(sacrum.previewOffset, delta);
-  nextJoints.sacrum = {
-    ...sacrum,
-    previewOffset: nextSacrumOffset,
-    targetOffset: nextSacrumOffset,
-    currentOffset: nextSacrumOffset,
+  const nextRootOffset = add(root.previewOffset, delta);
+  nextJoints.navel = {
+    ...root,
+    previewOffset: nextRootOffset,
+    targetOffset: nextRootOffset,
+    currentOffset: nextRootOffset,
   };
 
   // Re-pin legs: keep ankle world position fixed while hips translate with the body.
