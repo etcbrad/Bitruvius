@@ -146,3 +146,9 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - Mask placement no longer “floats” under camera zoom: mask offsets are now stored in canvas-space pixels (pre-zoom), and drag deltas convert from screen px → canvas px via `/ viewScale` (`client/src/App.tsx`).
   - Project export/import: bumped engine state schema to `state@2` and migrated `state@1` mask offsets on import so existing projects preserve placement (`client/src/engine/serialization.ts`).
   - Build/test: `npm run check` + `npm test` pass; Playwright smoke artifacts: `output/web-game/mask-placement-snap-2026-03-04b/shot-0.png`, `output/web-game/mask-placement-snap-2026-03-04b/state-0.json`.
+
+2026-03-04
+- Pose-physics anti-flicker: detect A↔B 2-cycle jitter at rest and snap to the midpoint (“median of two states”), then re-apply hard root pins and convert back to offsets (`client/src/App.tsx`).
+  - Resets stabilizer history on engine reset, physics handshake changes, and when pose-physics is inactive.
+- Build/test: `npm run check` + `npm test` pass.
+- Playwright smoke artifacts: `output/web-game/flicker-median-2cycle-2026-03-04/shot-0.png`, `output/web-game/flicker-median-2cycle-2026-03-04/state-0.json` (Playwright crashed mid-run with page closed).

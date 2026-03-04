@@ -581,26 +581,27 @@
           requestRender();
         };
 
-        // --- Hit testing
-        const hitTestJoint = (sx, sy) => {
-          const w = getWorld();
-          const z = state.view.zoom;
-          const pickR = 12 * Math.max(1, (window.devicePixelRatio || 1)) / z;
-          const pickR2 = pickR * pickR;
+	        // --- Hit testing
+	        const hitTestJoint = (sx, sy) => {
+	          const w = getWorld();
+	          const wp = worldFromScreen(sx, sy);
+	          const z = state.view.zoom;
+	          const pickR = 12 * Math.max(1, (window.devicePixelRatio || 1)) / z;
+	          const pickR2 = pickR * pickR;
 
-          let best = null;
-          let bestD2 = Infinity;
-          for (const j of state.rig.joints) {
-            const p = w[j.id];
-            if (!p) continue;
-            const d2 = dist2(p.x, p.y, worldFromScreen(sx, sy).x, worldFromScreen(sx, sy).y);
-            if (d2 <= pickR2 && d2 < bestD2) {
-              best = j.id;
-              bestD2 = d2;
-            }
-          }
-          return best;
-        };
+	          let best = null;
+	          let bestD2 = Infinity;
+	          for (const j of state.rig.joints) {
+	            const p = w[j.id];
+	            if (!p) continue;
+	            const d2 = dist2(p.x, p.y, wp.x, wp.y);
+	            if (d2 <= pickR2 && d2 < bestD2) {
+	              best = j.id;
+	              bestD2 = d2;
+	            }
+	          }
+	          return best;
+	        };
 
         // --- Canvas gizmo buttons (pure click rotation)
         const gizmo = {
@@ -749,12 +750,16 @@
           dom.snapOut.textContent = `${FEATURES.snapDeg}°`;
         });
 
-        dom.exportBtn.addEventListener("click", async () => {
-          if (!FEATURES.advanced) return;
-          const payload = exportPose();
-          await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-          log("export copied to clipboard");
-        });
+	        dom.exportBtn.addEventListener("click", async () => {
+	          if (!FEATURES.advanced) return;
+	          const payload = exportPose();
+	          try {
+	            await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+	            log("export copied to clipboard");
+	          } catch (e) {
+	            log("export failed: " + String(e && e.message ? e.message : e));
+	          }
+	        });
         dom.importBtn.addEventListener("click", async () => {
           if (!FEATURES.advanced) return;
           const text = prompt("Paste pose JSON:");
@@ -1169,4 +1174,3 @@
     </script>
   </body>
 </html>
-

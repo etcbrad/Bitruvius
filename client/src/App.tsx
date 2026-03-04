@@ -49,7 +49,7 @@ import { makeDefaultState, sanitizeStateWithReport, sanitizeJoints } from './eng
 import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
 import { applyGroundRootCorrectionToJoints, computeGroundPivotWorld, computeTouchdownYWorld } from './engine/rooting';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
-import { buildWorldPoseFromJoints } from './engine/physics/xpbd';
+import { buildWorldPoseFromJoints, worldPoseToOffsets } from './engine/physics/xpbd';
 import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
 import { reconcileSkeletonState } from './engine/reconcileSkeletonState';
@@ -149,6 +149,29 @@ type GridOverlayTransform = {
 type WireRestDef = { a: string; b: string; rest: number };
 
 const TENSION_RELIEF_LABEL = 'TENSION RELIEF';
+const WIDGET_UNDOCK_ENABLED = false;
+const MANIKIN_MODE_ENABLED = true;
+const POSE_PHYSICS_STABILIZE_JOINT_IDS = [
+  'navel',
+  'sternum',
+  'collar',
+  'neck_base',
+  'head',
+  'l_shoulder',
+  'r_shoulder',
+  'l_elbow',
+  'r_elbow',
+  'l_wrist',
+  'r_wrist',
+  'l_hip',
+  'r_hip',
+  'l_knee',
+  'r_knee',
+  'l_ankle',
+  'r_ankle',
+  'l_toe',
+  'r_toe',
+] as const;
 
 // Keep sessions stateless by default: no localStorage restore/autosave.
 // Project saving/loading remains available via explicit .json import/export.
@@ -204,6 +227,25 @@ const computeMaxWireStrain = (joints: Record<string, Joint>): number => {
   return max;
 };
 
+const computeWorldPoseRmsDelta = (
+  a: Record<string, Point>,
+  b: Record<string, Point>,
+): { rms: number; count: number } => {
+  let n = 0;
+  let sum = 0;
+  for (const id of POSE_PHYSICS_STABILIZE_JOINT_IDS) {
+    const pa = a[id];
+    const pb = b[id];
+    if (!pa || !pb) continue;
+    const dx = pa.x - pb.x;
+    const dy = pa.y - pb.y;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) continue;
+    sum += dx * dx + dy * dy;
+    n += 1;
+  }
+  return { rms: n ? Math.sqrt(sum / n) : 0, count: n };
+};
+
 export default function App() {
   const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
 
@@ -230,17 +272,7 @@ export default function App() {
 
   useEffect(() => {
     console.log(`[bitruvius] build=${BUILD_ID}`);
-    cleanupImageCache(); // Clean up old cache entries
-    if (!ENGINE_PERSISTENCE_ENABLED) {
-      try {
-        localStorage.removeItem(LOCAL_STORAGE_KEY);
-        localStorage.removeItem(CONTROL_SETTINGS_KEY);
-        localStorage.removeItem(BACKGROUND_COLOR_KEY);
-        localStorage.removeItem(POSE_TRACE_KEY);
-      } catch {
-        // ignore
-      }
-    }
+    if (ENGINE_PERSISTENCE_ENABLED) cleanupImageCache(); // Clean up old cache entries
   }, []);
 
   const activeRootsKey = state.activeRoots.join('|');
@@ -270,6 +302,7 @@ export default function App() {
     if (shouldRunPosePhysics(state)) return;
     dragTargetRef.current = null;
     hingeSignsRef.current = {};
+    posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
   }, [state.controlMode, state.stretchEnabled, state.bendEnabled]);
 
   const historyCtrlRef = useRef(new HistoryController<SkeletonState>({ limit: 120 }));
@@ -304,6 +337,10 @@ export default function App() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdLiveRef = useRef<string | null>(null);
   const effectiveDraggingIdLiveRef = useRef<string | null>(null);
+  const [manikinRotateDragging, setManikinRotateDragging] = useState<null | { jointId: string; deltaRad: number }>(
+    null,
+  );
+  const manikinRotateDraggingLiveRef = useRef<null | { jointId: string; deltaRad: number }>(null);
   const dragProxyOffsetWorldRef = useRef<Point | null>(null);
   const [groundRootDragging, setGroundRootDragging] = useState(false);
   const groundRootDraggingLiveRef = useRef(false);
@@ -323,6 +360,10 @@ export default function App() {
   const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
   const physicsHandshakeRef = useRef<{ key: string; blend: number }>({ key: '', blend: 1 });
   const headDragMomentumRef = useRef<{ dx: number; dy: number } | null>(null);
+  const posePhysicsWorldHistoryRef = useRef<{
+    prev: Record<string, Point> | null;
+    prev2: Record<string, Point> | null;
+  }>({ prev: null, prev2: null });
   const balanceDragTargetSmootherRef = useRef<
     Record<string, { tMs: number; x: number; y: number }>
   >({});
@@ -607,6 +648,7 @@ export default function App() {
   };
 
   const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
+  const [manikinMode, setManikinMode] = useState(false);
   const [activeWidgetId, setActiveWidgetId] = useState<WidgetId>(
     () => WIDGET_TAB_ORDER.character.find((id) => id !== 'tools') ?? 'tools',
   );
@@ -735,6 +777,7 @@ export default function App() {
     setFloatingWidgets((prev) => {
       const idx = prev.findIndex((w) => w.id === id);
       if (idx < 0) return prev;
+      if (idx === prev.length - 1) return prev;
       const next = prev.slice();
       const w = next[idx]!;
       next.splice(idx, 1);
@@ -773,6 +816,10 @@ export default function App() {
 
   const popOutWidget = useCallback(
     (id: WidgetId, clientX: number, clientY: number) => {
+      if (!WIDGET_UNDOCK_ENABLED) {
+        activateWidget(id);
+        return;
+      }
       const tab = WIDGETS[id].tabGroup;
       if (tab) setSidebarTab(tab);
       setActiveWidgetId(id);
@@ -807,7 +854,7 @@ export default function App() {
         ];
       });
     },
-    [snapToGrid, widgetSnapGridPx],
+    [activateWidget, snapToGrid, widgetSnapGridPx],
   );
 
   const dockWidget = useCallback((id: WidgetId) => {
@@ -1503,6 +1550,7 @@ export default function App() {
     headDragMomentumRef.current = null;
     hingeSignsRef.current = {};
     physicsHandshakeRef.current = { key: '', blend: 1 };
+    posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
 
     tensionReliefArmedRef.current = true;
     tensionReliefLastAppliedMsRef.current = -1e12;
@@ -1538,6 +1586,33 @@ export default function App() {
     setStateWithHistory('reset_pose_tpose', (prev) => createRigidStartPoint(prev));
     addConsoleLog('info', 'Reset pose to T Pose.');
   }, [addConsoleLog, clearTransientInteractionState, setStateWithHistory]);
+
+  const setManikinModeEnabled = useCallback(
+    (enabled: boolean) => {
+      if (!MANIKIN_MODE_ENABLED) return;
+      setManikinMode(enabled);
+      if (!enabled) {
+        setManikinRotateDragging(null);
+        manikinRotateDraggingLiveRef.current = null;
+        addConsoleLog('info', 'Manikin mode disabled.');
+        return;
+      }
+
+      clearTransientInteractionState();
+      setManikinRotateDragging(null);
+      manikinRotateDraggingLiveRef.current = null;
+      setStateWithHistory('manikin_mode:on', (prev) => ({
+        ...prev,
+        // Manikin mode: rotation-only (no IK roots, no dragging, no rubberband).
+        controlMode: 'Cardboard',
+        activeRoots: [],
+        stretchEnabled: false,
+        bendEnabled: false,
+      }));
+      addConsoleLog('info', 'Manikin mode enabled: rotation-only.');
+    },
+    [addConsoleLog, clearTransientInteractionState, setStateWithHistory],
+  );
 
   const resetEngine = useCallback(() => {
     clearTransientInteractionState();
@@ -1705,8 +1780,8 @@ export default function App() {
           },
         }));
         
-        // Cache the image for persistence
-        await cacheImageFromUrl(url, 'head_mask');
+	        // Cache the image for persistence
+	        if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, 'head_mask');
         
         addConsoleLog('success', `Mask uploaded: ${file.name}`);
       } catch (err) {
@@ -1777,8 +1852,8 @@ export default function App() {
           },
         }));
         
-        // Cache the image for persistence
-        await cacheImageFromUrl(url, `joint_mask_${jointId}`);
+	        // Cache the image for persistence
+	        if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, `joint_mask_${jointId}`);
         
         addConsoleLog('success', `Mask uploaded for ${jointId}: ${file.name}`);
       } catch (err) {
@@ -1817,8 +1892,8 @@ export default function App() {
         },
       }));
       
-      // Cache the copied mask for persistence
-      cacheImageFromUrl(sourceMask.src, `joint_mask_${targetJointId}`);
+	      // Cache the copied mask for persistence
+	      if (ENGINE_PERSISTENCE_ENABLED) cacheImageFromUrl(sourceMask.src, `joint_mask_${targetJointId}`);
       
       addConsoleLog('success', `Mask copied from ${sourceJointId} to ${targetJointId}`);
     },
@@ -2414,6 +2489,7 @@ export default function App() {
             physicsHandshakeRef.current.key = handshakeKey;
             physicsHandshakeRef.current.blend = 0;
             hingeSignsRef.current = {};
+            posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
           }
 
 	          const pinTargets = pinTargetsRef.current;
@@ -2563,7 +2639,7 @@ export default function App() {
 	              jointsForPhysics = pre.joints;
 	            }
 
-		          const result = stepPosePhysics({
+		          let result = stepPosePhysics({
 		            joints: jointsForPhysics,
 		            activeRoots,
 		            rootTargets: activePinTargets,
@@ -2583,6 +2659,66 @@ export default function App() {
 		            },
 		          });
           hingeSignsRef.current = result.hingeSigns;
+
+          const canStabilizeOscillation = !drag && !isDirectManipulation;
+          if (canStabilizeOscillation) {
+            const history = posePhysicsWorldHistoryRef.current;
+            const prevWorld = history.prev;
+            const prev2World = history.prev2;
+            const scale = clamp(prev.viewScale ?? 1, 0.001, 1000);
+
+            if (prevWorld && prev2World) {
+              const d01 = computeWorldPoseRmsDelta(prevWorld, result.world);
+              const d12 = computeWorldPoseRmsDelta(prev2World, prevWorld);
+              const d02 = computeWorldPoseRmsDelta(prev2World, result.world);
+              const count = Math.min(d01.count, d12.count, d02.count);
+
+              const d01Px = d01.rms * scale;
+              const d12Px = d12.rms * scale;
+              const d02Px = d02.rms * scale;
+
+              // Detect a classic 2-cycle (A-B-A-B...) and place the pose at the midpoint of the two solutions.
+              const minFlipPx = 0.35;
+              const maxReturnPx = 0.18;
+              const isTwoCycle =
+                count >= 4 &&
+                d01Px >= minFlipPx &&
+                d12Px >= minFlipPx &&
+                d02Px <= Math.min(maxReturnPx, d01Px * 0.25) &&
+                Math.abs(d01Px - d12Px) <= 0.45 * Math.max(d01Px, d12Px);
+
+              if (isTwoCycle) {
+                const stabilizedWorld: Record<string, Point> = { ...result.world };
+                for (const id of Object.keys(stabilizedWorld)) {
+                  const a = prevWorld[id];
+                  const b = stabilizedWorld[id];
+                  if (!a || !b) continue;
+                  stabilizedWorld[id] = { x: (a.x + b.x) * 0.5, y: (a.y + b.y) * 0.5 };
+                }
+                // Keep hard pins exact after averaging.
+                for (const id of activeRoots) {
+                  const t = activePinTargets[id];
+                  if (t) stabilizedWorld[id] = { ...t };
+                }
+
+                const offsets = worldPoseToOffsets(stabilizedWorld, INITIAL_JOINTS);
+                const stabilizedJoints: Record<string, Joint> = { ...result.joints };
+                for (const id of Object.keys(INITIAL_JOINTS)) {
+                  const j = stabilizedJoints[id] ?? INITIAL_JOINTS[id]!;
+                  const off = offsets[id] ?? j.previewOffset;
+                  stabilizedJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
+                }
+
+                result = { ...result, world: stabilizedWorld, joints: stabilizedJoints };
+              }
+            }
+
+            // Update 2-frame history for 2-cycle detection (only in rest mode).
+            history.prev2 = history.prev;
+            history.prev = result.world;
+          } else {
+            posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
+          }
 
           // Blend physics results in over a short ramp when settings change, so toggling
           // stretch/bend/rigidity doesn't hard-pop the current pose.
@@ -2610,6 +2746,7 @@ export default function App() {
           return { ...prev, joints: blended };
         }
 
+        posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
         const nextJoints = { ...jointsForFrame };
         let changed = false;
 
@@ -2813,6 +2950,29 @@ export default function App() {
   }, [state.procgen.enabled, state.timeline.enabled, state.timeline.clip, timelineFrame, timelinePlaying]);
 
   const handleMouseDown = (id: string) => (e: React.MouseEvent) => {
+    if (manikinMode) {
+      e.stopPropagation();
+      setTimelinePlaying(false);
+      setSelectedJointId(id);
+      setMaskJointId(id);
+      setSelectedConnectionKey(focusBoneKeyForJointId(id, state.joints));
+      syncRigFocusFromJointId(id);
+
+      const joint = state.joints[id];
+      if (!joint?.parent) return;
+
+      const mouseWorld = getMouseWorld(e.clientX, e.clientY);
+      const pivot = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS, 'preview');
+      const mouseAngle = Math.atan2(mouseWorld.y - pivot.y, mouseWorld.x - pivot.x);
+      const currentAngle = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
+      if (!Number.isFinite(mouseAngle) || !Number.isFinite(currentAngle)) return;
+
+      historyCtrlRef.current.beginAction(`manikin_rotate:${id}`, state);
+      const drag = { jointId: id, deltaRad: currentAngle - mouseAngle };
+      setManikinRotateDragging(drag);
+      manikinRotateDraggingLiveRef.current = drag;
+      return;
+    }
     if (e.detail === 3) {
       e.stopPropagation();
       toggleRoot(id);
@@ -2945,6 +3105,7 @@ export default function App() {
 
   const handleGroundRootMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (manikinMode) return;
     if (state.activeRoots.length > 0) return;
     setTimelinePlaying(false);
     setSelectedJointId(null);
@@ -2964,6 +3125,7 @@ export default function App() {
 
   const handleRootLeverMouseDown = (rootId: string) => (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (manikinMode) return;
     if (!state.activeRoots.includes(rootId)) return;
     if (!state.joints[rootId]?.parent) return;
     setTimelinePlaying(false);
@@ -2985,6 +3147,7 @@ export default function App() {
   const handleMaskMouseDown = (jointId: string) => (e: React.MouseEvent) => {
     if (!maskEditArmed) return;
     e.stopPropagation();
+    if (manikinMode) return;
 	    setTimelinePlaying(false);
 	    setSelectedJointId(jointId);
 	    setMaskJointId(jointId);
@@ -3205,120 +3368,164 @@ export default function App() {
           showTarget: false,
         });
 
-        if (groundPlaneDragging) {
-          groundPlaneDraggingLiveRef.current = true;
-          const dyWorld = mouseWorldRaw.y - groundPlaneDragging.startMouseWorldY;
-          const nextY = clamp(groundPlaneDragging.startPlaneY + dyWorld, -200, 200);
-          setState((prev) => ({
-            ...prev,
-            procgen: {
-              ...prev.procgen,
-              options: {
-                ...prev.procgen.options,
-                groundPlaneY: nextY,
-              },
-            },
-          }));
-          return;
+        if (manikinMode) {
+          const drag = manikinRotateDraggingLiveRef.current;
+          if (drag) {
+            const joint = state.joints[drag.jointId];
+            if (!joint?.parent) return;
+
+            const pivot = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS, 'preview');
+            const mouseAngle = Math.atan2(mouseWorldRaw.y - pivot.y, mouseWorldRaw.x - pivot.x);
+            if (!Number.isFinite(mouseAngle)) return;
+            const desiredAngleRaw = mouseAngle + drag.deltaRad;
+
+            setState((prev) => {
+              const j = prev.joints[drag.jointId];
+              if (!j?.parent) return prev;
+
+              const cur = Math.atan2(j.previewOffset.y, j.previewOffset.x);
+              const next = unwrapAngleRad(cur, desiredAngleRaw);
+              const delta = next - cur;
+              const c = Math.cos(delta);
+              const s = Math.sin(delta);
+              const rot = (p: Point) => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c });
+
+              const nextJoints = { ...prev.joints };
+              nextJoints[drag.jointId] = {
+                ...j,
+                baseOffset: rot(j.baseOffset),
+                currentOffset: rot(j.currentOffset),
+                targetOffset: rot(j.targetOffset),
+                previewOffset: rot(j.previewOffset),
+              };
+              return { ...prev, joints: nextJoints };
+            });
+            return;
+          }
         }
 
-        if (maskDragging) {
-          maskDraggingLiveRef.current = true;
-          let dx = e.clientX - maskDragging.startClientX;
-          let dy = e.clientY - maskDragging.startClientY;
-          if (e.altKey) {
-            dx *= PRECISION_DRAG_SCALE;
-            dy *= PRECISION_DRAG_SCALE;
-          }
-          if (e.shiftKey) {
-            dx = Math.round(dx);
-            dy = Math.round(dy);
-          }
-          const jointId = maskDragging.jointId;
-          const viewScale = Math.max(1e-6, state.viewScale);
-          const dxWorld = dx / viewScale;
-          const dyWorld = dy / viewScale;
-          setState((prev) => {
-            const mask = prev.scene.jointMasks[jointId];
-            if (!mask) return prev;
-            // `offsetX/offsetY` are stored in *canvas pixels* (pre-zoom, inside the SVG group).
-            // Convert screen-space mouse deltas into canvas-space by dividing by `viewScale`,
-            // so placement is stable (no "floating") across camera zoom/pan.
-            const next = (() => {
-              switch (maskDragging.mode) {
-                case 'move': {
-                  return {
-                    offsetX: Number.isFinite(maskDragging.startOffsetX + dxWorld) ? maskDragging.startOffsetX + dxWorld : 0,
-                    offsetY: Number.isFinite(maskDragging.startOffsetY + dyWorld) ? maskDragging.startOffsetY + dyWorld : 0,
-                  };
-                }
-                case 'widen': {
-                  const fx = 1 + dx / 200;
-                  return {
-                    stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
-                  };
-                }
-                case 'expand': {
-                  // "Expand" is intentionally opposite of legacy "scale": drag up to get bigger.
-                  const factor = 1 - dy / 200;
-                  const nextScale = maskDragging.startScale * factor;
-                  return { scale: Math.max(0.01, Math.min(20, nextScale)) };
-                }
-                case 'shrink': {
-                  // Drag up to shrink; drag down to grow.
-                  const factor = 1 + dy / 200;
-                  const nextScale = maskDragging.startScale * factor;
-                  return { scale: Math.max(0.01, Math.min(20, nextScale)) };
-                }
-                case 'rotate': {
-                  const nextRotation = maskDragging.startRotation + dx * 0.5;
-                  return { rotation: Math.max(-360, Math.min(360, nextRotation)) };
-                }
-                case 'scale': {
-                  const factor = 1 + dy / 200;
-                  const nextScale = maskDragging.startScale * factor;
-                  return { scale: Math.max(0.01, Math.min(20, nextScale)) };
-                }
-                case 'stretch': {
-                  const fx = 1 + dx / 200;
-                  const fy = 1 + dy / 200;
-                  return {
-                    stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
-                    stretchY: Math.max(0.1, Math.min(10, maskDragging.startStretchY * fy)),
-                  };
-                }
-                case 'skew': {
-                  const nextSkewX = maskDragging.startSkewX + dx * 0.1;
-                  const nextSkewY = maskDragging.startSkewY + dy * 0.1;
-                  return {
-                    skewX: Math.max(-45, Math.min(45, nextSkewX)),
-                    skewY: Math.max(-45, Math.min(45, nextSkewY)),
-                  };
-                }
-                case 'anchor': {
-                  const nextAnchorX = maskDragging.startAnchorX + dx / 300;
-                  const nextAnchorY = maskDragging.startAnchorY + dy / 300;
-                  return {
-                    anchorX: Math.max(0, Math.min(1, nextAnchorX)),
-                    anchorY: Math.max(0, Math.min(1, nextAnchorY)),
-                  };
-                }
-              }
-            })();
-            return {
+        if (!manikinMode) {
+          if (groundPlaneDragging) {
+            groundPlaneDraggingLiveRef.current = true;
+            const dyWorld = mouseWorldRaw.y - groundPlaneDragging.startMouseWorldY;
+            const nextY = clamp(groundPlaneDragging.startPlaneY + dyWorld, -200, 200);
+            setState((prev) => ({
               ...prev,
-              scene: {
-                ...prev.scene,
-                jointMasks: {
-                  ...prev.scene.jointMasks,
-                  [jointId]: {
-                    ...mask,
-                    ...next,
-                  },
+              procgen: {
+                ...prev.procgen,
+                options: {
+                  ...prev.procgen.options,
+                  groundPlaneY: nextY,
                 },
               },
-            };
-          });
+            }));
+            return;
+          }
+
+          if (maskDragging) {
+            maskDraggingLiveRef.current = true;
+            let dx = e.clientX - maskDragging.startClientX;
+            let dy = e.clientY - maskDragging.startClientY;
+            if (e.altKey) {
+              dx *= PRECISION_DRAG_SCALE;
+              dy *= PRECISION_DRAG_SCALE;
+            }
+            if (e.shiftKey) {
+              dx = Math.round(dx);
+              dy = Math.round(dy);
+            }
+            const jointId = maskDragging.jointId;
+            const viewScale = Math.max(1e-6, state.viewScale);
+            const dxWorld = dx / viewScale;
+            const dyWorld = dy / viewScale;
+            setState((prev) => {
+              const mask = prev.scene.jointMasks[jointId];
+              if (!mask) return prev;
+              // `offsetX/offsetY` are stored in *canvas pixels* (pre-zoom, inside the SVG group).
+              // Convert screen-space mouse deltas into canvas-space by dividing by `viewScale`,
+              // so placement is stable (no "floating") across camera zoom/pan.
+              const next = (() => {
+                switch (maskDragging.mode) {
+                  case 'move': {
+                    return {
+                      offsetX: Number.isFinite(maskDragging.startOffsetX + dxWorld)
+                        ? maskDragging.startOffsetX + dxWorld
+                        : 0,
+                      offsetY: Number.isFinite(maskDragging.startOffsetY + dyWorld)
+                        ? maskDragging.startOffsetY + dyWorld
+                        : 0,
+                    };
+                  }
+                  case 'widen': {
+                    const fx = 1 + dx / 200;
+                    return {
+                      stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
+                    };
+                  }
+                  case 'expand': {
+                    // "Expand" is intentionally opposite of legacy "scale": drag up to get bigger.
+                    const factor = 1 - dy / 200;
+                    const nextScale = maskDragging.startScale * factor;
+                    return { scale: Math.max(0.01, Math.min(20, nextScale)) };
+                  }
+                  case 'shrink': {
+                    // Drag up to shrink; drag down to grow.
+                    const factor = 1 + dy / 200;
+                    const nextScale = maskDragging.startScale * factor;
+                    return { scale: Math.max(0.01, Math.min(20, nextScale)) };
+                  }
+                  case 'rotate': {
+                    const nextRotation = maskDragging.startRotation + dx * 0.5;
+                    return { rotation: Math.max(-360, Math.min(360, nextRotation)) };
+                  }
+                  case 'scale': {
+                    const factor = 1 + dy / 200;
+                    const nextScale = maskDragging.startScale * factor;
+                    return { scale: Math.max(0.01, Math.min(20, nextScale)) };
+                  }
+                  case 'stretch': {
+                    const fx = 1 + dx / 200;
+                    const fy = 1 + dy / 200;
+                    return {
+                      stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
+                      stretchY: Math.max(0.1, Math.min(10, maskDragging.startStretchY * fy)),
+                    };
+                  }
+                  case 'skew': {
+                    const nextSkewX = maskDragging.startSkewX + dx * 0.1;
+                    const nextSkewY = maskDragging.startSkewY + dy * 0.1;
+                    return {
+                      skewX: Math.max(-45, Math.min(45, nextSkewX)),
+                      skewY: Math.max(-45, Math.min(45, nextSkewY)),
+                    };
+                  }
+                  case 'anchor': {
+                    const nextAnchorX = maskDragging.startAnchorX + dx / 300;
+                    const nextAnchorY = maskDragging.startAnchorY + dy / 300;
+                    return {
+                      anchorX: Math.max(0, Math.min(1, nextAnchorX)),
+                      anchorY: Math.max(0, Math.min(1, nextAnchorY)),
+                    };
+                  }
+                }
+              })();
+              return {
+                ...prev,
+                scene: {
+                  ...prev.scene,
+                  jointMasks: {
+                    ...prev.scene.jointMasks,
+                    [jointId]: {
+                      ...mask,
+                      ...next,
+                    },
+                  },
+                },
+              };
+            });
+            return;
+          }
+        } else if (!rootRotateDragging) {
           return;
         }
 
@@ -3398,7 +3605,7 @@ export default function App() {
           return;
         }
 
-        if (rootLeverDraggingId) {
+        if (!manikinMode && rootLeverDraggingId) {
           const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
           const effectiveWorld = (() => {
             let next = mouseWorldRaw;
@@ -3460,7 +3667,7 @@ export default function App() {
           return;
         }
 
-        if (groundRootDragging) {
+        if (!manikinMode && groundRootDragging) {
           const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
           const effectiveWorld = (() => {
             let next = mouseWorldRaw;
@@ -3512,6 +3719,7 @@ export default function App() {
           return;
         }
 
+        if (manikinMode) return;
         if (!draggingId) return;
         draggingIdLiveRef.current = draggingId;
 
@@ -3643,6 +3851,13 @@ export default function App() {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
+    }
+
+    if (manikinRotateDraggingLiveRef.current) {
+      setManikinRotateDragging(null);
+      manikinRotateDraggingLiveRef.current = null;
+      commitHistoryAction();
+      return;
     }
 
     if (groundPlaneDragging) {
@@ -4033,6 +4248,7 @@ export default function App() {
   }, []);
 
   const toggleRoot = (id: string) => {
+    if (manikinMode) return;
     if (state.activeRoots.includes(id)) {
       const next = { ...pinTargetsRef.current };
       delete next[id];
@@ -4819,11 +5035,6 @@ export default function App() {
   };
 
   const WidgetPortal = ({ id, children }: { id: WidgetId; children: React.ReactNode }) => {
-    const isFloating = floatingWidgetIds.has(id);
-    if (isFloating) {
-      const target = widgetPortalTargets[id] ?? null;
-      return target ? createPortal(children, target) : null;
-    }
     if (activeWidgetId !== id) return null;
     return <>{children}</>;
   };
@@ -4833,11 +5044,6 @@ export default function App() {
 
   const activeDockedWidgetFocusRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    const id = activeWidgetId;
-    if (floatingWidgetIds.has(id)) {
-      focusFloatingWidget(id);
-      return;
-    }
     // Focus the docked widget container so keyboard interactions go to the active widget,
     // and scroll it into view (helpful when switching tabs with a long sidebar).
     const el = activeDockedWidgetFocusRef.current;
@@ -4881,7 +5087,24 @@ export default function App() {
               className={`flex items-center gap-3 ${sidebarTab === 'global' ? 'opacity-0 pointer-events-none select-none' : ''}`}
             >
               <div className="p-2 bg-white rounded-lg">
-                <Activity size={20} className="text-black" />
+                <button
+                  type="button"
+                  onClick={() => setManikinModeEnabled(!manikinMode)}
+                  className={`rounded-md p-0.5 ${manikinMode ? 'ring-2 ring-black/60' : ''}`}
+                  title={manikinMode ? 'Manikin mode (on)' : 'Enable manikin mode'}
+                  aria-label="Toggle manikin mode"
+                >
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <circle cx="10" cy="4.4" r="2.0" stroke="black" strokeWidth="1.6" />
+                    <path
+                      d="M10 6.6v8.2M4.2 8.4h11.6M10 14.8l-3.2 3.0M10 14.8l3.2 3.0"
+                      stroke="black"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
               </div>
               <div>
                 <h1 className={`text-lg font-bold tracking-tight ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>BITRUVIUS</h1>
@@ -5100,28 +5323,6 @@ export default function App() {
                       <HelpTip text={activeWidgetMeta.docs} />
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-[9px] font-mono text-[#444]">
-                      {floatingWidgetIds.has(activeWidgetId) ? 'FLOATING' : 'DOCKED'}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (floatingWidgetIds.has(activeWidgetId)) {
-                          dockWidget(activeWidgetId);
-                          return;
-                        }
-                        const rect = canvasRef.current?.getBoundingClientRect();
-                        const clientX = rect ? rect.left + rect.width * 0.5 : window.innerWidth * 0.5;
-                        const clientY = rect ? rect.top + rect.height * 0.5 : window.innerHeight * 0.5;
-                        popOutWidget(activeWidgetId, clientX, clientY);
-                      }}
-                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                      title={floatingWidgetIds.has(activeWidgetId) ? 'Dock widget' : 'Undock widget'}
-                    >
-                      {floatingWidgetIds.has(activeWidgetId) ? 'Dock' : 'Undock'}
-                    </button>
-                  </div>
                 </div>
               </section>
 
@@ -5130,28 +5331,6 @@ export default function App() {
                 tabIndex={-1}
                 className="flex-1 min-h-0 overflow-y-auto mt-4 outline-none focus:ring-2 focus:ring-white/10 focus:ring-offset-0 rounded-lg"
               >
-              {floatingWidgetIds.has(activeWidgetId) && (
-                <div className="mb-4 p-3 rounded-xl bg-[#181818] border border-[#222] flex items-center justify-between gap-3">
-                  <div className="text-[11px] text-[#bbb]">This widget is popped out on the canvas.</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => activateWidget(activeWidgetId)}
-                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                    >
-                      Focus
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => dockWidget(activeWidgetId)}
-                      className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                    >
-                      Dock
-                    </button>
-                  </div>
-                </div>
-              )}
-
               <div className="space-y-6 pb-6">
                 <WidgetPortal id="edit">
             <section>
@@ -6705,7 +6884,7 @@ export default function App() {
                         },
                       }));
 
-                      await cacheImageFromUrl(url, 'background');
+	                      if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, 'background');
                     }}
                   />
                 </div>
@@ -7016,7 +7195,7 @@ export default function App() {
                                 },
                               }));
 
-                              await cacheImageFromUrl(url, 'foreground');
+	                              if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, 'foreground');
                             }}
                           />
                         </div>
@@ -7744,7 +7923,7 @@ export default function App() {
 		            const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
 		            if (!isWidgetId(payload)) return;
 		            e.preventDefault();
-		            popOutWidget(payload, e.clientX, e.clientY);
+		            activateWidget(payload);
 		          }}
         >
           <div ref={cursorHudRef} className="editor-cursor-hud">
@@ -8444,7 +8623,8 @@ export default function App() {
                   </svg>
 
           {/* Floating Widgets */}
-          {floatingWidgets.map((widget) => {
+          {WIDGET_UNDOCK_ENABLED &&
+            floatingWidgets.map((widget) => {
             const title = WIDGETS[widget.id]?.title ?? widget.id;
             const headerH = floatingWidgetHeaderPx;
             return (
@@ -8645,7 +8825,8 @@ export default function App() {
                   <button
                     key={`barmode:${mode}`}
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      if (manikinMode) return;
                       applyEngineTransition('set_control_mode', (prev) =>
                         prev.controlMode === mode
                           ? prev
@@ -8655,9 +8836,13 @@ export default function App() {
                               ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
                             }),
                       )
-                    }
+                    }}
                     className={`px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                      state.controlMode === mode
+                        ? 'bg-white text-black'
+                        : manikinMode
+                          ? 'text-[#444] cursor-not-allowed'
+                          : 'text-[#666] hover:text-white'
                     }`}
                     title={controlModeUi[mode].title}
                   >

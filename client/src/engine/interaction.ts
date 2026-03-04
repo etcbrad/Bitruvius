@@ -1,5 +1,6 @@
 import { INITIAL_JOINTS } from './model';
 import { getWorldPosition, unwrapAngleRad, vectorLength } from './kinematics';
+import { solveFabrikChainOffsets } from './ik/fabrik';
 import type { Point, SkeletonState } from './types';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -109,78 +110,6 @@ const collectChainRootToEffector = (
   }
 
   return ids.reverse();
-};
-
-const solveFabrikChain = (
-  chainIds: string[],
-  joints: SkeletonState['joints'],
-  baseJoints: SkeletonState['joints'],
-  target: Point,
-  stretchEnabled: boolean,
-): Record<string, Point> | null => {
-  if (chainIds.length < 2) return null;
-
-  const positions: Point[] = chainIds.map((id) => getWorldPosition(id, joints, baseJoints, 'preview'));
-  const lengths: number[] = [];
-  for (let i = 1; i < chainIds.length; i++) {
-    const id = chainIds[i];
-    const joint = joints[id] ?? baseJoints[id];
-    if (!joint) {
-      lengths.push(0);
-      continue;
-    }
-    const len = stretchEnabled ? vectorLength(joint.previewOffset) : vectorLength(joint.baseOffset);
-    lengths.push(Math.max(0, len));
-  }
-
-  const root = positions[0];
-  const totalLen = lengths.reduce((acc, v) => acc + v, 0);
-  const toTarget = dist(root, target);
-
-  if (!Number.isFinite(totalLen) || totalLen <= 1e-9) return null;
-
-  // Unreachable: fully extend toward target.
-  if (toTarget >= totalLen) {
-    for (let i = 0; i < chainIds.length - 1; i++) {
-      const r = dist(target, positions[i]);
-      if (r <= 1e-9) continue;
-      const lambda = lengths[i] / r;
-      // p(i+1) = (1-l)*p(i) + l*target
-      positions[i + 1] = add(scalePoint(positions[i], 1 - lambda), scalePoint(target, lambda));
-    }
-  } else {
-    const tol = 1e-4;
-    const maxIter = 12;
-    const baseRoot = { ...root };
-
-    for (let iter = 0; iter < maxIter; iter++) {
-      // Forward reaching
-      positions[positions.length - 1] = { ...target };
-      for (let i = positions.length - 2; i >= 0; i--) {
-        const dir = sub(positions[i], positions[i + 1]);
-        const u = normalize(dir);
-        positions[i] = add(positions[i + 1], scalePoint(u, lengths[i]));
-      }
-
-      // Backward reaching
-      positions[0] = { ...baseRoot };
-      for (let i = 1; i < positions.length; i++) {
-        const dir = sub(positions[i], positions[i - 1]);
-        const u = normalize(dir);
-        positions[i] = add(positions[i - 1], scalePoint(u, lengths[i - 1]));
-      }
-
-      if (dist(positions[positions.length - 1], target) <= tol) break;
-    }
-  }
-
-  // Convert to local offsets for each joint (root stays fixed).
-  const nextOffsets: Record<string, Point> = {};
-  for (let i = 1; i < chainIds.length; i++) {
-    const id = chainIds[i];
-    nextOffsets[id] = sub(positions[i], positions[i - 1]);
-  }
-  return nextOffsets;
 };
 
 export const applyDragToState = (
@@ -409,7 +338,7 @@ export const applyDragToState = (
   if ((prev.controlMode === 'IK' || prev.controlMode === 'Rubberband') && joint.isEndEffector && joint.parent) {
     const chainIds = collectChainRootToEffector(draggingId, nextJoints);
     const allowStretch = prev.stretchEnabled || prev.controlMode === 'Rubberband';
-    const offsets = solveFabrikChain(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, allowStretch);
+    const offsets = solveFabrikChainOffsets(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, allowStretch);
     if (offsets) {
       for (const [id, off] of Object.entries(offsets)) {
         const j = nextJoints[id];
@@ -558,7 +487,13 @@ export const applyBalanceDragToState = (
   // Re-pin legs: keep ankle world position fixed while hips translate with the body.
   for (const leg of legs) {
     const chainIds = collectChainRootToEffector(leg.ankleId, nextJoints);
-    const offsets = solveFabrikChain(chainIds, nextJoints, INITIAL_JOINTS, leg.ankleWorldTarget, prev.stretchEnabled);
+    const offsets = solveFabrikChainOffsets(
+      chainIds,
+      nextJoints,
+      INITIAL_JOINTS,
+      leg.ankleWorldTarget,
+      prev.stretchEnabled,
+    );
     if (!offsets) continue;
 
     for (const [id, off] of Object.entries(offsets)) {
@@ -596,7 +531,7 @@ export const applyBalanceDragToState = (
     const err = dist(afterWorld, mouseWorld);
     if (err > 1e-3) {
       const chainIds = collectChainRootToJoint(draggingId, nextJoints, 'navel');
-      const offsets = solveFabrikChain(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, prev.stretchEnabled);
+      const offsets = solveFabrikChainOffsets(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, prev.stretchEnabled);
       if (offsets) {
         for (const [id, off] of Object.entries(offsets)) {
           const j = nextJoints[id];
