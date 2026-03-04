@@ -268,12 +268,13 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
     const pa = baseWorld[a];
     const pb = baseWorld[b];
     if (!pa || !pb) continue;
+    const compliance = conn.label === 'Clavicle Brace' ? 0 : wireCompliance;
     constraints.push({
       kind: 'distance',
       a,
       b,
       rest: dist(pa, pb),
-      compliance: wireCompliance,
+      compliance,
     });
   }
 

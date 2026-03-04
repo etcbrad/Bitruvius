@@ -67,6 +67,8 @@ export const CONNECTIONS: Connection[] = [
   // NOTE: These are non-hierarchical braces. They intentionally use a non-"bone" type so the physics solver
   // treats them as soft distance constraints (helping the torso/pelvis behave more like a deformable mass).
   { from: "l_hip", to: "r_hip", type: "structural_link", label: "Hip Brace", shape: 'wireframe', stretchMode: 'rigid' },
+  // Clavicle triangle brace: prevents shoulders pulling clavicles into a collapsed pose.
+  { from: "l_clavicle", to: "r_clavicle", type: "structural_link", label: "Clavicle Brace", shape: 'wireframe', stretchMode: 'rigid' },
   { from: "l_shoulder", to: "r_shoulder", type: "structural_link", label: "Shoulder Brace", shape: 'wireframe', stretchMode: 'rigid' },
   { from: "l_shoulder", to: "navel", type: "structural_link", label: "L Torso Brace", shape: 'wireframe', stretchMode: 'rigid' },
   { from: "r_shoulder", to: "navel", type: "structural_link", label: "R Torso Brace", shape: 'wireframe', stretchMode: 'rigid' },
