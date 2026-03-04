@@ -11,6 +11,36 @@
     --line: #333333;
     --accent: #ffffff;
     --ghost: rgba(255, 255, 255, 0.2);
+
+    /* Tailwind theme tokens (used by shadcn/ui components like Slider). */
+    --background: 0 0% 7%;
+    --foreground: 0 0% 88%;
+    --card: 0 0% 10%;
+    --card-foreground: 0 0% 88%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 88%;
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 92%;
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 0 0% 20%;
+    --accent-foreground: 0 0% 92%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 0 0% 85%;
+
+    /* Optional tokens used by some components. */
+    --card-border: rgba(255, 255, 255, 0.12);
+    --popover-border: rgba(255, 255, 255, 0.12);
+    --primary-border: rgba(255, 255, 255, 0.22);
+    --secondary-border: rgba(255, 255, 255, 0.12);
+    --muted-border: rgba(255, 255, 255, 0.10);
+    --accent-border: rgba(255, 255, 255, 0.12);
+    --destructive-border: rgba(255, 60, 60, 0.22);
   }
 
   body {

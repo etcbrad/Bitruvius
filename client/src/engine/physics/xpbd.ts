@@ -7,6 +7,7 @@ import type {
   HingeLimitConstraint,
   HingeSignMap,
   HingeSoftConstraint,
+  OffsetConstraint,
   PinConstraint,
   WorldPose,
   XpbdConfig,
@@ -117,6 +118,7 @@ const lambdaKey = (c: DistanceConstraint | PinConstraint) =>
 
 const axisSpringKey = (c: AxisSpringConstraint) => `as:${c.id}:${c.axis}`;
 const axisLimitKey = (c: AxisLimitConstraint, bound: 'min' | 'max') => `al:${c.id}:${c.axis}:${bound}`;
+const offsetKey = (c: OffsetConstraint, axis: 'x' | 'y') => `o:${c.a}:${c.b}:${axis}`;
 
 const solvePin = (ctx: SolveContext, c: PinConstraint) => {
   const pos = ctx.p[c.id];
@@ -259,6 +261,48 @@ const angleAt = (a: Point, b: Point, c: Point) => {
   return Math.acos(d);
 };
 
+const solveOffset = (ctx: SolveContext, c: OffsetConstraint) => {
+  const pa = ctx.p[c.a];
+  const pb = ctx.p[c.b];
+  if (!pa || !pb) return;
+  if (!isFinitePoint(c.rest)) return;
+
+  const wA = ctx.invMass[c.a] ?? 1;
+  const wB = ctx.invMass[c.b] ?? 1;
+  if (wA <= 0 && wB <= 0) return;
+
+  const compliance = Math.max(0, c.compliance);
+  const alpha = compliance / (ctx.cfg.dt * ctx.cfg.dt);
+
+  const solveAxis = (axis: 'x' | 'y') => {
+    const va = axis === 'x' ? pa.x : pa.y;
+    const vb = axis === 'x' ? pb.x : pb.y;
+    const rest = axis === 'x' ? c.rest.x : c.rest.y;
+
+    const C = (vb - va) - rest;
+    if (!Number.isFinite(C) || Math.abs(C) <= EPS) return;
+
+    const key = offsetKey(c, axis);
+    const lambda0 = ctx.lambdas.get(key) ?? 0;
+
+    const dlambda = (-C - alpha * lambda0) / (wA + wB + alpha);
+    const lambda = lambda0 + dlambda;
+    ctx.lambdas.set(key, lambda);
+
+    if (wA > 0) {
+      if (axis === 'x') pa.x -= wA * dlambda;
+      else pa.y -= wA * dlambda;
+    }
+    if (wB > 0) {
+      if (axis === 'x') pb.x += wB * dlambda;
+      else pb.y += wB * dlambda;
+    }
+  };
+
+  solveAxis('x');
+  solveAxis('y');
+};
+
 const solveHingeLimit = (ctx: SolveContext, c: HingeLimitConstraint) => {
   const pa = ctx.p[c.a];
   const pb = ctx.p[c.b];
@@ -369,6 +413,7 @@ export const solveXpbd = (
       if (c.kind === 'distance') {
         solveDistance(ctx, c);
       }
+      else if (c.kind === 'offset') solveOffset(ctx, c);
       else if (c.kind === 'pin') solvePin(ctx, c);
       else if (c.kind === 'axisSpring') solveAxisSpring(ctx, c);
       else if (c.kind === 'axisLimit') solveAxisLimit(ctx, c);

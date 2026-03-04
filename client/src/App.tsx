@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
 import { Slider } from "@/components/ui/slider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SystemGrid } from "@/components/SystemGrid";
@@ -24,8 +23,6 @@ import {
   Grid,
   Sparkles,
   Power,
-  ToggleLeft,
-  ToggleRight
 } from 'lucide-react';
 import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connection, type RigidityPreset } from './engine/types';
 import { LOOK_MODES, type LookModeId } from './engine/lookModes';
@@ -37,7 +34,7 @@ import { deserializeEngineState, serializeEngineState } from './engine/serializa
 import { downloadSvg } from './engine/export/svg';
 import { downloadPngFromSvg } from './engine/export/png';
 import { exportAsWebm } from './engine/export/video';
-import { applyPoseSnapshotToJoints, capturePoseSnapshot, sampleClipPose } from './engine/timeline';
+import { applyPoseSnapshotToJoints, capturePoseSnapshot, sampleClipPose, sampleClipPoseIk } from './engine/timeline';
 import {
   bakeRecordingIntoTimeline,
   buildRecordingFrames,
@@ -65,8 +62,10 @@ import {
 import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
 import { ProcgenWidget } from './components/ProcgenWidget';
+import { SimpleToggle } from './components/SimpleToggle';
+import { PoseTimelineWidget } from './components/PoseTimelineWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
-import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
+import { JointMaskWidget } from '@/components/JointMaskWidget';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import type { TransitionIssue } from '@/lib/transitionIssues';
 import {
@@ -88,8 +87,19 @@ import {
   updateControlSettingsCache,
   type ControlSettingsCache,
 } from './app/controlSettings';
+import { getStorage, storageGet, storageSet } from './app/storage';
+import { useAutosaveEngineState } from './app/useAutosaveEngineState';
+import { useRafLoop } from './app/useRafLoop';
+import { useTimelinePlayback } from './app/useTimelinePlayback';
+import { useTimelinePoseSync } from './app/useTimelinePoseSync';
 import { applyRigidTransformToJointSubset, collectSubtreeJointIds } from './app/jointTransforms';
 import { cacheImageFromUrl, cleanupImageCache } from './app/imageCache';
+import {
+  computeMaxWireStrain,
+  computeWorldPoseRmsDelta,
+  defaultWireComplianceForRigidity,
+  POSE_PHYSICS_STABILIZE_JOINT_IDS,
+} from './app/posePhysicsHelpers';
 import {
   fitModeToObjectFit,
   SyncedReferenceSequenceCanvas,
@@ -113,6 +123,8 @@ import {
 } from './app/referenceSequences';
 
 type ConsoleLogLevel = 'info' | 'warning' | 'error' | 'success';
+type TimelineSolveMode = 'auto' | 'fk' | 'ik' | 'physics' | 'ik+physics';
+type MaskDragMode = 'move' | 'widen' | 'expand' | 'shrink' | 'rotate' | 'scale' | 'stretch' | 'skew' | 'anchor';
 
 type ConsoleLogEntry = {
   id: string;
@@ -146,108 +158,17 @@ type GridOverlayTransform = {
   vmin: number;
 };
 
-type WireRestDef = { a: string; b: string; rest: number };
-
 const TENSION_RELIEF_LABEL = 'TENSION RELIEF';
 const WIDGET_UNDOCK_ENABLED = false;
 const MANIKIN_MODE_ENABLED = true;
-const POSE_PHYSICS_STABILIZE_JOINT_IDS = [
-  'navel',
-  'sternum',
-  'collar',
-  'neck_base',
-  'head',
-  'l_shoulder',
-  'r_shoulder',
-  'l_elbow',
-  'r_elbow',
-  'l_wrist',
-  'r_wrist',
-  'l_hip',
-  'r_hip',
-  'l_knee',
-  'r_knee',
-  'l_ankle',
-  'r_ankle',
-  'l_toe',
-  'r_toe',
-] as const;
 
 // Keep sessions stateless by default: no localStorage restore/autosave.
 // Project saving/loading remains available via explicit .json import/export.
 const ENGINE_PERSISTENCE_ENABLED = false;
 
-const defaultWireComplianceForRigidity = (rigidity: RigidityPreset): number => {
-  if (rigidity === 'cardboard') return 0.00025;
-  if (rigidity === 'rubberhose') return 0.02;
-  return 0.0015;
-};
-
-const WIRE_REST_DEFS: WireRestDef[] = (() => {
-  const baseWorld = buildWorldPoseFromJoints(INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
-  const seen = new Set<string>();
-  const out: WireRestDef[] = [];
-
-  const push = (a: string, b: string) => {
-    const key = canonicalConnKey(a, b);
-    if (seen.has(key)) return;
-    seen.add(key);
-    const pa = baseWorld[a];
-    const pb = baseWorld[b];
-    if (!pa || !pb) return;
-    const rest = Math.hypot(pa.x - pb.x, pa.y - pb.y);
-    if (!Number.isFinite(rest) || rest <= 1e-6) return;
-    out.push({ a, b, rest });
-  };
-
-  for (const conn of CONNECTIONS) {
-    if (conn.type === 'bone') continue;
-    push(conn.from, conn.to);
-  }
-
-  // Includes the extra "diamond" stiffeners used by pose physics (shoulders ↔ neck base).
-  push('l_shoulder', 'neck_base');
-  push('r_shoulder', 'neck_base');
-
-  return out;
-})();
-
-const computeMaxWireStrain = (joints: Record<string, Joint>): number => {
-  const world = buildWorldPoseFromJoints(joints, INITIAL_JOINTS, 'preview');
-  let max = 0;
-  for (const w of WIRE_REST_DEFS) {
-    const a = world[w.a];
-    const b = world[w.b];
-    if (!a || !b) continue;
-    const d = Math.hypot(a.x - b.x, a.y - b.y);
-    if (!Number.isFinite(d) || d <= 1e-9) continue;
-    const strain = Math.max(0, d / w.rest - 1);
-    if (strain > max) max = strain;
-  }
-  return max;
-};
-
-const computeWorldPoseRmsDelta = (
-  a: Record<string, Point>,
-  b: Record<string, Point>,
-): { rms: number; count: number } => {
-  let n = 0;
-  let sum = 0;
-  for (const id of POSE_PHYSICS_STABILIZE_JOINT_IDS) {
-    const pa = a[id];
-    const pb = b[id];
-    if (!pa || !pb) continue;
-    const dx = pa.x - pb.x;
-    const dy = pa.y - pb.y;
-    if (!Number.isFinite(dx) || !Number.isFinite(dy)) continue;
-    sum += dx * dx + dy * dy;
-    n += 1;
-  }
-  return { rms: n ? Math.sqrt(sum / n) : 0, count: n };
-};
-
 export default function App() {
   const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
+  const storage = getStorage();
 
   const initRef = useRef<{
     state: SkeletonState;
@@ -309,7 +230,7 @@ export default function App() {
   const canUndo = historyCtrlRef.current.canUndo();
   const canRedo = historyCtrlRef.current.canRedo();
 
-  type PoseSnapshot = Omit<SkeletonState, 'timeline'> & { timestamp?: number };
+  type PoseSnapshot = { id: string; ts: number; pose: EnginePoseSnapshot };
   const [poseSnapshots, setPoseSnapshots] = useState<PoseSnapshot[]>([]);
   const [selectedPoseIndices, setSelectedPoseIndices] = useState<number[]>([]);
 
@@ -341,6 +262,10 @@ export default function App() {
     null,
   );
   const manikinRotateDraggingLiveRef = useRef<null | { jointId: string; deltaRad: number }>(null);
+  const [, setFkRotateDragging] = useState<null | { jointId: string; deltaRad: number; subtreeIds: string[] }>(
+    null,
+  );
+  const fkRotateDraggingLiveRef = useRef<null | { jointId: string; deltaRad: number; subtreeIds: string[] }>(null);
   const dragProxyOffsetWorldRef = useRef<Point | null>(null);
   const [groundRootDragging, setGroundRootDragging] = useState(false);
   const groundRootDraggingLiveRef = useRef(false);
@@ -355,6 +280,8 @@ export default function App() {
   const rootRotateDraggingLiveRef = useRef<null | { pivot: Point; startAngle: number; lastAngle: number }>(null);
   const pinWorldRef = useRef<Record<string, Point> | null>(null);
   const dragTargetRef = useRef<{ id: string; target: Point } | null>(null);
+  const dragInputFilterRef = useRef<null | { id: string; tMs: number; filtered: Point }>(null);
+  const rotateInputFilterRef = useRef<null | { id: string; tMs: number; filtered: number }>(null);
   const pinTargetsRef = useRef<Record<string, Point>>({});
   const hingeSignsRef = useRef<Record<string, number>>({});
   const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
@@ -378,8 +305,8 @@ export default function App() {
   const [isLongPress, setIsLongPress] = useState(false);
   const [rubberbandPose, setRubberbandPose] = useState<SkeletonState | null>(null);
   const dragStartTimeRef = useRef<number>(0);
+  const rubberbandLongPressStartClientRef = useRef<{ x: number; y: number } | null>(null);
   const [maskEditArmed, setMaskEditArmed] = useState(false);
-  const [maskDragMode, setMaskDragMode] = useState<MaskDragMode>('move');
   const [maskDragging, setMaskDragging] = useState<null | {
     jointId: string;
     startClientX: number;
@@ -395,8 +322,11 @@ export default function App() {
     startAnchorX: number;
     startAnchorY: number;
     mode: MaskDragMode;
+    axisLock: null | 'x' | 'y' | 'both';
   }>(null);
   const maskDraggingLiveRef = useRef(false);
+  const MASK_STRETCH_LOCK_COMMIT_PX = 10;
+  const MASK_STRETCH_LOCK_RATIO = 1.25;
   const [groundPlaneDragging, setGroundPlaneDragging] = useState<null | {
     startMouseWorldY: number;
     startPlaneY: number;
@@ -409,17 +339,18 @@ export default function App() {
   const [timelineFrame, setTimelineFrame] = useState(0);
   const timelineFrameRef = useRef(0);
   const [timelinePlaying, setTimelinePlaying] = useState(false);
+  const [timelineSolveMode, setTimelineSolveMode] = useState<TimelineSolveMode>('auto');
+  const [timelineIkEffectors, setTimelineIkEffectors] = useState<string[]>(() => {
+    const candidates = ['l_wrist', 'r_wrist', 'l_ankle', 'r_ankle', 'head'];
+    return candidates.filter((id) => id in INITIAL_JOINTS);
+  });
   const timelinePinTargetsRef = useRef<Record<string, Point> | null>(null);
   const timelinePinTargetsKeyRef = useRef<string>('');
   const procgenRuntimeRef = useRef<ProcgenRuntime | null>(null);
   const procgenNeutralFallbackRef = useRef<EnginePoseSnapshot | null>(null);
   const [poseTracingEnabled, setPoseTracingEnabled] = useState(() => {
     if (!ENGINE_PERSISTENCE_ENABLED) return false;
-    try {
-      return localStorage.getItem(POSE_TRACE_KEY) === '1';
-    } catch {
-      return false;
-    }
+    return storageGet(POSE_TRACE_KEY) === '1';
   });
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const fgVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -496,12 +427,8 @@ export default function App() {
           const [backgroundColor, setBackgroundColor] = useState(() => {
             const fallback = '#fff3d1'; // faded paper default
             if (!ENGINE_PERSISTENCE_ENABLED) return fallback;
-            try {
-              const saved = localStorage.getItem(BACKGROUND_COLOR_KEY);
-              return saved || fallback;
-            } catch {
-              return fallback;
-            }
+            const saved = storageGet(BACKGROUND_COLOR_KEY);
+            return saved || fallback;
           });
 
   const stateLiveRef = useRef(state);
@@ -614,11 +541,7 @@ export default function App() {
 
   useEffect(() => {
     if (!ENGINE_PERSISTENCE_ENABLED) return;
-    try {
-      localStorage.setItem(POSE_TRACE_KEY, poseTracingEnabled ? '1' : '0');
-    } catch {
-      // Ignore storage errors.
-    }
+    storageSet(POSE_TRACE_KEY, poseTracingEnabled ? '1' : '0');
   }, [poseTracingEnabled]);
 
   const timelineFpsLive = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
@@ -1146,41 +1069,40 @@ export default function App() {
   // Save background color to localStorage when it changes
   useEffect(() => {
     if (!ENGINE_PERSISTENCE_ENABLED) return;
-    try {
-      localStorage.setItem(BACKGROUND_COLOR_KEY, backgroundColor);
-    } catch {
-      // ignore
-    }
+    storageSet(BACKGROUND_COLOR_KEY, backgroundColor);
   }, [backgroundColor]);
 
-  // Autosave core editor state to localStorage (throttled) so the editor resumes where you left off.
-  // Important: do NOT autosave in the per-frame physics loop; only queue autosaves from user-intent transitions.
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autosaveLatestRef = useRef<SkeletonState | null>(null);
-  const queueAutosave = useCallback((next: SkeletonState) => {
-    if (!ENGINE_PERSISTENCE_ENABLED) return;
-    autosaveLatestRef.current = next;
-    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-    autosaveTimerRef.current = setTimeout(() => {
-      const latest = autosaveLatestRef.current;
-      autosaveLatestRef.current = null;
-      if (!latest) return;
-      try {
-        const json = serializeEngineState(latest, { pretty: false });
-        localStorage.setItem(LOCAL_STORAGE_KEY, json);
-      } catch {
-        // ignore
-      }
-    }, 350);
-  }, []);
+  const { queueAutosave } = useAutosaveEngineState({
+    enabled: ENGINE_PERSISTENCE_ENABLED,
+    storage,
+    key: LOCAL_STORAGE_KEY,
+    delayMs: 350,
+  });
+
+  const SETTLE_WINDOW_MS = 250;
+  const settleUntilMsRef = useRef<number>(0);
+  const timelinePlayingRef = useRef<boolean>(timelinePlaying);
+  const prevDirectManipulationRef = useRef<boolean>(false);
+  const lastSimMsRef = useRef<number>(0);
 
   useEffect(() => {
-    return () => {
-      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
-      autosaveLatestRef.current = null;
-    };
+    timelinePlayingRef.current = timelinePlaying;
+    settleUntilMsRef.current = Math.max(settleUntilMsRef.current, performance.now() + SETTLE_WINDOW_MS);
+  }, [timelinePlaying]);
+
+  const bumpSettle = useCallback((nowMs: number = performance.now()) => {
+    settleUntilMsRef.current = Math.max(settleUntilMsRef.current, nowMs + SETTLE_WINDOW_MS);
   }, []);
+
+  const syncControlSettingsCache = useCallback(
+    (prev: SkeletonState, next: SkeletonState) => {
+      const updated = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
+      if (updated === controlSettingsCacheRef.current) return;
+      controlSettingsCacheRef.current = updated;
+      if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(updated);
+    },
+    [],
+  );
 
   // Handle Nosferatu mode styling - only set background if user hasn't changed it
   useEffect(() => {
@@ -1190,7 +1112,7 @@ export default function App() {
         return;
       }
       // Only change to black if user is still using the default background
-      const savedColor = localStorage.getItem(BACKGROUND_COLOR_KEY);
+      const savedColor = storageGet(BACKGROUND_COLOR_KEY);
       if (!savedColor || savedColor === '#fff3d1') {
         setBackgroundColor('#000000');
       }
@@ -1200,16 +1122,12 @@ export default function App() {
 
   const setStateWithHistory = useCallback(
     (actionId: string, update: (prev: SkeletonState) => SkeletonState) => {
+      bumpSettle();
       setState((prev) => {
         const proposed = update(prev);
         if (Object.is(proposed, prev)) return prev;
         const next = syncLegacyMasksToCutouts(proposed);
-
-        const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
-        if (nextCache !== controlSettingsCacheRef.current) {
-          controlSettingsCacheRef.current = nextCache;
-          if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(nextCache);
-        }
+        syncControlSettingsCache(prev, next);
 
         if (!Object.is(next, prev)) {
           historyCtrlRef.current.pushUndo(actionId, prev);
@@ -1218,7 +1136,7 @@ export default function App() {
         return next;
       });
     },
-    [],
+    [bumpSettle, queueAutosave, syncControlSettingsCache],
   );
 
   const captureProcgenNeutralFromCurrent = useCallback(() => {
@@ -1308,6 +1226,7 @@ export default function App() {
       update: (prev: SkeletonState) => SkeletonState,
       opts: { pushHistory?: boolean } = {},
     ) => {
+      bumpSettle();
       setState((prev) => {
         const proposed = update(prev);
         if (Object.is(proposed, prev)) return prev;
@@ -1328,12 +1247,7 @@ export default function App() {
         if (annotated.length > 0) pendingTransitionIssuesRef.current = annotated;
 
         const next = reconciled.state;
-
-        const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
-        if (nextCache !== controlSettingsCacheRef.current) {
-          controlSettingsCacheRef.current = nextCache;
-          if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(nextCache);
-        }
+        syncControlSettingsCache(prev, next);
 
         const push = opts.pushHistory !== false;
         if (push && !Object.is(next, prev)) {
@@ -1343,7 +1257,7 @@ export default function App() {
         return next;
       });
     },
-    [],
+    [bumpSettle, queueAutosave, syncControlSettingsCache],
   );
 
   useEffect(() => {
@@ -1471,18 +1385,14 @@ export default function App() {
   }, []);
 
   const setStateNoHistory = useCallback((update: (prev: SkeletonState) => SkeletonState) => {
+    bumpSettle();
     setState((prev) => {
       const next = update(prev);
       if (Object.is(next, prev)) return prev;
-
-      const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
-      if (nextCache !== controlSettingsCacheRef.current) {
-        controlSettingsCacheRef.current = nextCache;
-        if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(nextCache);
-      }
+      syncControlSettingsCache(prev, next);
       return next;
     });
-  }, []);
+  }, [bumpSettle, syncControlSettingsCache]);
 
   const beginHistoryAction = useCallback(
     (actionId: string) => {
@@ -1537,6 +1447,8 @@ export default function App() {
     setDraggingId(null);
     draggingIdLiveRef.current = null;
     effectiveDraggingIdLiveRef.current = null;
+    setFkRotateDragging(null);
+    fkRotateDraggingLiveRef.current = null;
     dragProxyOffsetWorldRef.current = null;
     rootLeverDraggingLiveRef.current = null;
     rootRotateDraggingLiveRef.current = null;
@@ -1546,6 +1458,8 @@ export default function App() {
 
     pinWorldRef.current = null;
     dragTargetRef.current = null;
+    dragInputFilterRef.current = null;
+    rotateInputFilterRef.current = null;
     rubberbandAnchorPinRef.current = null;
     headDragMomentumRef.current = null;
     hingeSignsRef.current = {};
@@ -1565,10 +1479,89 @@ export default function App() {
 
     setIsLongPress(false);
     setRubberbandPose(null);
+    rubberbandLongPressStartClientRef.current = null;
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = null;
     setLongPressTimer(null);
   }, []);
+
+  const applyDragInputProcessing = useCallback(
+    (rawTarget: Point, id: string, nowMs: number, options: { inertia: number; viewScale: number; forceExact: boolean }) => {
+      const inertia = clamp(options.inertia, 0, 1);
+      if (options.forceExact || inertia <= 1e-6) {
+        dragInputFilterRef.current = { id, tMs: nowMs, filtered: rawTarget };
+        return rawTarget;
+      }
+
+      const prev = dragInputFilterRef.current;
+      if (!prev || prev.id !== id || !Number.isFinite(prev.filtered.x) || !Number.isFinite(prev.filtered.y)) {
+        dragInputFilterRef.current = { id, tMs: nowMs, filtered: rawTarget };
+        return rawTarget;
+      }
+
+      const dt = clamp((nowMs - prev.tMs) / 1000, 0, 0.05);
+      if (dt <= 1e-6) return prev.filtered;
+
+      const viewScale = Math.max(1e-6, options.viewScale);
+      const tauSec = lerp(0.001, 0.09, inertia);
+      const alpha = tauSec <= 1e-6 ? 1 : 1 - Math.exp(-dt / tauSec);
+
+      const maxSpeedPxPerSec = lerp(50_000, 6_000, inertia);
+      const maxStepWorld = (maxSpeedPxPerSec * dt) / viewScale;
+
+      let desired = rawTarget;
+      const dx = desired.x - prev.filtered.x;
+      const dy = desired.y - prev.filtered.y;
+      const d = Math.hypot(dx, dy);
+      if (Number.isFinite(d) && d > maxStepWorld && maxStepWorld > 0) {
+        const f = maxStepWorld / d;
+        desired = { x: prev.filtered.x + dx * f, y: prev.filtered.y + dy * f };
+      }
+
+      const filtered = {
+        x: lerp(prev.filtered.x, desired.x, alpha),
+        y: lerp(prev.filtered.y, desired.y, alpha),
+      };
+      dragInputFilterRef.current = { id, tMs: nowMs, filtered };
+      return filtered;
+    },
+    [],
+  );
+
+  const applyAngleInputProcessing = useCallback(
+    (desiredAngle: number, id: string, nowMs: number, options: { inertia: number; forceExact: boolean }) => {
+      const inertia = clamp(options.inertia, 0, 1);
+      if (options.forceExact || inertia <= 1e-6) {
+        rotateInputFilterRef.current = { id, tMs: nowMs, filtered: desiredAngle };
+        return desiredAngle;
+      }
+
+      const prev = rotateInputFilterRef.current;
+      if (!prev || prev.id !== id || !Number.isFinite(prev.filtered)) {
+        rotateInputFilterRef.current = { id, tMs: nowMs, filtered: desiredAngle };
+        return desiredAngle;
+      }
+
+      const dt = clamp((nowMs - prev.tMs) / 1000, 0, 0.05);
+      if (dt <= 1e-6) return prev.filtered;
+
+      const tauSec = lerp(0.001, 0.08, inertia);
+      const alpha = tauSec <= 1e-6 ? 1 : 1 - Math.exp(-dt / tauSec);
+
+      // Angular velocity cap (rad/sec). Higher inertia => lower cap.
+      const maxSpeedRadPerSec = lerp(1e9, 14, inertia);
+      const maxStep = maxSpeedRadPerSec * dt;
+
+      const desiredUnwrapped = unwrapAngleRad(prev.filtered, desiredAngle);
+      const rawDelta = desiredUnwrapped - prev.filtered;
+      const capped = prev.filtered + clamp(rawDelta, -maxStep, maxStep);
+      const filtered = prev.filtered + (capped - prev.filtered) * alpha;
+
+      rotateInputFilterRef.current = { id, tMs: nowMs, filtered };
+      return filtered;
+    },
+    [],
+  );
 
   const resetPoseToTPose = useCallback(() => {
     clearTransientInteractionState();
@@ -1724,10 +1717,12 @@ export default function App() {
 
   const exportVideo = useCallback(async () => {
     if (!canvasSize.width || !canvasSize.height) return;
-    if (!state.timeline.enabled) {
-      alert('Timeline must be enabled to export video');
+    const keyframes = Array.isArray(state.timeline.clip.keyframes) ? state.timeline.clip.keyframes : [];
+    if (keyframes.length < 2) {
+      alert('Add at least 2 poses in Animation → Pose Timeline to export video.');
       return;
     }
+    const timelineForExport = { ...state.timeline, enabled: true };
     if (state.scene.background.mediaType === 'sequence' || state.scene.foreground.mediaType === 'sequence') {
       alert('Video export does not support GIF/ZIP sequences yet. Please use a real video file for reference layers, or turn off sequence reference layers before exporting.');
       return;
@@ -1735,34 +1730,49 @@ export default function App() {
 
     try {
       setTimelinePlaying(false);
-	      await exportAsWebm({
-	        width: canvasSize.width,
-	        height: canvasSize.height,
-	        backgroundColor,
-	        fps: state.timeline.clip.fps,
-	        scale: 1,
-	        timeline: state.timeline,
-	        baseJoints: INITIAL_JOINTS,
-	        connections: CONNECTIONS,
-	        scene: state.scene,
-	        activeRoots: state.activeRoots,
-	        stretchEnabled: state.stretchEnabled,
-	        fallbackPose: capturePoseSnapshot(state.joints, 'preview'),
-	      });
+		      await exportAsWebm({
+		        width: canvasSize.width,
+		        height: canvasSize.height,
+		        backgroundColor,
+		        fps: timelineForExport.clip.fps,
+		        scale: 1,
+		        timeline: timelineForExport,
+		        baseJoints: INITIAL_JOINTS,
+		        connections: CONNECTIONS,
+		        scene: state.scene,
+		        activeRoots: state.activeRoots,
+		        stretchEnabled: state.stretchEnabled,
+		        fallbackPose: capturePoseSnapshot(state.joints, 'preview'),
+            solve: {
+              mode: timelineSolveMode,
+              ikEffectors: timelineIkEffectors,
+              autoProjectPhysics: getPhysicsBlendMode(state) === 'fluid',
+              rigidity: state.rigidity,
+              bendEnabled: state.bendEnabled,
+              hardStop: state.hardStop,
+              connectionOverrides: state.connectionOverrides,
+            },
+		      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       alert(`Video export failed: ${message}`);
     }
-	  }, [
-	    backgroundColor,
-	    canvasSize.height,
-	    canvasSize.width,
-	    state.activeRoots,
-	    state.scene,
-	    state.stretchEnabled,
-	    state.timeline,
-	    state.joints,
-	  ]);
+		  }, [
+		    backgroundColor,
+		    canvasSize.height,
+		    canvasSize.width,
+		    state.activeRoots,
+        state.bendEnabled,
+        state.connectionOverrides,
+        state.hardStop,
+        state.rigidity,
+		    state.scene,
+		    state.stretchEnabled,
+		    state.timeline,
+		    state.joints,
+        timelineIkEffectors,
+        timelineSolveMode,
+		  ]);
 
   const uploadMaskFile = useCallback(
     async (file: File) => {
@@ -2095,19 +2105,6 @@ export default function App() {
         });
         return;
       }
-      if (key === 'o') {
-        e.preventDefault();
-        if (!state.timeline.enabled) return;
-        setTimelinePlaying(false);
-        setStateWithHistory('toggle_onion_shortcut', (prev) => ({
-          ...prev,
-          timeline: {
-            ...prev.timeline,
-            onionSkin: { ...prev.timeline.onionSkin, enabled: !prev.timeline.onionSkin.enabled },
-          },
-        }));
-        return;
-      }
       if (key === 'p') {
         e.preventDefault();
         setPoseTracingEnabled((prev) => !prev);
@@ -2137,20 +2134,6 @@ export default function App() {
         }
         return;
       }
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        if (!state.timeline.enabled) return;
-        e.preventDefault();
-        if (poseTracingEnabled && e.shiftKey) {
-          jumpToAdjacentKeyframe(e.key === 'ArrowLeft' ? -1 : 1);
-          return;
-        }
-        setTimelinePlaying(false);
-        const delta = e.key === 'ArrowLeft' ? -1 : 1;
-        const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
-        const nextFrame = clamp(timelineFrameRef.current + delta, 0, maxFrame);
-        timelineFrameRef.current = nextFrame;
-        setTimelineFrame(nextFrame);
-      }
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -2159,10 +2142,8 @@ export default function App() {
     applyRigFocus,
     applyFluidHandshake,
     jumpToAdjacentKeyframe,
-    poseTracingEnabled,
     redo,
     rigFocus,
-    state.timeline.clip.frameCount,
     state.timeline.enabled,
     setStateWithHistory,
     setRigFocus,
@@ -2391,23 +2372,40 @@ export default function App() {
   }, [gridOverlayTransform]);
 
   // Animation Loop: Exponential Decay for Smooth Motion
-  useEffect(() => {
-    let frameId: number;
-    let last = performance.now();
-    const update = () => {
-      setState(prev => {
-	        const now = performance.now();
-	        const dt = Math.max(0, (now - last) / 1000);
-	        last = now;
+  useRafLoop((nowMs) => {
+    const drag = dragTargetRef.current;
+    const isDirectManipulation =
+      Boolean(draggingIdLiveRef.current) ||
+      Boolean(rootLeverDraggingLiveRef.current) ||
+      Boolean(rootRotateDraggingLiveRef.current) ||
+      Boolean(fkRotateDraggingLiveRef.current) ||
+      Boolean(manikinRotateDraggingLiveRef.current) ||
+      maskDraggingLiveRef.current ||
+      groundPlaneDraggingLiveRef.current ||
+      groundRootDraggingLiveRef.current;
+    const isPureFkRotation = Boolean(fkRotateDraggingLiveRef.current) || Boolean(manikinRotateDraggingLiveRef.current);
 
-	        const drag = dragTargetRef.current;
-	        const isDirectManipulation =
-            Boolean(draggingIdLiveRef.current) ||
-            Boolean(rootLeverDraggingLiveRef.current) ||
-            Boolean(rootRotateDraggingLiveRef.current) ||
-            maskDraggingLiveRef.current ||
-            groundPlaneDraggingLiveRef.current ||
-            groundRootDraggingLiveRef.current;
+    const live = stateLiveRef.current;
+    const procgenIsDriving =
+      live.procgen.enabled && !(live.procgen.options.pauseWhileDragging && isDirectManipulation);
+    const needsSettle = nowMs < settleUntilMsRef.current;
+
+    if (prevDirectManipulationRef.current && !isDirectManipulation) bumpSettle(nowMs);
+    prevDirectManipulationRef.current = isDirectManipulation;
+
+    // Keep the main loop idle unless we actually need to step something.
+    // Timeline playback is handled by its own hook; it does not require ticking here.
+    const needsTick = isDirectManipulation || procgenIsDriving || needsSettle;
+    if (!needsTick) {
+      lastSimMsRef.current = nowMs;
+      return;
+    }
+
+    const last = lastSimMsRef.current || nowMs;
+    lastSimMsRef.current = nowMs;
+    const dt = clamp((nowMs - last) / 1000, 0, 0.05);
+
+    setState((prev) => {
 	        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
 	        // Pose-physics is for interaction/posing. Procgen already includes its own locomotion/grounding dynamics,
 	        // so we avoid stacking the pose solver on top of a live procgen preview (prevents confusing artifacts).
@@ -2469,7 +2467,12 @@ export default function App() {
           allowPosePhysics = false;
         }
 
-        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activeRoots.length > 0);
+        const physicsActive =
+          shouldRunPosePhysics(prev) &&
+          allowPosePhysics &&
+          (Boolean(drag) || prev.activeRoots.length > 0) &&
+          // Pure FK normally disables pose physics, but pinned joints must stay pinned *during* adjustment.
+          (!isPureFkRotation || prev.activeRoots.length > 0);
         
         // Exclude balance joints from physics when they're being dragged to prevent tension/jitter.
         // Note: Navel drags proxy to sternum (handled via `drag.id`).
@@ -2620,6 +2623,7 @@ export default function App() {
 	                joints: jointsForPhysics,
 	                activeRoots,
 	                rootTargets: activePinTargets,
+	                relativePins: prev.relativePins,
 	                drag: dragIsPinned ? null : dragInput,
 	                connectionOverrides: prev.connectionOverrides,
 	                extraConstraints,
@@ -2643,6 +2647,7 @@ export default function App() {
 		            joints: jointsForPhysics,
 		            activeRoots,
 		            rootTargets: activePinTargets,
+		            relativePins: prev.relativePins,
 		            drag: dragIsPinned ? null : dragInput,
 		            connectionOverrides: prev.connectionOverrides,
 		            extraConstraints,
@@ -2792,10 +2797,6 @@ export default function App() {
         if (changed || procgenPreviewApplied) return { ...prev, joints: nextJoints };
         return prev;
       });
-      frameId = requestAnimationFrame(update);
-    };
-    frameId = requestAnimationFrame(update);
-    return () => cancelAnimationFrame(frameId);
   }, []);
 
   const pickRubberbandAnchorId = useCallback((dragId: string): string | null => {
@@ -2807,149 +2808,172 @@ export default function App() {
     return state.joints[dragId]?.parent ?? null;
   }, [state.joints]);
 
-  useEffect(() => {
-    if (state.procgen.enabled) return;
-    if (!state.timeline.enabled) return;
-    if (!timelinePlaying) return;
+  const timelineFps = Math.max(1, Math.floor(state.timeline.clip.fps));
+  const timelineFrameCount = Math.max(1, Math.floor(state.timeline.clip.frameCount));
 
-    let rafId = 0;
-    let last = performance.now();
-    let acc = 0;
+  const getTimelineRootTargets = useCallback((s: SkeletonState): Record<string, Point> => {
+    return (
+      timelinePinTargetsRef.current ??
+      (() => {
+        const pose0 =
+          sampleClipPose(s.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: s.stretchEnabled }) ??
+          capturePoseSnapshot(INITIAL_JOINTS, 'preview');
+        return s.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
+          acc[rootId] = getWorldPositionFromOffsets(rootId, pose0.joints, INITIAL_JOINTS);
+          return acc;
+        }, {});
+      })()
+    );
+  }, []);
 
-    const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
-    const frameCount = Math.max(1, Math.floor(state.timeline.clip.frameCount));
-    const frameStep = 1 / fps;
+  const projectTimelinePose = useCallback(
+    (s: SkeletonState, joints: Record<string, Joint>, rootTargets: Record<string, Point>): Record<string, Joint> => {
+      const isFullFluid = getPhysicsBlendMode(s) === 'fluid';
+      if (!isFullFluid || s.activeRoots.length === 0) return joints;
+      return stepPosePhysics({
+        joints,
+        baseJoints: INITIAL_JOINTS,
+        activeRoots: s.activeRoots,
+        rootTargets,
+        relativePins: s.relativePins,
+        drag: null,
+        connectionOverrides: s.connectionOverrides,
+        options: {
+          dt: 1 / 60,
+          iterations: 22,
+          damping: 0.12,
+          wireCompliance: defaultWireComplianceForRigidity(s.rigidity),
+          rigidity: s.rigidity,
+          hardStop: s.hardStop,
+          autoBend: s.bendEnabled,
+          stretchEnabled: s.stretchEnabled,
+        },
+      }).joints;
+    },
+    [],
+  );
 
-    const tick = (now: number) => {
-      const dt = (now - last) / 1000;
-      last = now;
-      acc += dt;
-
-      let advance = 0;
-      while (acc >= frameStep) {
-        acc -= frameStep;
-        advance += 1;
-        if (advance >= 5) {
-          // Prevent huge catch-up spikes (tab backgrounding, etc.).
-          acc = 0;
-          break;
-        }
-      }
-
-      if (advance > 0) {
-        const nextFrame = (timelineFrameRef.current + advance) % frameCount;
-        timelineFrameRef.current = nextFrame;
-        setTimelineFrame(nextFrame);
-        setState((prev) => {
-          const pose = sampleClipPose(prev.timeline.clip, nextFrame, INITIAL_JOINTS, {
-            stretchEnabled: prev.stretchEnabled,
-          });
-          if (!pose) return prev;
-
-          const isFullFluid = getPhysicsBlendMode(prev) === 'fluid';
-          if (!isFullFluid || prev.activeRoots.length === 0) {
-            return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
-          }
-
-          const seeded = applyPoseSnapshotToJoints(prev.joints, pose);
-          const rootTargets =
-            timelinePinTargetsRef.current ??
-            (() => {
-              const pose0 =
-                sampleClipPose(prev.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled }) ??
-                capturePoseSnapshot(INITIAL_JOINTS, 'preview');
-              return prev.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
-                acc[rootId] = getWorldPositionFromOffsets(rootId, pose0.joints, INITIAL_JOINTS);
-                return acc;
-              }, {});
-            })();
-	          const projected = stepPosePhysics({
-	            joints: seeded,
-	            baseJoints: INITIAL_JOINTS,
-	            activeRoots: prev.activeRoots,
-	            rootTargets,
-	            drag: null,
-	            connectionOverrides: prev.connectionOverrides,
-	            options: {
-	              dt: 1 / 60,
-	              iterations: 22,
-	              damping: 0.12,
-	              wireCompliance: defaultWireComplianceForRigidity(prev.rigidity),
-	              rigidity: prev.rigidity,
-	              hardStop: prev.hardStop,
-	              autoBend: prev.bendEnabled,
-	              stretchEnabled: prev.stretchEnabled,
-	            },
-	          }).joints;
-
-          return { ...prev, joints: projected };
-        });
-      }
-
-      rafId = requestAnimationFrame(tick);
-    };
-
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [
-    state.procgen.enabled,
-    state.timeline.enabled,
-    state.timeline.clip.easing,
-    state.timeline.clip.fps,
-    state.timeline.clip.frameCount,
-    state.timeline.clip.keyframes,
+  useTimelinePlayback({
+    enabled: !state.procgen.enabled && state.timeline.enabled,
     timelinePlaying,
-  ]);
-
-  useEffect(() => {
-    if (state.procgen.enabled) return;
-    if (!state.timeline.enabled) return;
-    if (timelinePlaying) return;
-    setState((prev) => {
-      const pose = sampleClipPose(prev.timeline.clip, timelineFrame, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled });
-      if (!pose) return prev;
-
-      const isFullFluid = getPhysicsBlendMode(prev) === 'fluid';
-      if (!isFullFluid || prev.activeRoots.length === 0) {
-        return { ...prev, joints: applyPoseSnapshotToJoints(prev.joints, pose) };
+    fps: timelineFps,
+    frameCount: timelineFrameCount,
+    timelineFrameRef,
+    setTimelineFrame,
+    setState,
+    getInitialRootTargets: getTimelineRootTargets,
+    samplePose: (s, frame) => {
+      const clip = s.timeline.clip;
+      if (timelineSolveMode === 'ik' || timelineSolveMode === 'ik+physics') {
+        return sampleClipPoseIk(clip, frame, INITIAL_JOINTS, timelineIkEffectors, { stretchEnabled: s.stretchEnabled });
       }
+      return sampleClipPose(clip, frame, INITIAL_JOINTS, { stretchEnabled: s.stretchEnabled });
+    },
+    applyPose: (joints, pose) => applyPoseSnapshotToJoints(joints, pose),
+    projectPosePhysicsIfNeeded: (s, joints, rootTargets) => {
+      if (timelineSolveMode === 'auto') return projectTimelinePose(s, joints, rootTargets);
+      if (timelineSolveMode !== 'physics' && timelineSolveMode !== 'ik+physics') return joints;
+      if (s.activeRoots.length === 0) return joints;
+      return stepPosePhysics({
+        joints,
+        baseJoints: INITIAL_JOINTS,
+        activeRoots: s.activeRoots,
+        rootTargets,
+        relativePins: s.relativePins,
+        drag: null,
+        connectionOverrides: s.connectionOverrides,
+        options: {
+          dt: 1 / 60,
+          iterations: 22,
+          damping: 0.12,
+          wireCompliance: defaultWireComplianceForRigidity(s.rigidity),
+          rigidity: s.rigidity,
+          hardStop: s.hardStop,
+          autoBend: s.bendEnabled,
+          stretchEnabled: s.stretchEnabled,
+        },
+      }).joints;
+    },
+  });
 
-      const seeded = applyPoseSnapshotToJoints(prev.joints, pose);
-      const rootTargets =
-        timelinePinTargetsRef.current ??
-        (() => {
-          const pose0 =
-            sampleClipPose(prev.timeline.clip, 0, INITIAL_JOINTS, { stretchEnabled: prev.stretchEnabled }) ??
-            capturePoseSnapshot(INITIAL_JOINTS, 'preview');
-          return prev.activeRoots.reduce<Record<string, Point>>((acc, rootId) => {
-            acc[rootId] = getWorldPositionFromOffsets(rootId, pose0.joints, INITIAL_JOINTS);
-            return acc;
-          }, {});
-        })();
-	      const projected = stepPosePhysics({
-	        joints: seeded,
-	        baseJoints: INITIAL_JOINTS,
-	        activeRoots: prev.activeRoots,
-	        rootTargets,
-	        drag: null,
-	        connectionOverrides: prev.connectionOverrides,
-	        options: {
-	          dt: 1 / 60,
-	          iterations: 22,
-	          damping: 0.12,
-	          wireCompliance: defaultWireComplianceForRigidity(prev.rigidity),
-	          rigidity: prev.rigidity,
-	          hardStop: prev.hardStop,
-	          autoBend: prev.bendEnabled,
-	          stretchEnabled: prev.stretchEnabled,
-	        },
-	      }).joints;
+  useTimelinePoseSync({
+    enabled: !state.procgen.enabled && state.timeline.enabled,
+    timelinePlaying,
+    timelineFrame,
+    setState,
+    samplePose: (s, frame) => {
+      const clip = s.timeline.clip;
+      if (timelineSolveMode === 'ik' || timelineSolveMode === 'ik+physics') {
+        return sampleClipPoseIk(clip, frame, INITIAL_JOINTS, timelineIkEffectors, { stretchEnabled: s.stretchEnabled });
+      }
+      return sampleClipPose(clip, frame, INITIAL_JOINTS, { stretchEnabled: s.stretchEnabled });
+    },
+    applyPose: (joints, pose) => applyPoseSnapshotToJoints(joints, pose),
+    projectPosePhysicsIfNeeded: (s, joints) => {
+      const rootTargets = getTimelineRootTargets(s);
+      if (timelineSolveMode === 'auto') return projectTimelinePose(s, joints, rootTargets);
+      if (timelineSolveMode !== 'physics' && timelineSolveMode !== 'ik+physics') return joints;
+      if (s.activeRoots.length === 0) return joints;
+      return stepPosePhysics({
+        joints,
+        baseJoints: INITIAL_JOINTS,
+        activeRoots: s.activeRoots,
+        rootTargets,
+        relativePins: s.relativePins,
+        drag: null,
+        connectionOverrides: s.connectionOverrides,
+        options: {
+          dt: 1 / 60,
+          iterations: 22,
+          damping: 0.12,
+          wireCompliance: defaultWireComplianceForRigidity(s.rigidity),
+          rigidity: s.rigidity,
+          hardStop: s.hardStop,
+          autoBend: s.bendEnabled,
+          stretchEnabled: s.stretchEnabled,
+        },
+      }).joints;
+    },
+  });
 
-      return { ...prev, joints: projected };
-    });
-  }, [state.procgen.enabled, state.timeline.enabled, state.timeline.clip, timelineFrame, timelinePlaying]);
+  const collectSubtreeIds = useCallback((rootId: string, joints: Record<string, Joint>): string[] => {
+    const childrenByParent: Record<string, string[]> = {};
+    for (const joint of Object.values(joints)) {
+      if (!joint.parent) continue;
+      (childrenByParent[joint.parent] ??= []).push(joint.id);
+    }
+
+    const out: string[] = [];
+    const stack: string[] = [rootId];
+    const visited = new Set<string>();
+
+    while (stack.length && visited.size < 128) {
+      const id = stack.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      out.push(id);
+      const kids = childrenByParent[id];
+      if (kids) {
+        for (const childId of kids) stack.push(childId);
+      }
+    }
+
+    return out;
+  }, []);
 
   const handleMouseDown = (id: string) => (e: React.MouseEvent) => {
+    if (!manikinMode && e.detail === 2) {
+      e.stopPropagation();
+      setTimelinePlaying(false);
+      setSelectedJointId(id);
+      setMaskJointId(id);
+      setSelectedConnectionKey(focusBoneKeyForJointId(id, state.joints));
+      syncRigFocusFromJointId(id);
+
+      if (e.shiftKey) toggleRoot(id);
+      else toggleRelativePin(id);
+      return;
+    }
     if (manikinMode) {
       e.stopPropagation();
       setTimelinePlaying(false);
@@ -2968,14 +2992,10 @@ export default function App() {
       if (!Number.isFinite(mouseAngle) || !Number.isFinite(currentAngle)) return;
 
       historyCtrlRef.current.beginAction(`manikin_rotate:${id}`, state);
+      rotateInputFilterRef.current = { id: `manikin:${id}`, tMs: performance.now(), filtered: currentAngle };
       const drag = { jointId: id, deltaRad: currentAngle - mouseAngle };
       setManikinRotateDragging(drag);
       manikinRotateDraggingLiveRef.current = drag;
-      return;
-    }
-    if (e.detail === 3) {
-      e.stopPropagation();
-      toggleRoot(id);
       return;
     }
 
@@ -2985,6 +3005,30 @@ export default function App() {
     setMaskJointId(id);
     setSelectedConnectionKey(focusBoneKeyForJointId(id, state.joints));
     syncRigFocusFromJointId(id);
+
+    // Default: single-click joint → pure FK rotation (subtree rotates with it).
+    // Use Ctrl/Cmd to force the legacy "drag target" behavior.
+    const clickedJoint = state.joints[id];
+    const wantsLegacyDrag = e.ctrlKey || e.metaKey;
+    if (!wantsLegacyDrag && clickedJoint?.parent) {
+      const mouseWorld = getMouseWorld(e.clientX, e.clientY);
+      const pivot = getWorldPosition(clickedJoint.parent, state.joints, INITIAL_JOINTS, 'preview');
+      const mouseAngle = Math.atan2(mouseWorld.y - pivot.y, mouseWorld.x - pivot.x);
+      const currentAngle = Math.atan2(clickedJoint.previewOffset.y, clickedJoint.previewOffset.x);
+      if (!Number.isFinite(mouseAngle) || !Number.isFinite(currentAngle)) return;
+
+      historyCtrlRef.current.beginAction(`fk_rotate:${id}`, state);
+      rotateInputFilterRef.current = { id: `fk:${id}`, tMs: performance.now(), filtered: currentAngle };
+      const drag = {
+        jointId: id,
+        deltaRad: currentAngle - mouseAngle,
+        subtreeIds: collectSubtreeIds(id, state.joints),
+      };
+      setFkRotateDragging(drag);
+      fkRotateDraggingLiveRef.current = drag;
+      return;
+    }
+
 	    historyCtrlRef.current.beginAction(`drag:${id}`, state);
 	    draggingIdLiveRef.current = id;
 	    const resolvedEffectiveId = resolveEffectiveManipulationId(id);
@@ -3002,6 +3046,7 @@ export default function App() {
 	    dragProxyOffsetWorldRef.current =
 	      resolvedEffectiveId === id ? null : { x: effectiveWorld.x - clickedWorld.x, y: effectiveWorld.y - clickedWorld.y };
 	    lastEffectiveMouseWorldRef.current = effectiveWorld;
+      dragInputFilterRef.current = { id: resolvedEffectiveId, tMs: performance.now(), filtered: effectiveWorld };
 
     if (autoPoseCaptureEnabled) {
       if (autoPoseRecordingTimerRef.current) {
@@ -3064,6 +3109,7 @@ export default function App() {
       rubberbandAnchorPinRef.current = null;
       dragStartTimeRef.current = Date.now();
       setIsLongPress(false);
+      rubberbandLongPressStartClientRef.current = { x: e.clientX, y: e.clientY };
       
       // Clear any existing timer
       if (longPressTimerRef.current) {
@@ -3144,24 +3190,25 @@ export default function App() {
     lastEffectiveMouseWorldRef.current = pinTargetsRef.current[rootId] ?? getWorldPosition(rootId, state.joints, INITIAL_JOINTS, 'preview');
   };
 
-  const handleMaskMouseDown = (jointId: string) => (e: React.MouseEvent) => {
+  const handleMaskMouseDown = (jointId: string) => (e: React.PointerEvent) => {
     if (!maskEditArmed) return;
     e.stopPropagation();
     if (manikinMode) return;
-	    setTimelinePlaying(false);
-	    setSelectedJointId(jointId);
+		    setTimelinePlaying(false);
+		    setSelectedJointId(jointId);
 	    setMaskJointId(jointId);
 	    dragProxyOffsetWorldRef.current = null;
 	    setSelectedConnectionKey(focusBoneKeyForJointId(jointId, state.joints));
 	    syncRigFocusFromJointId(jointId);
-    const mask = state.scene.jointMasks[jointId];
-    if (!mask?.src || !mask.visible) return;
-    historyCtrlRef.current.beginAction(`mask_drag:${jointId}`, state);
-    maskDraggingLiveRef.current = true;
-    setMaskDragging({
-      jointId,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
+	    const mask = state.scene.jointMasks[jointId];
+	    if (!mask?.src || !mask.visible) return;
+	    historyCtrlRef.current.beginAction(`mask_drag:${jointId}`, state);
+	    maskDraggingLiveRef.current = true;
+      (e.currentTarget as unknown as Element | null)?.setPointerCapture?.(e.pointerId);
+	    setMaskDragging({
+	      jointId,
+	      startClientX: e.clientX,
+	      startClientY: e.clientY,
       startOffsetX: mask.offsetX ?? 0,
       startOffsetY: mask.offsetY ?? 0,
       startRotation: mask.rotation ?? 0,
@@ -3172,7 +3219,8 @@ export default function App() {
       startSkewY: mask.skewY ?? 0,
       startAnchorX: mask.anchorX ?? 0.5,
       startAnchorY: mask.anchorY ?? 0.5,
-      mode: maskDragMode,
+      mode: 'move',
+      axisLock: null,
     });
   };
 
@@ -3357,6 +3405,20 @@ export default function App() {
         if (!canvasRef.current) return;
         const mouseWorldRaw = getMouseWorld(e.clientX, e.clientY);
 
+        // Rubberband long-press should only trigger on "hold still", not while actively dragging.
+        if (state.controlMode === 'Rubberband' && !isLongPress && longPressTimerRef.current) {
+          const start = rubberbandLongPressStartClientRef.current;
+          const dx = start ? e.clientX - start.x : 0;
+          const dy = start ? e.clientY - start.y : 0;
+          if (Math.hypot(dx, dy) >= 10) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+            setLongPressTimer(null);
+            rubberbandAnchorPinRef.current = null;
+            setRubberbandPose(null);
+          }
+        }
+
         // Enhanced cursor HUD (kept out of React render loop for performance)
         updateCursorHud({
           clientX: e.clientX,
@@ -3378,13 +3440,17 @@ export default function App() {
             const mouseAngle = Math.atan2(mouseWorldRaw.y - pivot.y, mouseWorldRaw.x - pivot.x);
             if (!Number.isFinite(mouseAngle)) return;
             const desiredAngleRaw = mouseAngle + drag.deltaRad;
+            const desiredAngleFiltered = applyAngleInputProcessing(desiredAngleRaw, `manikin:${drag.jointId}`, performance.now(), {
+              inertia: state.materialInertia,
+              forceExact: Boolean(e.shiftKey),
+            });
 
             setState((prev) => {
               const j = prev.joints[drag.jointId];
               if (!j?.parent) return prev;
 
               const cur = Math.atan2(j.previewOffset.y, j.previewOffset.x);
-              const next = unwrapAngleRad(cur, desiredAngleRaw);
+              const next = unwrapAngleRad(cur, desiredAngleFiltered);
               const delta = next - cur;
               const c = Math.cos(delta);
               const s = Math.sin(delta);
@@ -3402,6 +3468,65 @@ export default function App() {
             });
             return;
           }
+        }
+
+        const fkDrag = fkRotateDraggingLiveRef.current;
+        if (fkDrag) {
+          const joint = state.joints[fkDrag.jointId];
+          if (!joint?.parent) return;
+
+          const pivot = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS, 'preview');
+          const mouseAngle = Math.atan2(mouseWorldRaw.y - pivot.y, mouseWorldRaw.x - pivot.x);
+          if (!Number.isFinite(mouseAngle)) return;
+          const desiredAngleRaw = mouseAngle + fkDrag.deltaRad;
+          const desiredAngleFiltered = applyAngleInputProcessing(desiredAngleRaw, `fk:${fkDrag.jointId}`, performance.now(), {
+            inertia: state.materialInertia,
+            forceExact: Boolean(e.shiftKey),
+          });
+
+          setState((prev) => {
+            const root = prev.joints[fkDrag.jointId];
+            if (!root?.parent) return prev;
+
+            const cur = Math.atan2(root.previewOffset.y, root.previewOffset.x);
+            const next = unwrapAngleRad(cur, desiredAngleFiltered);
+            const delta = next - cur;
+            if (!Number.isFinite(delta) || Math.abs(delta) < 1e-12) return prev;
+
+            const c = Math.cos(delta);
+            const s = Math.sin(delta);
+            const rot = (p: Point) => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c });
+
+            const nextJoints = { ...prev.joints };
+            const affectedSet = new Set(fkDrag.subtreeIds);
+            for (const id of fkDrag.subtreeIds) {
+              const j = nextJoints[id];
+              if (!j) continue;
+              nextJoints[id] = {
+                ...j,
+                previewOffset: rot(j.previewOffset),
+                targetOffset: rot(j.targetOffset),
+                currentOffset: rot(j.currentOffset),
+              };
+            }
+
+            if (prev.mirroring) {
+              for (const id of fkDrag.subtreeIds) {
+                const j = nextJoints[id];
+                const mirrorId = j?.mirrorId;
+                if (!mirrorId) continue;
+                if (affectedSet.has(mirrorId)) continue;
+                const mirror = nextJoints[mirrorId];
+                if (!mirror) continue;
+                const off = nextJoints[id]!.previewOffset;
+                const mirrored = { x: -off.x, y: off.y };
+                nextJoints[mirrorId] = { ...mirror, previewOffset: mirrored, targetOffset: mirrored, currentOffset: mirrored };
+              }
+            }
+
+            return { ...prev, joints: nextJoints };
+          });
+          return;
         }
 
         if (!manikinMode) {
@@ -3424,8 +3549,10 @@ export default function App() {
 
           if (maskDragging) {
             maskDraggingLiveRef.current = true;
-            let dx = e.clientX - maskDragging.startClientX;
-            let dy = e.clientY - maskDragging.startClientY;
+            const rawDx = e.clientX - maskDragging.startClientX;
+            const rawDy = e.clientY - maskDragging.startClientY;
+            let dx = rawDx;
+            let dy = rawDy;
             if (e.altKey) {
               dx *= PRECISION_DRAG_SCALE;
               dy *= PRECISION_DRAG_SCALE;
@@ -3438,6 +3565,24 @@ export default function App() {
             const viewScale = Math.max(1e-6, state.viewScale);
             const dxWorld = dx / viewScale;
             const dyWorld = dy / viewScale;
+
+            let axisLock = maskDragging.axisLock;
+            if (maskDragging.mode === 'stretch' && axisLock === null) {
+              const distPx = Math.hypot(rawDx, rawDy);
+              if (distPx >= MASK_STRETCH_LOCK_COMMIT_PX) {
+                const ax = Math.abs(rawDx);
+                const ay = Math.abs(rawDy);
+                if (ax >= ay * MASK_STRETCH_LOCK_RATIO) axisLock = 'x';
+                else if (ay >= ax * MASK_STRETCH_LOCK_RATIO) axisLock = 'y';
+                else axisLock = 'both';
+                const nextLock = axisLock;
+                setMaskDragging((prevDrag) => {
+                  if (!prevDrag || prevDrag.jointId !== jointId) return prevDrag;
+                  if (prevDrag.axisLock === nextLock) return prevDrag;
+                  return { ...prevDrag, axisLock: nextLock };
+                });
+              }
+            }
             setState((prev) => {
               const mask = prev.scene.jointMasks[jointId];
               if (!mask) return prev;
@@ -3484,11 +3629,18 @@ export default function App() {
                     return { scale: Math.max(0.01, Math.min(20, nextScale)) };
                   }
                   case 'stretch': {
+                    if (axisLock === null) return {};
                     const fx = 1 + dx / 200;
                     const fy = 1 + dy / 200;
                     return {
-                      stretchX: Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
-                      stretchY: Math.max(0.1, Math.min(10, maskDragging.startStretchY * fy)),
+                      stretchX:
+                        axisLock === 'y'
+                          ? maskDragging.startStretchX
+                          : Math.max(0.1, Math.min(10, maskDragging.startStretchX * fx)),
+                      stretchY:
+                        axisLock === 'x'
+                          ? maskDragging.startStretchY
+                          : Math.max(0.1, Math.min(10, maskDragging.startStretchY * fy)),
                     };
                   }
                   case 'skew': {
@@ -3509,6 +3661,7 @@ export default function App() {
                   }
                 }
               })();
+              if (Object.keys(next).length === 0) return prev;
               return {
                 ...prev,
                 scene: {
@@ -3768,6 +3921,13 @@ export default function App() {
 	        const proxyOffset = dragProxyOffsetWorldRef.current;
 	        const targetX = proxyOffset && effectiveId !== draggingId ? mouseX + proxyOffset.x : mouseX;
 	        const targetY = proxyOffset && effectiveId !== draggingId ? mouseY + proxyOffset.y : mouseY;
+          const nowMs = performance.now();
+          const rawDragTarget = { x: targetX, y: targetY };
+          const finalTarget = applyDragInputProcessing(rawDragTarget, effectiveId, nowMs, {
+            inertia: state.materialInertia,
+            viewScale: state.viewScale,
+            forceExact: Boolean(e.shiftKey),
+          });
 
 	        const isRooted = state.activeRoots.includes(effectiveId);
 	        if (isRooted && rootDragKindLiveRef.current !== 'root_target') {
@@ -3776,8 +3936,8 @@ export default function App() {
             if (!joint?.parent) return prev;
 	            const rootWorld =
 	              pinTargetsRef.current[effectiveId] ?? getWorldPosition(effectiveId, prev.joints, INITIAL_JOINTS, 'preview');
-	            const dx = targetX - rootWorld.x;
-	            const dy = targetY - rootWorld.y;
+	            const dx = finalTarget.x - rootWorld.x;
+	            const dy = finalTarget.y - rootWorld.y;
 	            const mag = Math.hypot(dx, dy);
 	            if (!Number.isFinite(mag) || mag < 1e-6) return prev;
 	            const nx = dx / mag;
@@ -3810,7 +3970,7 @@ export default function App() {
 	        if (isFluidBalanceMode && hasRootedFeet && isBalanceHandle && pinWorld) {
             // Smooth top-handle balance targets to avoid micro-jitter when the solver is constrained by pinned feet.
             // (Keep FK crisp; this only applies to fluid balance handles.)
-            const rawTarget = { x: targetX, y: targetY };
+            const rawTarget = rawDragTarget;
             const smoothedTarget = (() => {
               if (effectiveId !== 'head' && effectiveId !== 'neck_base') return rawTarget;
               const now = performance.now();
@@ -3833,13 +3993,13 @@ export default function App() {
 
 	        const excludeFromPhysicsDrag = effectiveId === 'sternum' || effectiveId === 'collar';
 	        if (shouldRunPosePhysics(state) && !excludeFromPhysicsDrag) {
-	          dragTargetRef.current = { id: effectiveId, target: { x: targetX, y: targetY } };
+	          dragTargetRef.current = { id: effectiveId, target: finalTarget };
 	          return;
 	        }
 
-	        setState((prev) => applyDragToState(prev, effectiveId, { x: targetX, y: targetY }));
+	        setState((prev) => applyDragToState(prev, effectiveId, finalTarget));
 	      },
-      [draggingId, groundRootDragging, maskDragging, rootLeverDraggingId, rootRotateDragging, state.activeRoots, state.stretchEnabled, state.viewScale, state.viewOffset, canvasSize],
+      [draggingId, groundRootDragging, maskDragging, rootLeverDraggingId, rootRotateDragging, state.activeRoots, state.controlMode, state.stretchEnabled, state.materialInertia, state.viewScale, state.viewOffset, canvasSize, isLongPress],
     );
 
   const handleMouseUp = () => {
@@ -3852,10 +4012,20 @@ export default function App() {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+    rubberbandLongPressStartClientRef.current = null;
+
+    if (fkRotateDraggingLiveRef.current) {
+      setFkRotateDragging(null);
+      fkRotateDraggingLiveRef.current = null;
+      rotateInputFilterRef.current = null;
+      commitHistoryAction();
+      return;
+    }
 
     if (manikinRotateDraggingLiveRef.current) {
       setManikinRotateDragging(null);
       manikinRotateDraggingLiveRef.current = null;
+      rotateInputFilterRef.current = null;
       commitHistoryAction();
       return;
     }
@@ -3909,6 +4079,7 @@ export default function App() {
         // If timeline is active, advance to next frame
         const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
         const nextFrame = Math.min(timelineFrameRef.current + 1, maxFrame);
+        timelineFrameRef.current = nextFrame;
         setTimelineFrame(nextFrame);
       } else {
         // Otherwise restore the rubberband pose
@@ -3941,6 +4112,8 @@ export default function App() {
     effectiveDraggingIdLiveRef.current = null;
     pinWorldRef.current = null;
     dragTargetRef.current = null;
+    dragInputFilterRef.current = null;
+    rotateInputFilterRef.current = null;
     setDraggingId(null);
     setState((prev) => {
       let next = prev;
@@ -4031,133 +4204,11 @@ export default function App() {
     [state.timeline.clip.frameCount],
   );
 
-  const fitTimelineToBackgroundVideo = useCallback(() => {
-    if (!state.scene.background.src) {
-      alert('Set a background reference first.');
-      return;
-    }
-
-    setTimelinePlaying(false);
-    timelineFrameRef.current = 0;
-    setTimelineFrame(0);
-
-    setStateWithHistory('timeline_fit_to_bg_ref', (prev) => {
-      const maxFrames = 600;
-      const videoRate = clamp(prev.scene.background.videoRate, 0.05, 4);
-
-      const resolveDurationSeconds = (): number => {
-        if (prev.scene.background.mediaType === 'video') {
-          const duration = bgVideoMeta?.duration ?? 0;
-          return Number.isFinite(duration) ? duration : 0;
-        }
-        if (prev.scene.background.mediaType === 'sequence') {
-          const id = prev.scene.background.sequence?.id;
-          const seq = id ? referenceSequencesRef.current.get(id) : null;
-          if (!seq) return 0;
-          const fps = clamp(Math.floor(seq.fps || 24), 1, 60);
-          return seq.frames.length / fps;
-        }
-        return 0;
-      };
-
-      const durationSeconds = resolveDurationSeconds();
-      if (!durationSeconds) {
-        alert('Background reference metadata not loaded yet. Try toggling the background visibility or Pose Trace on/off.');
-        return prev;
-      }
-
-      const baseFps =
-        prev.scene.background.mediaType === 'sequence'
-          ? clamp(Math.floor(prev.scene.background.sequence?.fps || prev.timeline.clip.fps || 24), 1, 60)
-          : clamp(Math.floor(prev.timeline.clip.fps || 24), 1, 60);
-
-      const startSeconds = clamp(prev.scene.background.videoStart, 0, Math.max(0, durationSeconds));
-      const totalTimelineSeconds = Math.max(0, (durationSeconds - startSeconds) / Math.max(0.0001, videoRate));
-
-      let fps = baseFps;
-      let frameCount = Math.ceil(totalTimelineSeconds * fps);
-
-      if (frameCount > maxFrames) {
-        fps = clamp(Math.floor(maxFrames / Math.max(0.001, totalTimelineSeconds)), 1, 60);
-        frameCount = Math.ceil(totalTimelineSeconds * fps);
-      }
-
-      frameCount = clamp(frameCount, 2, maxFrames);
-
-      return {
-        ...prev,
-        timeline: {
-          ...prev.timeline,
-          enabled: true,
-	          clip: {
-	            ...prev.timeline.clip,
-	            fps,
-	            frameCount,
-	            keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
-	              (k) => k.frame < frameCount,
-	            ),
-	          },
-	        },
-	      };
-    });
-  }, [
-    bgVideoMeta?.duration,
-    setStateWithHistory,
-    state.scene.background.src,
-  ]);
-
-  const setKeyframeHere = useCallback(() => {
-    setTimelinePlaying(false);
-    setStateWithHistory('timeline_set_keyframe', (prev) => {
-      const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
-      const frame = clamp(timelineFrame, 0, frameCount - 1);
-      const pose = capturePoseSnapshot(prev.joints, 'preview');
-
-	      const keyframes = (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
-	        (k) => k.frame !== frame,
-	      );
-	      keyframes.push({ frame, pose });
-	      keyframes.sort((a, b) => a.frame - b.frame);
-
-      return {
-        ...prev,
-        timeline: {
-          ...prev.timeline,
-          clip: {
-            ...prev.timeline.clip,
-            keyframes,
-          },
-        },
-      };
-    });
-  }, [setStateWithHistory, timelineFrame]);
-
-  const deleteKeyframeHere = useCallback(() => {
-    setTimelinePlaying(false);
-    setStateWithHistory('timeline_delete_keyframe', (prev) => {
-      const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
-      const frame = clamp(timelineFrame, 0, frameCount - 1);
-	      const prevKeyframes = Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : [];
-	      const keyframes = prevKeyframes.filter((k) => k.frame !== frame);
-	      if (keyframes.length === prevKeyframes.length) return prev;
-	      return {
-	        ...prev,
-	        timeline: {
-          ...prev.timeline,
-          clip: {
-            ...prev.timeline.clip,
-            keyframes,
-          },
-        },
-      };
-    });
-  }, [setStateWithHistory, timelineFrame]);
-
-  const sendPoseToTimeline = useCallback((poseSnapshot: PoseSnapshot, targetFrame?: number) => {
+  const sendPoseToTimeline = useCallback((poseSnapshot: EnginePoseSnapshot, targetFrame?: number) => {
     setStateWithHistory('send_pose_to_timeline', (prev) => {
       const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
       const frame = targetFrame !== undefined ? clamp(targetFrame, 0, frameCount - 1) : timelineFrame;
-      const pose = capturePoseSnapshot(poseSnapshot.joints, 'preview');
+      const pose: EnginePoseSnapshot = { joints: { ...(poseSnapshot.joints ?? {}) } };
 
 	      const keyframes = (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
 	        (k) => k.frame !== frame,
@@ -4177,7 +4228,7 @@ export default function App() {
         },
       };
     });
-  }, [setStateWithHistory, state.timeline.enabled, timelineFrame]);
+  }, [setStateWithHistory, timelineFrame]);
 
   const interpolateSelectedPoses = useCallback(() => {
     if (selectedPoseIndices.length < 2) return;
@@ -4192,29 +4243,29 @@ export default function App() {
       const endFrame = clamp(startFrame + (selectedPoses.length - 1) * spacing, 0, 599);
       const nextFrameCount = clamp(Math.max(baseFrameCount, endFrame + 1), 2, 600);
       
-      if (!prev.timeline.enabled) {
-        return {
-          ...prev,
-          timeline: {
-            ...prev.timeline,
-            enabled: true,
-            clip: {
-              ...prev.timeline.clip,
-              frameCount: nextFrameCount,
-              keyframes: selectedPoses.map((pose, index) => ({
-                frame: index * spacing,
-                pose: capturePoseSnapshot(pose.joints, 'preview'),
-              })),
-            },
-          },
-        };
-      }
+	      if (!prev.timeline.enabled) {
+	        return {
+	          ...prev,
+	          timeline: {
+	            ...prev.timeline,
+	            enabled: true,
+	            clip: {
+	              ...prev.timeline.clip,
+	              frameCount: nextFrameCount,
+	              keyframes: selectedPoses.map((pose, index) => ({
+	                frame: index * spacing,
+	                pose: { joints: { ...(pose.pose.joints ?? {}) } },
+	              })),
+	            },
+	          },
+	        };
+	      }
 
-      const newKeyByFrame = new Map<number, { frame: number; pose: ReturnType<typeof capturePoseSnapshot> }>();
-      for (let i = 0; i < selectedPoses.length; i += 1) {
-        const frame = clamp(startFrame + i * spacing, 0, nextFrameCount - 1);
-        newKeyByFrame.set(frame, { frame, pose: capturePoseSnapshot(selectedPoses[i]!.joints, 'preview') });
-      }
+	      const newKeyByFrame = new Map<number, { frame: number; pose: ReturnType<typeof capturePoseSnapshot> }>();
+	      for (let i = 0; i < selectedPoses.length; i += 1) {
+	        const frame = clamp(startFrame + i * spacing, 0, nextFrameCount - 1);
+	        newKeyByFrame.set(frame, { frame, pose: { joints: { ...(selectedPoses[i]!.pose.joints ?? {}) } } });
+	      }
       const newFrames = new Set(newKeyByFrame.keys());
       const mergedKeyframes = (prev.timeline.clip.keyframes ?? [])
         .filter((k) => !newFrames.has(k.frame))
@@ -4246,6 +4297,50 @@ export default function App() {
       }
     });
   }, []);
+
+  const toggleRelativePin = useCallback(
+    (jointId: string) => {
+      if (manikinMode) return;
+      setStateWithHistory('toggle_relative_pin', (prev) => {
+        const joint = prev.joints[jointId];
+        if (!joint?.parent) return prev;
+        if (jointId === 'root') return prev;
+
+        const ids: string[] = [jointId];
+        if (prev.mirroring && joint.mirrorId) {
+          const mirror = prev.joints[joint.mirrorId];
+          if (mirror?.parent && joint.mirrorId !== 'root') ids.push(joint.mirrorId);
+        }
+
+        const prevPins = prev.relativePins ?? {};
+        const nextPins: Record<string, Point> = { ...prevPins };
+
+        const shouldUnpin = Boolean(prevPins[jointId]);
+        let changed = false;
+
+        if (shouldUnpin) {
+          for (const id of ids) {
+            if (nextPins[id]) {
+              delete nextPins[id];
+              changed = true;
+            }
+          }
+        } else {
+          for (const id of ids) {
+            const j = prev.joints[id];
+            if (!j?.parent) continue;
+            const off = j.previewOffset ?? j.targetOffset ?? j.baseOffset;
+            nextPins[id] = { x: off.x, y: off.y };
+            changed = true;
+          }
+        }
+
+        if (!changed) return prev;
+        return { ...prev, relativePins: nextPins };
+      });
+    },
+    [manikinMode, setStateWithHistory],
+  );
 
   const toggleRoot = (id: string) => {
     if (manikinMode) return;
@@ -4471,6 +4566,7 @@ export default function App() {
     const isLotte = state.lookMode === 'lotte';
     const isRoot = !joint.parent;
     const isSelected = selectedJointId === id;
+    const isRelPinned = Boolean(state.relativePins?.[id]);
 
     // `root` is a technical joint (world translation); keep it invisible.
     if (id === 'root') return null;
@@ -4510,6 +4606,8 @@ export default function App() {
           ? 'white'
           : state.activeRoots.includes(id)
             ? '#00ff88'
+            : isRelPinned
+              ? '#ffcc66'
             : state.controlMode === 'Rubberband' && isLongPress
               ? '#ff4444'
               : 'var(--accent)';
@@ -4527,7 +4625,8 @@ export default function App() {
     const baseGlow = isNosferatu ? 0 : glowStrength * 0.35;
     const selectedGlow = isSelected ? 0.18 : 0;
     const pinnedGlow = state.activeRoots.includes(id) ? 0.22 : 0;
-    const glowOpacity = clamp(baseGlow + selectedGlow + pinnedGlow, 0, 0.75);
+    const relPinnedGlow = isRelPinned ? 0.16 : 0;
+    const glowOpacity = clamp(baseGlow + selectedGlow + pinnedGlow + relPinnedGlow, 0, 0.75);
 
     return (
       <g key={`joint-${id}`}>
@@ -4927,7 +5026,7 @@ export default function App() {
           width={width}
           height={height}
           opacity={mask.opacity}
-          onMouseDown={handleMaskMouseDown(jointId)}
+          onPointerDown={handleMaskMouseDown(jointId)}
           style={{
             transformOrigin: `${originX}px ${originY}px`,
             transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
@@ -5007,8 +5106,9 @@ export default function App() {
     return hierarchy;
   };
 
-  // While placing/transforming masks, keep joints above masks so FK/IK manipulation stays accessible.
-  const jointsOverMasksEffective = state.jointsOverMasks || maskEditArmed;
+  // While placing/transforming masks, put masks above joints so mask interactions aren't blocked by joint hit targets.
+  // (User can still opt into joints-above-masks when not actively placing.)
+  const jointsOverMasksEffective = state.jointsOverMasks && !maskEditArmed;
 
   const jointsLayer = state.showJoints
     ? (() => {
@@ -5039,9 +5139,6 @@ export default function App() {
     return <>{children}</>;
   };
 
-  // Safeguard against stale localStorage / invalid widget ids causing runtime crashes.
-  const activeWidgetMeta = WIDGETS[activeWidgetId] ?? WIDGETS.tools;
-
   const activeDockedWidgetFocusRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     // Focus the docked widget container so keyboard interactions go to the active widget,
@@ -5065,10 +5162,9 @@ export default function App() {
 	        data-build-id={BUILD_ID}
 	      >
       {/* Sidebar */}
-	      <motion.aside 
-	        initial={false}
-	        animate={{ width: sidebarOpen ? 360 : 0 }}
-	        className="relative z-10 bg-[#121212] border-r border-[#222] overflow-hidden flex flex-col"
+	      <aside
+	        style={{ width: sidebarOpen ? 360 : 0 }}
+	        className="relative z-10 bg-[#121212] border-r border-[#222] overflow-hidden flex flex-col transition-[width] duration-200 ease-out"
 	        onDragOver={(e) => {
 	          if (!WIDGET_DND_ENABLED) return;
 	          if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
@@ -5083,9 +5179,7 @@ export default function App() {
       >
         <div className="w-[360px] h-full flex flex-col">
           <div className="p-6 pb-4">
-            <div
-              className={`flex items-center gap-3 ${sidebarTab === 'global' ? 'opacity-0 pointer-events-none select-none' : ''}`}
-            >
+            <div className="flex items-center gap-3">
               <div className="p-2 bg-white rounded-lg">
                 <button
                   type="button"
@@ -5111,7 +5205,7 @@ export default function App() {
                 <p className="text-[11px] text-white/70">
                   Pose, plan, and export motion from reference.
                 </p>
-                <p className="text-[10px] text-[#666] uppercase tracking-[0.2em] font-mono">
+                <p className="text-[11px] text-[#8a8a8a] uppercase tracking-[0.2em] font-mono">
                   v0.2 · build {BUILD_ID}
                 </p>
               </div>
@@ -5119,14 +5213,14 @@ export default function App() {
 
             <div className="mt-4 mb-3 flex flex-col gap-2">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">Roots</div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#8a8a8a]">Rotations & Pins</div>
                 <div className="flex items-center gap-2">
-                  <div className="text-[9px] font-mono text-[#444]">{state.activeRoots.length} active</div>
+                  <div className="text-[10px] font-mono text-[#777]">{state.activeRoots.length} pinned</div>
                   <button
                     type="button"
                     onClick={() => setRootMenuMinimized((v) => !v)}
-                    className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                    title={rootMenuMinimized ? 'Expand Roots' : 'Minimize Roots'}
+                    className="px-2 py-1 rounded text-[11px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                    title={rootMenuMinimized ? 'Expand Rotations & Pins' : 'Minimize Rotations & Pins'}
                   >
                     {rootMenuMinimized ? 'Expand' : 'Minimize'}
                   </button>
@@ -5144,7 +5238,7 @@ export default function App() {
                       key={`rootquick:${id}`}
                       type="button"
                       onClick={() => toggleRoot(id)}
-                      className={`flex-1 px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                      className={`flex-1 px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
                         active ? 'bg-[#00ff88] text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
                       }`}
                       title={`Toggle root: ${label}`}
@@ -5163,18 +5257,18 @@ export default function App() {
                     }));
                     pinTargetsRef.current = {};
                   }}
-                  className="px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#181818] hover:bg-[#222] text-[#888]"
-                  title="Clear roots (use Ground Root)"
+                  className="px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#181818] hover:bg-[#222] text-[#888]"
+                  title="Clear pins (use Ground Root)"
                 >
-	                  Clear
-	                </button>
+		                  Clear
+		                </button>
 	              </div>
 
 	              <div className="flex items-center gap-2">
 	                <input
 	                  ref={rootPickerInputRef}
 	                  list="root-picker-datalist"
-	                  placeholder="Pick a root…"
+	                  placeholder="Pin a joint…"
 	                  onPointerDown={(e) => e.stopPropagation()}
 	                  onKeyDown={(e) => {
 	                    if (e.key !== 'Enter') return;
@@ -5187,7 +5281,7 @@ export default function App() {
 	                    if (rootPickerInputRef.current) rootPickerInputRef.current.value = '';
 	                  }}
 	                  className="flex-1 px-2 py-1.5 rounded-lg text-[10px] bg-[#181818] border border-white/5 text-[#ddd] placeholder:text-[#555]"
-	                  title="Type a joint id and press Enter"
+	                  title="Type a joint id and press Enter to pin/unpin"
 	                />
 	                <button
 	                  type="button"
@@ -5201,8 +5295,8 @@ export default function App() {
 	                    toggleRoot(id);
 	                    if (rootPickerInputRef.current) rootPickerInputRef.current.value = '';
 	                  }}
-	                  className="px-2 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#222] hover:bg-[#333] text-[#bbb]"
-	                  title="Toggle the typed root"
+	                  className="px-2 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 bg-[#222] hover:bg-[#333] text-[#bbb]"
+	                  title="Toggle the typed pin"
 	                >
 	                  Toggle
 	                </button>
@@ -5214,7 +5308,7 @@ export default function App() {
 	              </datalist>
 	
 	              <div className="flex items-center gap-3">
-	                <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666] shrink-0">Rotate</div>
+	                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#8a8a8a] shrink-0">Root Rotation</div>
 	                <input
                   type="range"
                   min={-360}
@@ -5280,8 +5374,94 @@ export default function App() {
                   }}
                   className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                 />
-                <div className="text-[9px] font-mono text-[#444] w-14 text-right tabular-nums">{canvasRotationDeg.toFixed(0)}°</div>
-              </div>
+                <div className="text-[10px] font-mono text-[#777] w-14 text-right tabular-nums">{canvasRotationDeg.toFixed(0)}°</div>
+	              </div>
+
+                {(() => {
+                  const jointIds = Object.keys(state.joints).sort((a, b) => {
+                    const la = state.joints[a]?.label ?? a;
+                    const lb = state.joints[b]?.label ?? b;
+                    return la.localeCompare(lb);
+                  });
+
+                  const selectedId = selectedJointId && selectedJointId in state.joints ? selectedJointId : '';
+                  const selected = selectedId ? state.joints[selectedId] : null;
+                  const effectiveAngleId = selected ? resolveEffectiveManipulationId(selected.id) : null;
+                  const effective = effectiveAngleId ? state.joints[effectiveAngleId] : null;
+                  const labelSuffix = selected?.id === 'navel' && effectiveAngleId === 'sternum' ? ' (Sternum)' : '';
+                  const angleDeg = effective ? toAngleDeg(effective.previewOffset) : 0;
+                  const actionId = selected ? `joint_angle:${selected.id}` : '';
+
+                  return (
+                    <div className="pt-1 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#8a8a8a] shrink-0">
+                          Joint Rotation
+                        </div>
+                        <div className="font-mono text-[10px] text-[#777]">{selected?.label ?? (selectedId || '—')}</div>
+                      </div>
+                      <select
+                        value={selectedId}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const next = e.target.value;
+                          setSelectedJointId(next ? next : null);
+                        }}
+                        className="w-full px-2 py-2 bg-[#222] rounded-lg text-[11px] border border-white/5 font-bold tracking-wide text-[#ddd]"
+                        title="Select a joint (syncs with canvas selection)"
+                      >
+                        <option value="">Select a joint…</option>
+	                        {jointIds.map((id) => (
+	                          <option key={`joint-rot:roots:${id}`} value={id}>
+	                            {state.joints[id]?.label ?? id}
+	                          </option>
+	                        ))}
+                      </select>
+
+                      {!selected || !effective || !effective.parent ? (
+                        <div className="text-[10px] text-[#777]">Pick a joint (or click one on the canvas) to rotate it.</div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between">
+                            <div className="text-[10px] font-bold uppercase tracking-widest text-[#8a8a8a]">
+                              {selected.label}
+                              {labelSuffix} Angle
+                            </div>
+                            <div className="font-mono text-[11px] text-white tabular-nums">{angleDeg.toFixed(1)}°</div>
+                          </div>
+                          <input
+                            type="range"
+                            min="-180"
+                            max="180"
+                            step="1"
+                            value={angleDeg}
+                            onPointerDown={(e) => {
+                              e.stopPropagation();
+                              setTimelinePlaying(false);
+                              historyCtrlRef.current.beginAction(actionId, state);
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onTouchStart={(e) => e.stopPropagation()}
+                            onPointerUp={() =>
+                              setState((prev) => {
+                                const changed = historyCtrlRef.current.commitAction(prev);
+                                return changed ? { ...prev } : prev;
+                              })
+                            }
+                            onPointerCancel={() =>
+                              setState((prev) => {
+                                const changed = historyCtrlRef.current.commitAction(prev);
+                                return changed ? { ...prev } : prev;
+                              })
+                            }
+                            onChange={(e) => setJointAngleDeg(effectiveAngleId!, parseFloat(e.target.value))}
+                            className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                          />
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
 
 	              </>
 	              )}
@@ -5298,45 +5478,34 @@ export default function App() {
               ).map((tab) => {
                 const active = sidebarTab === tab.id;
                 return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setSidebarTab(tab.id)}
-                    className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      active ? 'bg-white text-black' : 'text-[#666] hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
+	                  <button
+	                    key={tab.id}
+	                    type="button"
+	                    onClick={() => setSidebarTab(tab.id)}
+	                    className={`flex-1 py-2 rounded-lg text-[11px] font-bold uppercase tracking-widest transition-all ${
+	                      active ? 'bg-white text-black' : 'text-[#8a8a8a] hover:text-white hover:bg-white/5'
+	                    }`}
+	                  >
+	                    {tab.label}
+	                  </button>
+	                );
+	              })}
             </div>
           </div>
 
           <div ref={sidebarWidgetDockRef} className="flex-1 min-h-0 flex flex-col px-6 pb-6">
             <div className="flex-1 min-h-0 flex flex-col" style={{ minHeight: '33%' }}>
-              <section className="shrink-0 mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">{activeWidgetMeta.title}</div>
-                    <div className="pointer-events-auto">
-                      <HelpTip text={activeWidgetMeta.docs} />
-                    </div>
-                  </div>
-                </div>
-              </section>
-
               <div
                 ref={activeDockedWidgetFocusRef}
                 tabIndex={-1}
-                className="flex-1 min-h-0 overflow-y-auto mt-4 outline-none focus:ring-2 focus:ring-white/10 focus:ring-offset-0 rounded-lg"
+                className="flex-1 min-h-0 overflow-y-auto mt-3 outline-none focus:ring-2 focus:ring-white/10 focus:ring-offset-0 rounded-lg"
               >
               <div className="space-y-6 pb-6">
                 <WidgetPortal id="edit">
             <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
+              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                 <Move size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Edit</h2>
+                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Edit</h2>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -5369,10 +5538,10 @@ export default function App() {
 
                 <WidgetPortal id="tools">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Anchor size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Tools
                       </h2>
@@ -5399,10 +5568,10 @@ export default function App() {
 
                 <WidgetPortal id="joint_masks">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Anchor size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Masks
                       </h2>
@@ -5415,8 +5584,6 @@ export default function App() {
                         setMaskJointId={setMaskJointId}
                         maskEditArmed={maskEditArmed}
                         setMaskEditArmed={setMaskEditArmed}
-                        maskDragMode={maskDragMode}
-                        setMaskDragMode={setMaskDragMode}
                         uploadJointMaskFile={uploadJointMaskFile}
                         uploadMaskFile={uploadMaskFile}
                         copyJointMaskTo={copyJointMaskTo}
@@ -5427,10 +5594,10 @@ export default function App() {
 
                 <WidgetPortal id="cutout_relationships">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Layers size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Cutout Relationships
                       </h2>
@@ -5448,10 +5615,10 @@ export default function App() {
 
                 <WidgetPortal id="bone_inspector">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Layers size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Rig Inspector
                       </h2>
@@ -5686,10 +5853,10 @@ export default function App() {
 
                 <WidgetPortal id="console">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Terminal size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Console
                       </h2>
@@ -5761,10 +5928,10 @@ export default function App() {
 
                 <WidgetPortal id="camera">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Maximize2 size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Camera
                       </h2>
@@ -5891,10 +6058,10 @@ export default function App() {
 
                 <WidgetPortal id="procgen">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Sparkles size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Auto Motion
                       </h2>
@@ -5915,10 +6082,10 @@ export default function App() {
 
                 <WidgetPortal id="atomic_units">
                   <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
+                    <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                       <Grid size={14} />
                       <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
                         Advanced Controls
                       </h2>
@@ -5938,9 +6105,9 @@ export default function App() {
 
                 <WidgetPortal id="rig_controls">
               <section>
-	              <div className="flex items-center gap-2 mb-4 text-[#666]">
+	              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
 	                <Settings2 size={14} />
-	                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rig Controls</h2>
+	                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Rig Controls</h2>
                 <HelpTip
                   text={
                     <>
@@ -5959,7 +6126,7 @@ export default function App() {
                 />
 	              </div>
               <div className="space-y-2">
-                <Toggle 
+                <SimpleToggle 
                   label="Mirroring" 
                   active={state.mirroring} 
                   onClick={() =>
@@ -5969,7 +6136,7 @@ export default function App() {
                     }))
                   }
                 />
-                <Toggle 
+                <SimpleToggle 
                   label="Auto-Bend (B)" 
                   active={state.bendEnabled} 
                   onClick={() =>
@@ -5978,7 +6145,7 @@ export default function App() {
                     )
                   }
                 />
-                        <Toggle 
+                        <SimpleToggle 
                           label="Elasticity (S)" 
                           active={state.stretchEnabled} 
                           onClick={() =>
@@ -5987,7 +6154,7 @@ export default function App() {
                             )
                           }
                         />
-                  <Toggle
+                  <SimpleToggle
                     label="Lead (L)"
                     active={state.leadEnabled}
                     onClick={() =>
@@ -5997,7 +6164,7 @@ export default function App() {
                       }))
                     }
                   />
-                        <Toggle 
+                        <SimpleToggle 
                           label="Hard Stop" 
                           active={state.hardStop} 
                           onClick={() =>
@@ -6096,13 +6263,13 @@ export default function App() {
 
                 <WidgetPortal id="responsiveness">
             <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
+              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                 <Activity size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Responsiveness</h2>
+                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Responsiveness</h2>
               </div>
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-[#444]">
+                  <div className="flex justify-between text-[11px] font-bold uppercase tracking-widest text-[#777]">
                     <span>Responsiveness</span>
                     <span className="text-white">{(state.snappiness * 100).toFixed(0)}%</span>
                   </div>
@@ -6130,8 +6297,41 @@ export default function App() {
                     }}
                     className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                   />
-                  <div className="text-[#666] text-[9px]">
+                  <div className="text-[#777] text-[10px]">
                     Higher = follows your drag more tightly.
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between text-[11px] font-bold uppercase tracking-widest text-[#777]">
+                    <span>Material Inertia</span>
+                    <span className="text-white">{(state.materialInertia * 100).toFixed(0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={state.materialInertia}
+                    onPointerDown={() => {
+                      setTimelinePlaying(false);
+                      historyCtrlRef.current.beginAction('material_inertia', stateLiveRef.current);
+                    }}
+                    onPointerUp={commitHistoryAction}
+                    onPointerCancel={commitHistoryAction}
+                    onChange={(e) => {
+                      const raw = parseFloat(e.target.value || '0');
+                      if (!Number.isFinite(raw)) return;
+                      const v = clamp(raw, 0, 1);
+                      applyEngineTransition(
+                        'set_material_inertia',
+                        (prev) => (prev.materialInertia === v ? prev : { ...prev, materialInertia: v }),
+                        { pushHistory: false },
+                      );
+                    }}
+                    className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                  />
+                  <div className="text-[#777] text-[10px]">
+                    Higher = smoother, less jitter (adds input damping + velocity cap while dragging).
                   </div>
                 </div>
               </div>
@@ -6140,9 +6340,9 @@ export default function App() {
 
                 <WidgetPortal id="look">
             <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
+              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                 <Maximize2 size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Look</h2>
+                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Look</h2>
               </div>
                       <div className="grid grid-cols-2 gap-2">
                         {LOOK_MODES.map((mode) => (
@@ -6153,7 +6353,7 @@ export default function App() {
                         prev.lookMode === mode.id ? prev : { ...prev, lookMode: mode.id as LookModeId },
                       )
                     }
-                    className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all ${state.lookMode === mode.id ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'}`}
+                    className={`p-2 rounded-lg border text-[11px] font-bold uppercase transition-all ${state.lookMode === mode.id ? 'bg-white text-black border-white' : 'bg-transparent text-[#9a9a9a] border-[#222] hover:border-[#444]'}`}
                   >
                     {mode.label}
                   </button>
@@ -6245,9 +6445,9 @@ export default function App() {
 
                 <WidgetPortal id="views">
             <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
+              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                 <Layers size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Views</h2>
+                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Views</h2>
               </div>
               <div className="space-y-2">
                 <div className="grid grid-cols-3 gap-2">
@@ -6264,7 +6464,7 @@ export default function App() {
                         };
                       })
                     }
-                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+                    className="py-2 rounded-lg text-[11px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
                   >
                     New
                   </button>
@@ -6272,7 +6472,7 @@ export default function App() {
                     type="button"
                     onClick={() => applyEngineTransition('update_view_from_current', (prev) => updateViewFromCurrentState(prev, prev.activeViewId))}
                     disabled={!state.activeViewId}
-                    className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                    className={`py-2 rounded-lg text-[11px] font-bold uppercase transition-all ${
                       state.activeViewId ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
                     }`}
                   >
@@ -6282,7 +6482,7 @@ export default function App() {
                     type="button"
                     onClick={() => applyEngineTransition('delete_view', (prev) => deleteView(prev, prev.activeViewId))}
                     disabled={!state.activeViewId || state.views.length <= 1}
-                    className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                    className={`py-2 rounded-lg text-[11px] font-bold uppercase transition-all ${
                       state.activeViewId && state.views.length > 1 ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
                     }`}
                   >
@@ -6298,8 +6498,8 @@ export default function App() {
                         key={`view:${view.id}`}
                         type="button"
                         onClick={() => (active ? null : requestViewSwitch(view.id))}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all ${
-                          active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'
+                        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-[11px] font-bold uppercase tracking-widest transition-all ${
+                          active ? 'bg-white text-black border-white' : 'bg-transparent text-[#9a9a9a] border-[#222] hover:border-[#444]'
                         }`}
                         title={view.name}
                       >
@@ -6316,15 +6516,15 @@ export default function App() {
 
                 <WidgetPortal id="pixel_fonts">
             <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
+              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                 <Terminal size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pixel Fonts</h2>
+                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pixel Fonts</h2>
               </div>
               <div className="space-y-2">
                 <select
                   value={titleFont}
                   onChange={(e) => setTitleFont(e.target.value)}
-                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
+                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[11px] border border-white/5 font-bold uppercase tracking-widest"
                 >
                   <option value="pixel-mono">Classic Pixel (Press Start)</option>
                   <option value="pixel-retro">Retro Terminal (VT323)</option>
@@ -6336,7 +6536,7 @@ export default function App() {
                   <option value="pixel-brush">Brush Script (Zhi Mang)</option>
                   <option value="pixel-elegant">Elegant Script (Ma Shan)</option>
                 </select>
-                <div className="text-[#666] text-[9px]">
+                <div className="text-[#777] text-[10px]">
                   Font style for all titles and intertitles
                 </div>
               </div>
@@ -6345,9 +6545,9 @@ export default function App() {
 
                 <WidgetPortal id="background">
             <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
+              <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                 <Settings2 size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Background</h2>
+                <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Background</h2>
               </div>
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
@@ -6377,63 +6577,49 @@ export default function App() {
 
                 <WidgetPortal id="animation">
               <section>
-                <div className="flex items-center gap-2 mb-4 text-[#666]">
+                <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                   <RotateCcw size={14} />
-                  <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Animation</h2>
+                  <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Animation</h2>
                 </div>
-                <div className="space-y-2">
-                  <Toggle
-                    label="Timeline"
-                    active={state.timeline.enabled}
-                    onClick={() => {
-                      setTimelinePlaying(false);
-                      setStateWithHistory('toggle_timeline', (prev) => ({
+                <PoseTimelineWidget
+                  state={state}
+                  timelinePlaying={timelinePlaying}
+                  solveMode={timelineSolveMode}
+                  setSolveMode={setTimelineSolveMode}
+                  ikEffectors={timelineIkEffectors}
+                  setIkEffectors={setTimelineIkEffectors}
+                  onPlay={() => {
+                    if (!state.timeline.enabled) {
+                      setStateWithHistory('pose_timeline:enable', (prev) => ({
                         ...prev,
-                        timeline: {
-                          ...prev.timeline,
-                          enabled: !prev.timeline.enabled,
-                        },
+                        timeline: { ...prev.timeline, enabled: true },
                       }));
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTimelinePlaying(false);
-                      setStateWithHistory('timeline_clear_keys', (prev) => ({
-                        ...prev,
-                        timeline: {
-                          ...prev.timeline,
-                          clip: { ...prev.timeline.clip, keyframes: [] },
-                        },
-                      }));
-                    }}
-	                    disabled={timelineKeyframes.length === 0}
-	                    className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
-	                      timelineKeyframes.length > 0
-	                        ? 'bg-[#222] hover:bg-[#333]'
-	                        : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-                    title="Clear all keyframes"
-                  >
-                    <Trash2 size={12} />
-                    Clear Keys
-                  </button>
-                </div>
+                    }
+                    timelineFrameRef.current = timelineFrame;
+                    setTimelinePlaying(true);
+                  }}
+                  onPause={() => setTimelinePlaying(false)}
+                  onStop={() => {
+                    setTimelinePlaying(false);
+                    applyTimelineFrame(0);
+                  }}
+                  applyTimelineFrame={applyTimelineFrame}
+                  setStateWithHistory={setStateWithHistory}
+                />
               </section>
                 </WidgetPortal>
 
                 <WidgetPortal id="project">
                     <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                         <Download size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Project</h2>
+                        <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Project</h2>
                       </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={downloadStateJson}
-                  className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[11px] font-bold uppercase transition-all"
                   title="Save a project file (.json)"
                 >
                   Save Project
@@ -6441,7 +6627,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => importStateInputRef.current?.click()}
-                  className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[11px] font-bold uppercase transition-all"
                   title="Open a project file (.json)"
                 >
 	                    Open Project
@@ -6482,16 +6668,16 @@ export default function App() {
 
                 <WidgetPortal id="export">
                     <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                         <Upload size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Export</h2>
+                        <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Export</h2>
                       </div>
                               <div className="grid grid-cols-2 gap-2">
                                 <button
                                   type="button"
                                   onClick={exportSvg}
                                   disabled={!canvasSize.width || !canvasSize.height}
-                          className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                          className={`py-2 rounded-lg text-[11px] font-bold uppercase transition-all ${
                             canvasSize.width && canvasSize.height
                               ? 'bg-[#222] hover:bg-[#333]'
                               : 'bg-[#181818] text-[#444] cursor-not-allowed'
@@ -6503,7 +6689,7 @@ export default function App() {
                           type="button"
                           onClick={() => void exportPng()}
                           disabled={!canvasSize.width || !canvasSize.height}
-                          className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                          className={`py-2 rounded-lg text-[11px] font-bold uppercase transition-all ${
                             canvasSize.width && canvasSize.height
                               ? 'bg-[#222] hover:bg-[#333]'
                               : 'bg-[#181818] text-[#444] cursor-not-allowed'
@@ -6515,9 +6701,17 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => void exportVideo()}
-                    disabled={!canvasSize.width || !canvasSize.height || !state.timeline.enabled}
-                    className={`w-full mt-2 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
-                      canvasSize.width && canvasSize.height && state.timeline.enabled
+                    disabled={
+                      !canvasSize.width ||
+                      !canvasSize.height ||
+                      !Array.isArray(state.timeline.clip.keyframes) ||
+                      state.timeline.clip.keyframes.length < 2
+                    }
+                    className={`w-full mt-2 py-2 rounded-lg text-[11px] font-bold uppercase transition-all ${
+                      canvasSize.width &&
+                      canvasSize.height &&
+                      Array.isArray(state.timeline.clip.keyframes) &&
+                      state.timeline.clip.keyframes.length >= 2
                         ? 'bg-[#222] hover:bg-[#333]'
                         : 'bg-[#181818] text-[#444] cursor-not-allowed'
                     }`}
@@ -6530,21 +6724,26 @@ export default function App() {
 
                 <WidgetPortal id="pose_capture">
                     <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                         <RotateCcw size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pose Capture</h2>
+                        <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pose Capture</h2>
                       </div>
               <div className="space-y-2">
                 <button 
-                  onClick={() =>
-                    setPoseSnapshots((h) => {
-                      const { timeline, ...snapshot } = state;
-                      void timeline;
-                      const timestampedSnapshot = { ...snapshot, timestamp: Date.now() };
-                      return [timestampedSnapshot, ...h].slice(0, 5);
-                    })
-                  }
-                  className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+	                  onClick={() =>
+	                    setPoseSnapshots((h) => {
+	                      const snapshot: PoseSnapshot = {
+	                        id:
+	                          typeof crypto !== 'undefined' && 'randomUUID' in crypto
+	                            ? crypto.randomUUID()
+	                            : `pose_${Date.now()}`,
+	                        ts: Date.now(),
+	                        pose: capturePoseSnapshot(state.joints, 'preview'),
+	                      };
+	                      return [snapshot, ...h].slice(0, 5);
+	                    })
+	                  }
+                  className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[11px] font-bold uppercase transition-all"
                 >
                   Save Pose
                 </button>
@@ -6681,15 +6880,21 @@ export default function App() {
                     const isSelected = selectedPoseIndices.includes(i);
                     const snapshotIndex = poseSnapshots.length - i;
                     
-                    return (
-                      <button 
-                        key={i}
-                        onClick={() => setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...h }))}
-                        onDoubleClick={() => sendPoseToTimeline(h)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          togglePoseSelection(i);
-                        }}
+	                    return (
+	                      <button 
+	                        key={h.id}
+	                        onClick={() => {
+	                          setTimelinePlaying(false);
+	                          setStateWithHistory('apply_pose_snapshot', (prev) => ({
+	                            ...prev,
+	                            joints: applyPoseSnapshotToJoints(prev.joints, h.pose),
+	                          }));
+	                        }}
+	                        onDoubleClick={() => sendPoseToTimeline(h.pose)}
+	                        onContextMenu={(e) => {
+	                          e.preventDefault();
+	                          togglePoseSelection(i);
+	                        }}
                         className={`w-full flex items-center justify-between p-2 rounded-md text-[10px] transition-colors ${
                           isSelected 
                             ? 'bg-[#3366cc]/30 border border-[#3366cc]/50' 
@@ -6702,15 +6907,12 @@ export default function App() {
                             <div className="w-2 h-2 bg-[#3366cc] rounded-full" />
                           )}
                           <span>Pose {snapshotIndex}</span>
-                        </div>
-                        <span className="text-[#444]">
-                          {h.timestamp 
-                            ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                            : "—"
-                          }
-                        </span>
-                      </button>
-                    );
+	                        </div>
+	                        <span className="text-[#444]">
+	                          {new Date(h.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+	                        </span>
+	                      </button>
+	                    );
 			          })}
                 </div>
                 
@@ -6728,9 +6930,9 @@ export default function App() {
 
                 <WidgetPortal id="scene">
                     <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
+                      <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
                         <Layers size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Scene</h2>
+                        <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Scene</h2>
                       </div>
 
                       {/* Vitruvian Guides */}
@@ -6758,7 +6960,7 @@ export default function App() {
                       </div>
 
                 <div className="space-y-2 mb-4">
-                  <Toggle
+                  <SimpleToggle
                     label="Joints"
                     active={state.showJoints}
                     onClick={() =>
@@ -6768,7 +6970,7 @@ export default function App() {
                       }))
                     }
                   />
-                  <Toggle
+                  <SimpleToggle
                     label="Joints Above Masks"
                     active={state.jointsOverMasks}
                     onClick={() =>
@@ -7662,71 +7864,17 @@ export default function App() {
 
                 <WidgetPortal id="joint_hierarchy">
                     <section>
-                      <div className="flex items-center gap-2 mb-4 text-[#666]">
-                        <Layers size={14} />
-                        <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Joint Hierarchy</h2>
-                      </div>
-              {(() => {
-                const selected = selectedJointId ? state.joints[selectedJointId] : null;
-                const effectiveAngleId = selected ? resolveEffectiveManipulationId(selected.id) : null;
-                const effective = effectiveAngleId ? state.joints[effectiveAngleId] : null;
-                if (!selected || !effective || !effective.parent) {
-                  return (
-                    <div className="mb-3 text-[10px] text-[#444]">
-                      Select a joint to edit rotation.
-                    </div>
-                  );
-                }
-
-                const angleDeg = toAngleDeg(effective.previewOffset);
-                const actionId = `joint_angle:${selected.id}`;
-                const labelSuffix = selected.id === 'navel' && effectiveAngleId === 'sternum' ? ' (Sternum)' : '';
-
-                return (
-                  <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                        {selected.label}
-                        {labelSuffix} Angle
-                      </div>
-                      <div className="font-mono text-xs text-white">{angleDeg.toFixed(1)}°</div>
-                    </div>
-                    <input
-                      type="range"
-                      min="-180"
-                      max="180"
-                      step="1"
-                              value={angleDeg}
-                              onPointerDown={(e) => {
-                        // Prevent canvas drag handlers from stealing the interaction.
-                        e.stopPropagation();
-                          setTimelinePlaying(false);
-                          historyCtrlRef.current.beginAction(actionId, state);
-                        }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onTouchStart={(e) => e.stopPropagation()}
-                      onPointerUp={() =>
-                        setState((prev) => {
-                          const changed = historyCtrlRef.current.commitAction(prev);
-                          return changed ? { ...prev } : prev;
-                        })
-                      }
-                      onPointerCancel={() =>
-                        setState((prev) => {
-                          const changed = historyCtrlRef.current.commitAction(prev);
-                          return changed ? { ...prev } : prev;
-                        })
-                      }
-                      onChange={(e) => setJointAngleDeg(effectiveAngleId!, parseFloat(e.target.value))}
-                      className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                    />
+	                      <div className="flex items-center gap-2 mb-4 text-[#8a8a8a]">
+	                        <Layers size={14} />
+	                        <h2 className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Joint Hierarchy</h2>
+	                      </div>
+                  <div className="mb-3 text-[10px] text-[#777]">
+                    Use <span className="font-bold text-[#bbb]">Rotations & Pins</span> above to rotate the selected joint.
                   </div>
-                );
-              })()}
-                      <div className="max-h-[300px] overflow-y-auto pr-2 space-y-1">
-                        {buildJointHierarchy().map((item, index) => (
-                          <div key={`${item.type}-${item.joint.id}-${index}`}>
-	                            {item.type === 'joint' ? (
+	                      <div className="max-h-[300px] overflow-y-auto pr-2 space-y-1">
+	                        {buildJointHierarchy().map((item, index) => (
+	                          <div key={`${item.type}-${item.joint.id}-${index}`}>
+		                            {item.type === 'joint' ? (
 	                              <div 
 	                                onPointerDown={(e) => {
 	                                  if (e.detail === 3) {
@@ -7788,10 +7936,10 @@ export default function App() {
               style={{ height: widgetDockMinimized ? 44 : widgetDockHeightPx }}
             >
               <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-[#666]">
+                <div className="flex items-center gap-2 text-[#8a8a8a]">
                   <Anchor size={14} />
                   <h2
-                    className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                    className={`text-[11px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                   >
                     Widgets
                   </h2>
@@ -7799,7 +7947,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setWidgetDockMinimized((v) => !v)}
-                  className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                  className="px-2 py-1 rounded text-[11px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
                   title={widgetDockMinimized ? 'Expand widget dock' : 'Minimize widget dock'}
                 >
                   {widgetDockMinimized ? 'Expand' : 'Minimize'}
@@ -7826,7 +7974,7 @@ export default function App() {
                               : undefined
                           }
                           onClick={() => activateWidget(id)}
-                          className={`relative py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${
+                          className={`relative py-2 rounded-lg text-[11px] font-bold uppercase transition-all border ${
                             active
                               ? 'bg-white text-black border-white'
                               : 'bg-[#222] hover:bg-[#333] border-[#222] text-white'
@@ -7851,10 +7999,10 @@ export default function App() {
                     })}
                   </div>
 
-                  <div className="mt-3 text-[10px] text-[#444]">
+                  <div className="mt-3 text-[11px] text-[#666]">
                     {WIDGET_DND_ENABLED ? (
                       <>
-                        Drag onto the canvas to pop out. Hold <span className="font-mono text-[#666]">Alt</span> while
+                        Drag onto the canvas to pop out. Hold <span className="font-mono text-[#8a8a8a]">Alt</span> while
                         dragging/resizing to disable snapping.
                       </>
                     ) : (
@@ -7885,7 +8033,7 @@ export default function App() {
             </button>
           </div>
         </div>
-      </motion.aside>
+      </aside>
 
 	      {/* Main Viewport */}
 	      <main
@@ -8111,8 +8259,6 @@ export default function App() {
               )}
 
               {/* Engine Content */}
-              {/* ... (Existing rendering logic like Onion Skin, Bones, etc.) ... */}
-              {/* Note: I'm wrapping the rest of the SVG contents in this <g> */}
 
               {renderProcgenGroundPlane()}
 
@@ -8350,276 +8496,7 @@ export default function App() {
                 </span>
              </button>
           </div>
-          {state.timeline.enabled && (() => {
-            const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
-            const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
-	            const hasKeyframe = timelineKeyframes.some((k) => k.frame === timelineFrame);
-
-            return (
-              <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-[#121212]/90 backdrop-blur-md border border-[#222] rounded-xl px-6 py-4">
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (timelinePlaying) {
-                        setTimelinePlaying(false);
-                        return;
-                      }
-                      timelineFrameRef.current = timelineFrame;
-                      setTimelinePlaying(true);
-                    }}
-                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                  >
-                    {timelinePlaying ? 'Pause' : 'Play'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={setKeyframeHere}
-                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                  >
-                    {hasKeyframe ? 'Update Key' : 'Set Key'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={deleteKeyframeHere}
-                    disabled={!hasKeyframe}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      hasKeyframe ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                  >
-                    Delete Key
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setPoseTracingEnabled((prev) => !prev)}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      poseTracingEnabled ? 'bg-[#3366cc] text-white' : 'bg-[#222] hover:bg-[#333]'
-                    }`}
-                    title="Pose Trace (P)"
-                  >
-                    Pose Trace
-                  </button>
-
-	                  <button
-	                    type="button"
-	                    onClick={() => jumpToAdjacentKeyframe(-1)}
-	                    disabled={!timelineKeyframes.length}
-	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-	                    title="Prev keyframe ([ or Shift+←)"
-	                  >
-                    Prev Key
-                  </button>
-
-	                  <button
-	                    type="button"
-	                    onClick={() => jumpToAdjacentKeyframe(1)}
-	                    disabled={!timelineKeyframes.length}
-	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-	                    title="Next keyframe (] or Shift+→)"
-	                  >
-                    Next Key
-                  </button>
-
-                  {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && state.scene.background.src && (
-                    <button
-                      type="button"
-                      onClick={fitTimelineToBackgroundVideo}
-                      className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                      title="Match timeline length to background reference"
-                    >
-                      Match Ref
-                    </button>
-                  )}
-
-                  <div className="ml-auto flex items-center gap-4">
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>FPS</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={state.timeline.clip?.fps || 24}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 1, 60);
-                          setStateWithHistory('timeline_set_fps', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              clip: { ...prev.timeline.clip, fps: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>Frames</span>
-                      <input
-                        type="number"
-                        min={2}
-                        max={600}
-                        value={state.timeline.clip?.frameCount || 120}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 2, 600);
-                          setStateWithHistory('timeline_set_frame_count', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-	                              clip: {
-	                                ...prev.timeline.clip,
-	                                frameCount: next,
-	                                keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
-	                                  (k) => k.frame < next,
-	                                ),
-	                              },
-	                            },
-	                          }));
-                          setTimelineFrame((f) => {
-                            const clamped = clamp(f, 0, next - 1);
-                            timelineFrameRef.current = clamped;
-                            return clamped;
-                          });
-                        }}
-                        className="w-20 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>Easing</span>
-                      <select
-                        value={state.timeline.clip?.easing || 'linear'}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = e.target.value === 'easeInOut' ? 'easeInOut' : 'linear';
-                          setStateWithHistory('timeline_set_easing', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              clip: { ...prev.timeline.clip, easing: next },
-                            },
-                          }));
-                        }}
-                        className="px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white text-xs"
-                      >
-                        <option value="linear">Linear</option>
-                        <option value="easeInOut">EaseInOut</option>
-                      </select>
-                    </div>
-
-                    <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
-                      <input
-                        type="checkbox"
-                        checked={state.timeline.onionSkin.enabled}
-                        onChange={() => {
-                          setTimelinePlaying(false);
-                          setStateWithHistory('toggle_onion_skin', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, enabled: !prev.timeline.onionSkin.enabled },
-                            },
-                          }));
-                        }}
-                        className="accent-white"
-                      />
-                      Onion
-                    </label>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="w-28 font-mono text-xs text-[#666]">
-                    {timelineFrame}/{frameCount - 1}
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={frameCount - 1}
-                    step={1}
-                    value={timelineFrame}
-                    onPointerDown={() => {
-                      setTimelinePlaying(false);
-                      historyCtrlRef.current.beginAction('timeline_scrub', state);
-                    }}
-                    onPointerUp={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onPointerCancel={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onChange={(e) => applyTimelineFrame(parseInt(e.target.value, 10))}
-                    className="flex-1 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                  />
-                  <div className="w-24 text-[10px] font-bold uppercase tracking-widest text-[#666] text-right">
-                    Keys: {state.timeline.clip?.keyframes?.length || 0}
-                  </div>
-                </div>
-
-                {state.timeline.onionSkin.enabled && (
-                  <div className="mt-3 flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                    <div className="flex items-center gap-2">
-                      <span>Past</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={state.timeline.onionSkin.past}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
-                          setStateWithHistory('onion_past', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, past: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Future</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={state.timeline.onionSkin.future}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
-                          setStateWithHistory('onion_future', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, future: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+          {/* Pose timeline controls live in the sidebar (Animation widget). */}
                   </svg>
 
           {/* Floating Widgets */}
@@ -8875,276 +8752,7 @@ export default function App() {
           </div>
         </div>
 
-          {state.timeline.enabled && (() => {
-            const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
-            const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
-	            const hasKeyframe = timelineKeyframes.some((k) => k.frame === timelineFrame);
-
-            return (
-              <div className="shrink-0 bg-[#121212] border-t border-[#222] px-6 py-4">
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (timelinePlaying) {
-                        setTimelinePlaying(false);
-                        return;
-                      }
-                      timelineFrameRef.current = timelineFrame;
-                      setTimelinePlaying(true);
-                    }}
-                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                  >
-                    {timelinePlaying ? 'Pause' : 'Play'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={setKeyframeHere}
-                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                  >
-                    {hasKeyframe ? 'Update Key' : 'Set Key'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={deleteKeyframeHere}
-                    disabled={!hasKeyframe}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      hasKeyframe ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                  >
-                    Delete Key
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setPoseTracingEnabled((prev) => !prev)}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      poseTracingEnabled ? 'bg-[#3366cc] text-white' : 'bg-[#222] hover:bg-[#333]'
-                    }`}
-                    title="Pose Trace (P)"
-                  >
-                    Pose Trace
-                  </button>
-
-	                  <button
-	                    type="button"
-	                    onClick={() => jumpToAdjacentKeyframe(-1)}
-	                    disabled={!timelineKeyframes.length}
-	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-	                    title="Prev keyframe ([ or Shift+←)"
-	                  >
-                    Prev Key
-                  </button>
-
-	                  <button
-	                    type="button"
-	                    onClick={() => jumpToAdjacentKeyframe(1)}
-	                    disabled={!timelineKeyframes.length}
-	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-	                    title="Next keyframe (] or Shift+→)"
-	                  >
-                    Next Key
-                  </button>
-
-                  {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && state.scene.background.src && (
-                    <button
-                      type="button"
-                      onClick={fitTimelineToBackgroundVideo}
-                      className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                      title="Match timeline length to background reference"
-                    >
-                      Match Ref
-                    </button>
-                  )}
-
-                  <div className="ml-auto flex items-center gap-4">
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>FPS</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={state.timeline.clip?.fps || 24}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 1, 60);
-                          setStateWithHistory('timeline_set_fps', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              clip: { ...prev.timeline.clip, fps: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>Frames</span>
-                      <input
-                        type="number"
-                        min={2}
-                        max={600}
-                        value={state.timeline.clip?.frameCount || 120}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 2, 600);
-                          setStateWithHistory('timeline_set_frame_count', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-	                              clip: {
-	                                ...prev.timeline.clip,
-	                                frameCount: next,
-	                                keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
-	                                  (k) => k.frame < next,
-	                                ),
-	                              },
-	                            },
-	                          }));
-                          setTimelineFrame((f) => {
-                            const clamped = clamp(f, 0, next - 1);
-                            timelineFrameRef.current = clamped;
-                            return clamped;
-                          });
-                        }}
-                        className="w-20 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>Easing</span>
-                      <select
-                        value={state.timeline.clip?.easing || 'linear'}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = e.target.value === 'easeInOut' ? 'easeInOut' : 'linear';
-                          setStateWithHistory('timeline_set_easing', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              clip: { ...prev.timeline.clip, easing: next },
-                            },
-                          }));
-                        }}
-                        className="px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white text-xs"
-                      >
-                        <option value="linear">Linear</option>
-                        <option value="easeInOut">EaseInOut</option>
-                      </select>
-                    </div>
-
-                    <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
-                      <input
-                        type="checkbox"
-                        checked={state.timeline.onionSkin.enabled}
-                        onChange={() => {
-                          setTimelinePlaying(false);
-                          setStateWithHistory('toggle_onion_skin', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, enabled: !prev.timeline.onionSkin.enabled },
-                            },
-                          }));
-                        }}
-                        className="accent-white"
-                      />
-                      Onion
-                    </label>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="w-28 font-mono text-xs text-[#666]">
-                    {timelineFrame}/{frameCount - 1}
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={frameCount - 1}
-                    step={1}
-                    value={timelineFrame}
-                    onPointerDown={() => {
-                      setTimelinePlaying(false);
-                      historyCtrlRef.current.beginAction('timeline_scrub', state);
-                    }}
-                    onPointerUp={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onPointerCancel={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onChange={(e) => applyTimelineFrame(parseInt(e.target.value, 10))}
-                    className="flex-1 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                  />
-                  <div className="w-24 text-[10px] font-bold uppercase tracking-widest text-[#666] text-right">
-                    Keys: {state.timeline.clip?.keyframes?.length || 0}
-                  </div>
-                </div>
-
-                {state.timeline.onionSkin.enabled && (
-                  <div className="mt-3 flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                    <div className="flex items-center gap-2">
-                      <span>Past</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={state.timeline.onionSkin.past}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
-                          setStateWithHistory('onion_past', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, past: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Future</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={state.timeline.onionSkin.future}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
-                          setStateWithHistory('onion_future', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, future: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+          {/* Pose timeline controls live in the sidebar (Animation widget). */}
   </main>
   <ViewSwitchDialog
     open={viewSwitchOpen}
@@ -9178,18 +8786,4 @@ export default function App() {
 </div>
 </TooltipProvider>
 );
-}
-
-function Toggle({ label, active, onClick }: { label: string, active: boolean, onClick: () => void }) {
-  return (
-    <button 
-      onClick={onClick}
-      type="button"
-      aria-pressed={active}
-      className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all ${active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'}`}
-    >
-      <span className="text-[11px] font-bold uppercase tracking-tight">{label}</span>
-      {active ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
-    </button>
-  );
 }

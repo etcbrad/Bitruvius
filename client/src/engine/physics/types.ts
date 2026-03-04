@@ -17,6 +17,14 @@ export type PinConstraint = {
   compliance: number; // 0 = hard pin
 };
 
+export type OffsetConstraint = {
+  kind: 'offset';
+  a: string;
+  b: string;
+  rest: Point; // desired world delta (b - a)
+  compliance: number; // 0 = hard
+};
+
 export type AxisSpringConstraint = {
   kind: 'axisSpring';
   id: string;
@@ -56,6 +64,7 @@ export type HingeSoftConstraint = {
 export type XpbdConstraint =
   | DistanceConstraint
   | PinConstraint
+  | OffsetConstraint
   | AxisSpringConstraint
   | AxisLimitConstraint
   | HingeLimitConstraint

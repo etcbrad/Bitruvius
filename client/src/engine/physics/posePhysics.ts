@@ -109,6 +109,7 @@ export type PosePhysicsInput = {
   baseJoints?: Record<string, Joint>;
   activeRoots: string[];
   rootTargets: Record<string, Point>;
+  relativePins?: Record<string, Point>;
   drag: { id: string; target: Point } | null;
   connectionOverrides?: SkeletonState['connectionOverrides'];
   extraConstraints?: XpbdConstraint[];
@@ -178,6 +179,7 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   const baseJoints = input.baseJoints ?? INITIAL_JOINTS;
   const joints = input.joints;
   const connectionOverrides = input.connectionOverrides ?? {};
+  const relativePins = input.relativePins ?? {};
 
   const dt = clamp(input.options.dt, 1 / 120, 1 / 20);
   const cfg: XpbdConfig = {
@@ -225,6 +227,18 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   for (const id of Object.keys(baseJoints)) {
     const joint = joints[id] ?? baseJoints[id];
     if (!joint?.parent) continue;
+
+    const pinned = Boolean(relativePins[id]) && input.drag?.id !== id;
+    if (pinned) {
+      const desiredRest = relativePins[id];
+      const rest = isFinitePoint(desiredRest)
+        ? desiredRest
+        : isFinitePoint(joint.previewOffset)
+          ? joint.previewOffset
+          : baseJoints[id]!.previewOffset;
+      constraints.push({ kind: 'offset', a: joint.parent, b: id, rest, compliance: 0 });
+      continue;
+    }
 
     const key = joint.parent < id ? `${joint.parent}:${id}` : `${id}:${joint.parent}`;
     const conn = connMap.get(key);
@@ -403,5 +417,6 @@ export const shouldRunPosePhysics = (state: SkeletonState): boolean => {
   const cm = state.controlMode;
   if (cm === 'IK' || cm === 'Rubberband' || cm === 'JointDrag') return true;
   if (state.activeRoots.length > 0) return true;
+  if (Object.keys(state.relativePins ?? {}).length > 0) return true;
   return Boolean(state.stretchEnabled) || Boolean(state.bendEnabled);
 };

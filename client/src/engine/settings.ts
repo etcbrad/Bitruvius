@@ -353,6 +353,7 @@ export const makeDefaultState = (): SkeletonState => {
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
 	    // Default: FK-first with a single planted foot for stability.
 	    activeRoots: ['r_ankle'],
+      relativePins: {},
 	    groundRootTarget,
 	    footPlungerEnabled: false,
 	    showJoints: true,
@@ -643,6 +644,20 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     ? Array.from(new Set(rawRoots.filter((id): id is string => typeof id === 'string' && id in INITIAL_JOINTS)))
     : base.activeRoots;
 
+  const rawRelativePins = (raw as any).relativePins;
+  const relativePins: Record<string, Point> = {};
+  if (rawRelativePins && typeof rawRelativePins === 'object') {
+    for (const [id, value] of Object.entries(rawRelativePins as Record<string, unknown>)) {
+      if (!(id in INITIAL_JOINTS)) continue;
+      if (id === 'root') continue;
+      if (!INITIAL_JOINTS[id]?.parent) continue;
+      if (!value || typeof value !== 'object') continue;
+      const v = value as { x?: unknown; y?: unknown };
+      if (!isFiniteNumber(v.x) || !isFiniteNumber(v.y)) continue;
+      relativePins[id] = { x: v.x, y: v.y };
+    }
+  }
+
   const rawTimeline =
     raw.timeline && typeof raw.timeline === 'object' ? (raw.timeline as unknown as Record<string, unknown>) : null;
   const rawClip =
@@ -905,6 +920,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     hardStop: finalHardStop,
     physicsRigidity: finalPhysicsRigidity,
     activeRoots,
+    relativePins,
     groundRootTarget,
     footPlungerEnabled,
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,

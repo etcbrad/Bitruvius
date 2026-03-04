@@ -177,7 +177,7 @@ export const WIDGETS: Record<
     title: 'Animation',
     tabGroup: 'animation',
     isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Timeline and keyframe tools.</div>,
+    docs: <div className="text-[11px] text-[#bbb]">Pose-to-pose timeline and playback.</div>,
     defaultFloatSize: { w: 420, h: 340 },
     minFloatSize: { w: 260, h: 200 },
   },

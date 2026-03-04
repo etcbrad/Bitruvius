@@ -351,10 +351,16 @@ export type SkeletonState = {
    */
   physicsRigidity?: number;
   /**
-   * "Roots" are hard world pins for joints. They are planted via triple-click
+   * "Roots" are hard world pins for joints. They are planted via Shift+double click
    * in the editor, and used by the physics solver as zero-compliance pin constraints.
    */
   activeRoots: string[];
+  /**
+   * "Relative pins" lock a joint's local offset relative to its parent (world delta),
+   * so the joint follows parent motion but does not pick up extra motion from physics/compliance.
+   * Toggled via double-click in the editor.
+   */
+  relativePins: Record<string, Point>;
   /**
    * When no joint roots are active, the engine uses a "Ground Root" that anchors
    * the center of gravity (sternum-heavy) to this world-space target.
