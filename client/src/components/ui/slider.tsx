@@ -14,6 +14,14 @@ type SliderProps = React.ComponentProps<typeof SliderPrimitive.Root> & {
   thumbStyle?: React.CSSProperties;
 };
 
+const sanitizeSliderValues = (values: unknown, fallback: number[]) => {
+  if (!Array.isArray(values)) return fallback;
+  const out = values
+    .map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null))
+    .filter((v): v is number => v !== null);
+  return out.length ? out : fallback;
+};
+
 function Slider({
   className,
   defaultValue,
@@ -31,15 +39,17 @@ function Slider({
   onMouseDownCapture,
   ...props
 }: SliderProps) {
-  const _values = React.useMemo(
-    () =>
-      Array.isArray(value)
-        ? value
-        : Array.isArray(defaultValue)
-          ? defaultValue
-          : [min, max],
-    [value, defaultValue, min, max],
+  const isControlled = value !== undefined;
+  const fallbackValues = React.useMemo(() => [min], [min]);
+  const sanitizedDefaultValue = React.useMemo(
+    () => sanitizeSliderValues(defaultValue, fallbackValues),
+    [defaultValue, fallbackValues],
   );
+  const sanitizedValue = React.useMemo(
+    () => (isControlled ? sanitizeSliderValues(value, sanitizedDefaultValue) : undefined),
+    [isControlled, value, sanitizedDefaultValue],
+  );
+  const _values = React.useMemo(() => (isControlled ? sanitizedValue! : sanitizedDefaultValue), [isControlled, sanitizedDefaultValue, sanitizedValue]);
 
   const onValueChangeRef = React.useRef<typeof onValueChange>(onValueChange);
   React.useEffect(() => {
@@ -70,10 +80,11 @@ function Slider({
   return (
     <SliderPrimitive.Root
       data-slot="slider"
-      defaultValue={defaultValue}
-      value={value}
       min={min}
       max={max}
+      {...(isControlled
+        ? { value: sanitizedValue }
+        : { defaultValue: sanitizedDefaultValue })}
       onValueChange={onValueChange ? onValueChangeRaf : undefined}
       onPointerDownCapture={(e) => {
         onPointerDownCapture?.(e);

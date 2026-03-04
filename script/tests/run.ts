@@ -1,9 +1,13 @@
 import { strict as assert } from 'node:assert';
 
 import { runRigidityTests } from './rigidity.test';
+import { runProcgenGroundingTests } from './procgen_grounding.test';
+import { runControlSettingsTests } from './controlSettings.test';
 
 const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'rigidity', fn: runRigidityTests },
+  { name: 'procgen_grounding', fn: runProcgenGroundingTests },
+  { name: 'controlSettings', fn: runControlSettingsTests },
 ];
 
 let failed = 0;
@@ -22,4 +26,3 @@ for (const t of tests) {
 }
 
 assert.equal(failed, 0, `${failed} test(s) failed`);
-

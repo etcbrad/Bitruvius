@@ -80,6 +80,11 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - Added a `Foot Plunger` toggle under Root Controls (Edit widget).
 
 2026-03-03
+- Rigid cardboard: clamp drag pin targets to the maximum reachable distance from pinned roots, so over-pulling extends fully then stops (no flicker/tension).
+- Added regression coverage in `script/tests/rigidity.test.ts`; `npm test` passes.
+- Playwright smoke succeeded in this environment; latest artifacts: `output/web-game/shot-0.png`, `output/web-game/state-0.json`.
+
+2026-03-03
 - Slider smoothness pass:
   - Radix `Slider` now RAF-throttles `onValueChange` (reduces drag jank under heavy state updates).
   - All sliders (Radix + native `input[type=range]`) now stop pointer/mouse propagation so canvas/editor gestures don’t “fight” slider drags.
@@ -124,3 +129,20 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 2026-03-03
 - UX: editor state now loads from + autosaves to `localStorage` (throttled; queued only from user-intent transitions) with `?reset=1` to force a clean default state (`client/src/App.tsx`).
 - Added `SYSTEM_AUDIT_2026-03-03.md` with a prioritized UI/feel/engineering audit and roadmap.
+
+2026-03-03
+- Sidebar/screen separation: moved `backgroundColor` styling onto the main viewport and isolated stacking so the sidebar behaves like a separate “console” (`client/src/App.tsx`).
+- Sidebar interactions: switched widget-dock resize + joint-hierarchy row selection to `onPointerDown` so clicks/taps register reliably (`client/src/App.tsx`).
+- Added automatic tension reliever:
+  - Computes max wire strain each physics step and temporarily increases `wireCompliance` when strain exceeds a threshold.
+  - Shows a red `TENSION RELIEF` label near the cursor while active (brief linger), and exposes `tensionRelief` in `render_game_to_text` for debugging (`client/src/App.tsx`, `client/src/index.css`).
+- Playwright smoke: `output/web-game/tension-relief-2026-03-03-2/shot-0.png`, `output/web-game/tension-relief-2026-03-03-2/state-0.json` (dev server shifted to port `5001`).
+
+2026-03-04
+- Removed the dedicated Physics tab (replaced by Procgen): sidebar tab label now shows `Procgen`, and the former physics widgets are no longer in the sidebar tab lists (`client/src/app/widgets/registry.tsx`, `client/src/App.tsx`).
+- Moved core physics controls onto the on-canvas bottom bar: `Rig Feel` (physicsRigidity dial) + `Root Drag` (rigid vs physics) live on-canvas now; removed the redundant sidebar toggle and removed duplicate Rig Feel/Bone Color/rigidity/control-mode blocks from the legacy Rig Controls widget (`client/src/App.tsx`).
+- Bone color controls moved under `Look` so they stay accessible without a Physics tab (`client/src/App.tsx`).
+- Procgen artifact fix: while procgen is actively driving the preview pose, the pose-physics solver no longer runs on top (prevents “double physics” fighting locomotion/grounding) (`client/src/App.tsx`).
+- Mask placement no longer “floats” under camera zoom: mask offsets are now stored in canvas-space pixels (pre-zoom), and drag deltas convert from screen px → canvas px via `/ viewScale` (`client/src/App.tsx`).
+  - Project export/import: bumped engine state schema to `state@2` and migrated `state@1` mask offsets on import so existing projects preserve placement (`client/src/engine/serialization.ts`).
+  - Build/test: `npm run check` + `npm test` pass; Playwright smoke artifacts: `output/web-game/mask-placement-snap-2026-03-04b/shot-0.png`, `output/web-game/mask-placement-snap-2026-03-04b/state-0.json`.

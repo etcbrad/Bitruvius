@@ -19,6 +19,88 @@ const degToRad = (deg: number) => (deg * Math.PI) / 180;
 
 const offsetLen = (a: Point) => Math.hypot(a.x, a.y);
 
+const isFinitePoint = (p: Point | null | undefined): p is Point =>
+  p != null && Number.isFinite(p.x) && Number.isFinite(p.y);
+
+const clampRigidCardboardDragTarget = (input: {
+  drag: { id: string; target: Point };
+  joints: Record<string, Joint>;
+  baseJoints: Record<string, Joint>;
+  activeRoots: string[];
+  rootTargets: Record<string, Point>;
+  world0: WorldPose;
+}): Point => {
+  const { drag, joints, baseJoints, activeRoots, rootTargets, world0 } = input;
+
+  // Rigid cardboard hard limit:
+  // When there are pinned roots, clamp the drag target so the dragged joint stays within the
+  // maximum reachable distance to each pinned root (sum of base bone lengths along the path).
+  //
+  // Over-pulling then "saturates" at the fully-extended configuration instead of producing
+  // impossible constraints (which show up as flicker/tension).
+  if (!isFinitePoint(drag.target)) return drag.target;
+  if (!activeRoots.length) return drag.target;
+
+  const maxDepth = 64;
+  const parentOf = (id: string): string | null => (joints[id] ?? baseJoints[id])?.parent ?? null;
+
+  const pathLenBetween = (aId: string, bId: string): number => {
+    if (aId === bId) return 0;
+
+    const aDist = new Map<string, number>();
+    let cur: string | null = aId;
+    let distAcc = 0;
+    for (let depth = 0; cur && depth < maxDepth; depth += 1) {
+      if (!aDist.has(cur)) aDist.set(cur, distAcc);
+      distAcc += baseLength(cur, baseJoints);
+      cur = parentOf(cur);
+    }
+
+    cur = bId;
+    distAcc = 0;
+    for (let depth = 0; cur && depth < maxDepth; depth += 1) {
+      const hit = aDist.get(cur);
+      if (hit !== undefined) return hit + distAcc;
+      distAcc += baseLength(cur, baseJoints);
+      cur = parentOf(cur);
+    }
+
+    return Number.POSITIVE_INFINITY;
+  };
+
+  const pinnedRoots = activeRoots
+    .map((id) => {
+      const pos = isFinitePoint(rootTargets[id])
+        ? rootTargets[id]
+        : isFinitePoint(world0[id])
+          ? world0[id]
+          : null;
+      if (!pos) return null;
+      const maxDist = pathLenBetween(drag.id, id);
+      if (!Number.isFinite(maxDist) || maxDist <= 1e-6) return null;
+      return { pos, maxDist };
+    })
+    .filter((v): v is { pos: Point; maxDist: number } => Boolean(v));
+
+  if (pinnedRoots.length === 0) return drag.target;
+
+  // Iterative projection into the intersection of "reachable" discs.
+  let candidate: Point = { ...drag.target };
+  for (let iter = 0; iter < 3; iter += 1) {
+    for (const root of pinnedRoots) {
+      const dx = candidate.x - root.pos.x;
+      const dy = candidate.y - root.pos.y;
+      const d = Math.hypot(dx, dy);
+      if (!Number.isFinite(d) || d <= 1e-9) continue;
+      if (d <= root.maxDist) continue;
+      const s = root.maxDist / d;
+      candidate = { x: root.pos.x + dx * s, y: root.pos.y + dy * s };
+    }
+  }
+
+  return candidate;
+};
+
 export type PosePhysicsInput = {
   joints: Record<string, Joint>;
   baseJoints?: Record<string, Joint>;
@@ -130,6 +212,9 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   const constraints: XpbdConstraint[] = [];
   const invMass: Record<string, number> = {};
 
+  // Initial world pose from preview.
+  const world0 = buildWorldPoseFromJoints(joints, baseJoints, 'preview');
+
   // Default masses.
   for (const id of Object.keys(baseJoints)) invMass[id] = 1;
 
@@ -200,7 +285,22 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
 
   // Drag pin (hard).
   if (input.drag) {
-    constraints.push({ kind: 'pin', id: input.drag.id, target: input.drag.target, compliance: 0 });
+    const rigidityForClamp = input.options.rigidity ?? 'realistic';
+    const stretchEnabledForClamp = Boolean(input.options.stretchEnabled);
+
+    const target =
+      rigidityForClamp === 'cardboard' && !stretchEnabledForClamp
+        ? clampRigidCardboardDragTarget({
+            drag: input.drag,
+            joints,
+            baseJoints,
+            activeRoots: input.activeRoots,
+            rootTargets: input.rootTargets,
+            world0,
+          })
+        : input.drag.target;
+
+    constraints.push({ kind: 'pin', id: input.drag.id, target, compliance: 0 });
     invMass[input.drag.id] = 0;
   }
 
@@ -239,9 +339,6 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
       constraints.push(c);
     }
   }
-
-  // Initial world pose from preview.
-  const world0 = buildWorldPoseFromJoints(joints, baseJoints, 'preview');
 
   // Shoulder-driven collar balance: gently bias collar toward aiming at the shoulder midpoint.
   // Only active in bend/stretch contexts to avoid fighting rigid FK intent.

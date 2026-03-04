@@ -142,7 +142,7 @@ export const WIDGETS: Record<
   },
   rig_controls: {
     title: 'Rig Controls',
-    tabGroup: 'physics',
+    tabGroup: null,
     isGlobal: false,
     docs: (
       <div className="space-y-2 text-[11px] text-[#bbb]">
@@ -159,7 +159,7 @@ export const WIDGETS: Record<
   },
   responsiveness: {
     title: 'Responsiveness',
-    tabGroup: 'physics',
+    tabGroup: null,
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Fine-tune smoothing, damping, and feel.</div>,
     defaultFloatSize: { w: 420, h: 420 },
@@ -167,7 +167,7 @@ export const WIDGETS: Record<
   },
   atomic_units: {
     title: 'Advanced Controls',
-    tabGroup: 'physics',
+    tabGroup: null,
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Low-level rig settings and debugging utilities.</div>,
     defaultFloatSize: { w: 420, h: 560 },
@@ -183,7 +183,7 @@ export const WIDGETS: Record<
   },
   procgen: {
     title: 'Auto Motion',
-    tabGroup: 'animation',
+    tabGroup: 'physics',
     isGlobal: false,
     docs: <div className="text-[11px] text-[#bbb]">Procedural motion and loop baking.</div>,
     defaultFloatSize: { w: 420, h: 420 },
@@ -285,8 +285,7 @@ export const WIDGET_GLOBAL_ORDER: WidgetId[] = [
 
 export const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
   character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'cutout_relationships', 'bone_inspector'],
-  physics: ['rig_controls', 'responsiveness', 'atomic_units'],
-  animation: ['animation', 'procgen', 'camera'],
+  physics: ['procgen'],
+  animation: ['animation', 'camera'],
   global: WIDGET_GLOBAL_ORDER,
 };
-
