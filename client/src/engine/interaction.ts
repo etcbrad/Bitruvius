@@ -117,9 +117,11 @@ export const applyDragToState = (
   draggingId: string,
   mouseWorld: Point,
 ): SkeletonState => {
-  const nextJoints = { ...prev.joints };
-  const joint = nextJoints[draggingId];
+  if (!isFinitePoint(mouseWorld)) return prev;
+  const joint = prev.joints[draggingId];
   if (!joint) return prev;
+
+  const nextJoints = { ...prev.joints };
 
   
   // Special handling for collar in rigid FK mode: ensure proper rotation with children

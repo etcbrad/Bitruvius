@@ -1,4 +1,5 @@
 import { lerp } from '../utils';
+import { INITIAL_JOINTS } from './model';
 import { sampleClipPose } from './timeline';
 import type { EnginePoseSnapshot, SkeletonState, Point } from './types';
 
@@ -153,7 +154,7 @@ export const bakeRecordingIntoTimeline = (
   for (const f of frames) {
     const baseAtFrame =
       hasBaseAnimation
-        ? (sampleClipPose(sourceClip, f.frame, state.joints, { stretchEnabled: state.stretchEnabled }) ?? basePose)
+        ? (sampleClipPose(sourceClip, f.frame, INITIAL_JOINTS, { stretchEnabled: state.stretchEnabled }) ?? basePose)
         : basePose;
     bakedByFrame.set(f.frame, mergePoseSnapshotsBlend(baseAtFrame, f.pose, movedJointIds, overlayWeight));
   }
