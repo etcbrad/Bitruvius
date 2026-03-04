@@ -1,0 +1,67 @@
+{
+  "showJoints": true,
+  "tensionRelief": {
+    "recentlyApplied": false,
+    "maxWireStrain": 0.03669961816508104
+  },
+  "procgen": {
+    "enabled": false,
+    "mode": "walk_in_place",
+    "strength": 1,
+    "seed": 1,
+    "cycleFrames": 48,
+    "options": {
+      "inPlace": true,
+      "groundingEnabled": true,
+      "pauseWhileDragging": true,
+      "groundPlaneY": 13,
+      "groundPlaneVisible": true
+    }
+  },
+  "view": {
+    "scale": 1,
+    "offset": {
+      "x": 0,
+      "y": 0
+    }
+  },
+  "nanCount": 0,
+  "joints": {
+    "navel": {
+      "x": 1.3673117660317757e-7,
+      "y": 0.0000030941244709981053
+    },
+    "sternum": {
+      "x": 0.4679948870296749,
+      "y": -3.9725211014927213
+    },
+    "head": {
+      "x": -0.40596555693846365,
+      "y": -1.9583646148771638
+    },
+    "l_hip": {
+      "x": -1.9527220965818268,
+      "y": 1.0894382683293524
+    },
+    "r_hip": {
+      "x": 2.0419997145731394,
+      "y": 0.9111730869700577
+    },
+    "l_knee": {
+      "x": 0.24382744122194033,
+      "y": 5.995042570682238
+    },
+    "r_knee": {
+      "x": 0.2564593493225493,
+      "y": 5.994513377938583
+    },
+    "l_ankle": {
+      "x": 0.7664536002609377,
+      "y": 5.9508441918645705
+    },
+    "r_ankle": {
+      "x": 0.0029239187667966515,
+      "y": 5.999999287364611
+    }
+  }
+}

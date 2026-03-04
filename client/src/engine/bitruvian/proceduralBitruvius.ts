@@ -246,11 +246,12 @@ export const generateProceduralBitruviusPose = (args: {
     }
   });
 
-  // Keep vertical grounding (y_offset) for walk mode; suppress lateral sliding by default.
+  // Keep vertical grounding (`y_offset`) for walk mode; suppress lateral sliding by default.
   if (mode === 'walk') {
     if (mergedOptions.inPlace) {
       if (typeof pose.x_offset === 'number') pose.x_offset = 0;
-      if (typeof pose.y_offset === 'number') pose.y_offset = 0;
+      // Preserve `y_offset` when grounding is enabled so foot-grounding can actually lift/drop the body.
+      if (!mergedOptions.groundingEnabled && typeof pose.y_offset === 'number') pose.y_offset = 0;
     }
   } else {
     delete pose.x_offset;

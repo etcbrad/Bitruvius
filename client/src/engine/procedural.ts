@@ -19,6 +19,52 @@ const clonePose = (pose: EnginePoseSnapshot): EnginePoseSnapshot => ({
   joints: Object.fromEntries(Object.entries(pose.joints).map(([k, v]) => [k, { x: v.x, y: v.y }])),
 });
 
+const resolveEnabledGait = (
+  gait: WalkingEngineGait,
+  gaitEnabled?: Partial<Record<keyof WalkingEngineGait, boolean>>,
+): Partial<WalkingEngineGait> => {
+  const out: Partial<WalkingEngineGait> = {};
+  (Object.keys(gait) as Array<keyof WalkingEngineGait>).forEach((k) => {
+    if (gaitEnabled && gaitEnabled[k] === false) return;
+    out[k] = gait[k];
+  });
+  return out;
+};
+
+const boostRunGait = (base: Partial<WalkingEngineGait>): Partial<WalkingEngineGait> => {
+  const boosted: Partial<WalkingEngineGait> = { ...base };
+  const mul = <K extends keyof WalkingEngineGait>(k: K, factor: number, min: number, max: number) => {
+    const v = boosted[k];
+    if (typeof v !== 'number') return;
+    boosted[k] = clamp(v * factor, min, max);
+  };
+  const add = <K extends keyof WalkingEngineGait>(k: K, delta: number, min: number, max: number) => {
+    const v = boosted[k];
+    if (typeof v !== 'number') return;
+    boosted[k] = clamp(v + delta, min, max);
+  };
+
+  mul('stride', 1.35, 0, 2);
+  mul('intensity', 1.6, 0, 2);
+  add('gravity', 0.08, 0, 1);
+  add('hover_height', 0.15, 0, 1);
+  mul('arm_swing', 1.2, 0, 2);
+  add('kick_up_force', 0.4, 0, 1);
+  add('lean', 0.2, -1, 1);
+  mul('elbow_bend', 1.15, 0, 1.5);
+
+  return boosted;
+};
+
+const resolveProcgenGait = (
+  mode: ProcgenMode,
+  gait: WalkingEngineGait,
+  gaitEnabled?: Partial<Record<keyof WalkingEngineGait, boolean>>,
+): Partial<WalkingEngineGait> => {
+  const enabled = resolveEnabledGait(gait, gaitEnabled);
+  return mode === 'run_in_place' ? boostRunGait(enabled) : enabled;
+};
+
 export const generateProceduralPose = (args: {
   mode: ProceduralMode;
   neutral: EnginePoseSnapshot;
@@ -62,9 +108,8 @@ export const generateProceduralPose = (args: {
     return out;
   }
 
-  // Walk cycle: simple swing + bounce, designed to look decent with FK and constraints.
-  const bounce = Math.max(0, Math.sin(phase * 2)) * 0.25 * strength;
-  if (out.joints.navel) out.joints.navel = { x: out.joints.navel.x + c * 0.1 * strength, y: out.joints.navel.y - bounce };
+  // Walk cycle: simple swing + subtle weight shift (no bounce/rubberiness).
+  if (out.joints.navel) out.joints.navel = { x: out.joints.navel.x + c * 0.1 * strength, y: out.joints.navel.y };
 
   const legSwingDeg = 28 * strength;
   const ankleSwingDeg = 18 * strength;
@@ -136,37 +181,7 @@ export const stepProcgenPose = (args: {
   runtime.frame = nextFrame % safeCycleFrames;
   const timeMs = Math.floor(runtime.tSec * 1000);
 
-  const gaitOverrides: Partial<WalkingEngineGait> = {};
-  (Object.keys(gait) as Array<keyof WalkingEngineGait>).forEach((k) => {
-    if (gaitEnabled && gaitEnabled[k] === false) return;
-    gaitOverrides[k] = gait[k];
-  });
-
-  const runBoostedGait = (() => {
-    if (mode !== 'run_in_place') return gaitOverrides;
-    const boosted: Partial<WalkingEngineGait> = { ...gaitOverrides };
-    const mul = <K extends keyof WalkingEngineGait>(k: K, factor: number, min: number, max: number) => {
-      const v = boosted[k];
-      if (typeof v !== 'number') return;
-      boosted[k] = clamp(v * factor, min, max);
-    };
-    const add = <K extends keyof WalkingEngineGait>(k: K, delta: number, min: number, max: number) => {
-      const v = boosted[k];
-      if (typeof v !== 'number') return;
-      boosted[k] = clamp(v + delta, min, max);
-    };
-
-    mul('stride', 1.35, 0, 2);
-    mul('intensity', 1.6, 0, 2);
-    add('gravity', 0.08, 0, 1);
-    add('hover_height', 0.15, 0, 1);
-    mul('arm_swing', 1.2, 0, 2);
-    add('kick_up_force', 0.4, 0, 1);
-    add('lean', 0.2, -1, 1);
-    mul('elbow_bend', 1.15, 0, 1.5);
-
-    return boosted;
-  })();
+  const resolvedGait = resolveProcgenGait(mode, gait, gaitEnabled);
 
   return generateProceduralBitruviusPose({
     neutral,
@@ -175,7 +190,7 @@ export const stepProcgenPose = (args: {
     cycleFrames: safeCycleFrames,
     strength,
     mode: mode === 'idle' ? 'idle' : 'walk',
-    gait: runBoostedGait,
+    gait: resolvedGait,
     physics,
     idle,
     options,
@@ -204,38 +219,7 @@ export const bakeProcgenLoop = (args: {
   resetBitruviusRuntimeState(runtime.bitruvius);
   const step = Math.max(1, Math.floor(keyframeStep));
   const safeFrameCount = Math.max(2, Math.floor(frameCount));
-  const gaitOverrides: Partial<WalkingEngineGait> = {};
-  (Object.keys(gait) as Array<keyof WalkingEngineGait>).forEach((k) => {
-    if (gaitEnabled && gaitEnabled[k] === false) return;
-    gaitOverrides[k] = gait[k];
-  });
-  const resolvedGait =
-    mode === 'run_in_place'
-      ? (() => {
-          const boosted: Partial<WalkingEngineGait> = { ...gaitOverrides };
-          const mul = <K extends keyof WalkingEngineGait>(k: K, factor: number, min: number, max: number) => {
-            const v = boosted[k];
-            if (typeof v !== 'number') return;
-            boosted[k] = clamp(v * factor, min, max);
-          };
-          const add = <K extends keyof WalkingEngineGait>(k: K, delta: number, min: number, max: number) => {
-            const v = boosted[k];
-            if (typeof v !== 'number') return;
-            boosted[k] = clamp(v + delta, min, max);
-          };
-
-          mul('stride', 1.35, 0, 2);
-          mul('intensity', 1.6, 0, 2);
-          add('gravity', 0.08, 0, 1);
-          add('hover_height', 0.15, 0, 1);
-          mul('arm_swing', 1.2, 0, 2);
-          add('kick_up_force', 0.4, 0, 1);
-          add('lean', 0.2, -1, 1);
-          mul('elbow_bend', 1.15, 0, 1.5);
-
-          return boosted;
-        })()
-      : gaitOverrides;
+  const resolvedGait = resolveProcgenGait(mode, gait, gaitEnabled);
 
   const keyframes: TimelineKeyframe[] = [];
   for (let f = 0; f < safeFrameCount; f += step) {

@@ -27,7 +27,7 @@ import {
   ToggleLeft,
   ToggleRight
 } from 'lucide-react';
-import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connection } from './engine/types';
+import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connection, type RigidityPreset } from './engine/types';
 import { LOOK_MODES, type LookModeId } from './engine/lookModes';
 import { throttle, normA, d2r, r2d, clamp, lerp } from './utils';
 import { applyBalanceDragToState, applyDragToState } from './engine/interaction';
@@ -49,6 +49,7 @@ import { makeDefaultState, sanitizeStateWithReport, sanitizeJoints } from './eng
 import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
 import { applyGroundRootCorrectionToJoints, computeGroundPivotWorld, computeTouchdownYWorld } from './engine/rooting';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
+import { buildWorldPoseFromJoints } from './engine/physics/xpbd';
 import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
 import { reconcileSkeletonState } from './engine/reconcileSkeletonState';
@@ -82,7 +83,9 @@ import { applyLightness, getBoneHex, rgbCss } from './app/color';
 import {
   controlGroupForMode,
   loadControlSettingsCache,
+  saveControlSettingsCache,
   snapshotControlSettings,
+  updateControlSettingsCache,
   type ControlSettingsCache,
 } from './app/controlSettings';
 import { applyRigidTransformToJointSubset, collectSubtreeJointIds } from './app/jointTransforms';
@@ -143,53 +146,101 @@ type GridOverlayTransform = {
   vmin: number;
 };
 
+type WireRestDef = { a: string; b: string; rest: number };
+
+const TENSION_RELIEF_LABEL = 'TENSION RELIEF';
+
+// Keep sessions stateless by default: no localStorage restore/autosave.
+// Project saving/loading remains available via explicit .json import/export.
+const ENGINE_PERSISTENCE_ENABLED = false;
+
+const defaultWireComplianceForRigidity = (rigidity: RigidityPreset): number => {
+  if (rigidity === 'cardboard') return 0.00025;
+  if (rigidity === 'rubberhose') return 0.02;
+  return 0.0015;
+};
+
+const WIRE_REST_DEFS: WireRestDef[] = (() => {
+  const baseWorld = buildWorldPoseFromJoints(INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
+  const seen = new Set<string>();
+  const out: WireRestDef[] = [];
+
+  const push = (a: string, b: string) => {
+    const key = canonicalConnKey(a, b);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const pa = baseWorld[a];
+    const pb = baseWorld[b];
+    if (!pa || !pb) return;
+    const rest = Math.hypot(pa.x - pb.x, pa.y - pb.y);
+    if (!Number.isFinite(rest) || rest <= 1e-6) return;
+    out.push({ a, b, rest });
+  };
+
+  for (const conn of CONNECTIONS) {
+    if (conn.type === 'bone') continue;
+    push(conn.from, conn.to);
+  }
+
+  // Includes the extra "diamond" stiffeners used by pose physics (shoulders ↔ neck base).
+  push('l_shoulder', 'neck_base');
+  push('r_shoulder', 'neck_base');
+
+  return out;
+})();
+
+const computeMaxWireStrain = (joints: Record<string, Joint>): number => {
+  const world = buildWorldPoseFromJoints(joints, INITIAL_JOINTS, 'preview');
+  let max = 0;
+  for (const w of WIRE_REST_DEFS) {
+    const a = world[w.a];
+    const b = world[w.b];
+    if (!a || !b) continue;
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (!Number.isFinite(d) || d <= 1e-9) continue;
+    const strain = Math.max(0, d / w.rest - 1);
+    if (strain > max) max = strain;
+  }
+  return max;
+};
+
 export default function App() {
   const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
 
-  const [state, setState] = useState<SkeletonState>(() => {
-    try {
-      const url = new URL(window.location.href);
-      const forceReset = url.searchParams.get('reset') === '1';
+  const initRef = useRef<{
+    state: SkeletonState;
+    controlSettingsCache: ControlSettingsCache;
+  } | null>(null);
 
-      if (forceReset) {
-        localStorage.removeItem(LOCAL_STORAGE_KEY);
-        return makeDefaultState();
-      }
+  if (!initRef.current) {
+    const initialState = makeDefaultState();
+    const snap = snapshotControlSettings(initialState);
+    const fallbackCache: ControlSettingsCache = { fk: { ...snap }, ik: { ...snap } };
+    initRef.current = {
+      state: initialState,
+      controlSettingsCache: ENGINE_PERSISTENCE_ENABLED ? loadControlSettingsCache(fallbackCache) : fallbackCache,
+    };
+  }
 
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (saved) {
-        const parsed = deserializeEngineState(saved);
-        if (parsed.ok !== false) {
-          const sanitized = sanitizeStateWithReport(parsed.rawState);
-          const reconciled = reconcileSkeletonState(sanitized.state);
-          initialSanitizeIssuesRef.current = [...sanitized.issues, ...reconciled.issues];
-          return reconciled.state;
-        }
-      }
-    } catch {
-      // Ignore storage/parse errors and fall back to defaults.
-    }
-    return makeDefaultState();
-  });
+  const [state, setState] = useState<SkeletonState>(() => initRef.current!.state);
 
   // Keep FK/IK-ish settings separate: Cardboard uses the FK group, everything else uses the IK group.
   // This allows quick switching between rigid rotation and IK without constantly re-toggling options.
-  const controlSettingsCacheRef = useRef<ControlSettingsCache>(loadControlSettingsCache(snapshotControlSettings(state)));
-  useEffect(() => {
-    const group = controlGroupForMode(state.controlMode);
-    const snap = snapshotControlSettings(state);
-    const next: ControlSettingsCache = { ...controlSettingsCacheRef.current, [group]: snap };
-    controlSettingsCacheRef.current = next;
-    try {
-      localStorage.setItem(CONTROL_SETTINGS_KEY, JSON.stringify(next));
-    } catch {
-      // ignore
-    }
-  }, [state.bendEnabled, state.controlMode, state.hardStop, state.leadEnabled, state.snappiness, state.stretchEnabled]);
+  const controlSettingsCacheRef = useRef<ControlSettingsCache>(initRef.current!.controlSettingsCache);
 
   useEffect(() => {
     console.log(`[bitruvius] build=${BUILD_ID}`);
     cleanupImageCache(); // Clean up old cache entries
+    if (!ENGINE_PERSISTENCE_ENABLED) {
+      try {
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
+        localStorage.removeItem(CONTROL_SETTINGS_KEY);
+        localStorage.removeItem(BACKGROUND_COLOR_KEY);
+        localStorage.removeItem(POSE_TRACE_KEY);
+      } catch {
+        // ignore
+      }
+    }
   }, []);
 
   const activeRootsKey = state.activeRoots.join('|');
@@ -275,6 +326,10 @@ export default function App() {
   const balanceDragTargetSmootherRef = useRef<
     Record<string, { tMs: number; x: number; y: number }>
   >({});
+  const tensionReliefArmedRef = useRef(true);
+  const tensionReliefLastAppliedMsRef = useRef(-1e12);
+  const tensionReliefMaxStrainRef = useRef(0);
+  const tensionReliefSmoothedStrainRef = useRef(0);
   
   // Rubberband mode state
   const [longPressTimer, setLongPressTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
@@ -317,7 +372,14 @@ export default function App() {
   const timelinePinTargetsKeyRef = useRef<string>('');
   const procgenRuntimeRef = useRef<ProcgenRuntime | null>(null);
   const procgenNeutralFallbackRef = useRef<EnginePoseSnapshot | null>(null);
-  const [poseTracingEnabled, setPoseTracingEnabled] = useState(() => localStorage.getItem(POSE_TRACE_KEY) === '1');
+  const [poseTracingEnabled, setPoseTracingEnabled] = useState(() => {
+    if (!ENGINE_PERSISTENCE_ENABLED) return false;
+    try {
+      return localStorage.getItem(POSE_TRACE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const bgVideoRef = useRef<HTMLVideoElement | null>(null);
   const fgVideoRef = useRef<HTMLVideoElement | null>(null);
   const [bgVideoMeta, setBgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
@@ -341,6 +403,7 @@ export default function App() {
   const cursorHudRef = useRef<HTMLDivElement | null>(null);
   const cursorReticleRef = useRef<HTMLDivElement | null>(null);
   const cursorLabelRef = useRef<HTMLDivElement | null>(null);
+  const cursorAlertRef = useRef<HTMLDivElement | null>(null);
   const cursorTargetRef = useRef<HTMLDivElement | null>(null);
   const coordHudRef = useRef<HTMLDivElement | null>(null);
   const precisionAnchorRef = useRef<null | { raw: Point; applied: Point }>(null);
@@ -390,13 +453,20 @@ export default function App() {
             maxAbsDriftY: 0,
           }));
           const [backgroundColor, setBackgroundColor] = useState(() => {
-    // Load saved background color or use faded paper default
-    const saved = localStorage.getItem(BACKGROUND_COLOR_KEY);
-    return saved || '#fff3d1'; // Faded paper yellowish default
-  });
+            const fallback = '#fff3d1'; // faded paper default
+            if (!ENGINE_PERSISTENCE_ENABLED) return fallback;
+            try {
+              const saved = localStorage.getItem(BACKGROUND_COLOR_KEY);
+              return saved || fallback;
+            } catch {
+              return fallback;
+            }
+          });
 
   const stateLiveRef = useRef(state);
   stateLiveRef.current = state;
+
+  const timelineKeyframes = Array.isArray(state.timeline.clip.keyframes) ? state.timeline.clip.keyframes : [];
 
   const resolveEffectiveManipulationId = useCallback((clickedId: string): string => {
     if (clickedId !== 'navel') return clickedId;
@@ -435,13 +505,17 @@ export default function App() {
         if (!Number.isFinite(x) || !Number.isFinite(y)) nanCount += 1;
         joints[id] = { x, y };
       }
-      return JSON.stringify(
-        {
-          showJoints: s.showJoints,
-          procgen: {
-            enabled: s.procgen.enabled,
-            mode: s.procgen.mode,
-            strength: s.procgen.strength,
+		      return JSON.stringify(
+		        {
+		          showJoints: s.showJoints,
+		          tensionRelief: {
+		            recentlyApplied: performance.now() - tensionReliefLastAppliedMsRef.current < 900,
+		            maxWireStrain: tensionReliefMaxStrainRef.current,
+		          },
+		          procgen: {
+		            enabled: s.procgen.enabled,
+		            mode: s.procgen.mode,
+	            strength: s.procgen.strength,
             seed: s.procgen.seed,
             cycleFrames: s.procgen.bake.cycleFrames,
             options: s.procgen.options,
@@ -498,6 +572,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (!ENGINE_PERSISTENCE_ENABLED) return;
     try {
       localStorage.setItem(POSE_TRACE_KEY, poseTracingEnabled ? '1' : '0');
     } catch {
@@ -602,7 +677,7 @@ export default function App() {
   }, [widgetDockMinimized]);
 
   const beginWidgetDockResize = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.MouseEvent | React.PointerEvent) => {
       if (widgetDockMinimized) return;
       e.preventDefault();
       e.stopPropagation();
@@ -1023,7 +1098,12 @@ export default function App() {
 
   // Save background color to localStorage when it changes
   useEffect(() => {
-    localStorage.setItem(BACKGROUND_COLOR_KEY, backgroundColor);
+    if (!ENGINE_PERSISTENCE_ENABLED) return;
+    try {
+      localStorage.setItem(BACKGROUND_COLOR_KEY, backgroundColor);
+    } catch {
+      // ignore
+    }
   }, [backgroundColor]);
 
   // Autosave core editor state to localStorage (throttled) so the editor resumes where you left off.
@@ -1031,6 +1111,7 @@ export default function App() {
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autosaveLatestRef = useRef<SkeletonState | null>(null);
   const queueAutosave = useCallback((next: SkeletonState) => {
+    if (!ENGINE_PERSISTENCE_ENABLED) return;
     autosaveLatestRef.current = next;
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     autosaveTimerRef.current = setTimeout(() => {
@@ -1057,6 +1138,10 @@ export default function App() {
   // Handle Nosferatu mode styling - only set background if user hasn't changed it
   useEffect(() => {
     if (state.lookMode === 'nosferatu') {
+      if (!ENGINE_PERSISTENCE_ENABLED) {
+        if (backgroundColor === '#fff3d1') setBackgroundColor('#000000');
+        return;
+      }
       // Only change to black if user is still using the default background
       const savedColor = localStorage.getItem(BACKGROUND_COLOR_KEY);
       if (!savedColor || savedColor === '#fff3d1') {
@@ -1064,7 +1149,7 @@ export default function App() {
       }
     }
     // Note: We don't reset the background when leaving nosferatu mode to preserve user choice
-  }, [state.lookMode]);
+  }, [state.lookMode, backgroundColor]);
 
   const setStateWithHistory = useCallback(
     (actionId: string, update: (prev: SkeletonState) => SkeletonState) => {
@@ -1072,10 +1157,17 @@ export default function App() {
         const proposed = update(prev);
         if (Object.is(proposed, prev)) return prev;
         const next = syncLegacyMasksToCutouts(proposed);
+
+        const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
+        if (nextCache !== controlSettingsCacheRef.current) {
+          controlSettingsCacheRef.current = nextCache;
+          if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(nextCache);
+        }
+
         if (!Object.is(next, prev)) {
           historyCtrlRef.current.pushUndo(actionId, prev);
         }
-        queueMicrotask(() => queueAutosave(next));
+        if (ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
         return next;
       });
     },
@@ -1189,11 +1281,18 @@ export default function App() {
         if (annotated.length > 0) pendingTransitionIssuesRef.current = annotated;
 
         const next = reconciled.state;
+
+        const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
+        if (nextCache !== controlSettingsCacheRef.current) {
+          controlSettingsCacheRef.current = nextCache;
+          if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(nextCache);
+        }
+
         const push = opts.pushHistory !== false;
         if (push && !Object.is(next, prev)) {
           historyCtrlRef.current.pushUndo(actionId, prev);
         }
-        queueMicrotask(() => queueAutosave(next));
+        if (ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
         return next;
       });
     },
@@ -1325,7 +1424,17 @@ export default function App() {
   }, []);
 
   const setStateNoHistory = useCallback((update: (prev: SkeletonState) => SkeletonState) => {
-    setState((prev) => update(prev));
+    setState((prev) => {
+      const next = update(prev);
+      if (Object.is(next, prev)) return prev;
+
+      const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, next);
+      if (nextCache !== controlSettingsCacheRef.current) {
+        controlSettingsCacheRef.current = nextCache;
+        if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(nextCache);
+      }
+      return next;
+    });
   }, []);
 
   const beginHistoryAction = useCallback(
@@ -1335,11 +1444,26 @@ export default function App() {
     [state],
   );
 
+  const beginPhysicsDialAction = useCallback(() => {
+    setTimelinePlaying(false);
+    historyCtrlRef.current.cancelAction();
+    historyCtrlRef.current.beginAction('physics_dial', stateLiveRef.current);
+  }, []);
+
+  const commitPhysicsDialAction = useCallback(() => {
+    setState((prev) => {
+      const changed = historyCtrlRef.current.commitAction(prev);
+      const next = changed ? { ...prev } : prev;
+      if (changed && ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
+      return next;
+    });
+  }, [queueAutosave]);
+
   const commitHistoryAction = useCallback(() => {
     setState((prev) => {
       const changed = historyCtrlRef.current.commitAction(prev);
       const next = changed ? { ...prev } : prev;
-      if (changed) queueMicrotask(() => queueAutosave(next));
+      if (changed && ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
       return next;
     });
   }, []);
@@ -1360,6 +1484,119 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     addConsoleLog('success', `State exported: ${filename}`);
   }, [addConsoleLog, state]);
+
+  const clearTransientInteractionState = useCallback(() => {
+    setTimelinePlaying(false);
+    setDraggingId(null);
+    draggingIdLiveRef.current = null;
+    effectiveDraggingIdLiveRef.current = null;
+    dragProxyOffsetWorldRef.current = null;
+    rootLeverDraggingLiveRef.current = null;
+    rootRotateDraggingLiveRef.current = null;
+    rootDragKindLiveRef.current = 'none';
+    groundRootDraggingLiveRef.current = false;
+    maskDraggingLiveRef.current = false;
+
+    pinWorldRef.current = null;
+    dragTargetRef.current = null;
+    rubberbandAnchorPinRef.current = null;
+    headDragMomentumRef.current = null;
+    hingeSignsRef.current = {};
+    physicsHandshakeRef.current = { key: '', blend: 1 };
+
+    tensionReliefArmedRef.current = true;
+    tensionReliefLastAppliedMsRef.current = -1e12;
+    tensionReliefMaxStrainRef.current = 0;
+    tensionReliefSmoothedStrainRef.current = 0;
+
+    setGroundRootDragging(false);
+    setRootLeverDraggingId(null);
+    setRootRotateDragging(null);
+    setMaskDragging(null);
+    setMaskEditArmed(false);
+
+    setIsLongPress(false);
+    setRubberbandPose(null);
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = null;
+    setLongPressTimer(null);
+  }, []);
+
+  const resetPoseToTPose = useCallback(() => {
+    clearTransientInteractionState();
+
+    const live = stateLiveRef.current;
+    const offsets = Object.fromEntries(
+      Object.entries(live.joints).map(([id, j]) => [id, j.baseOffset]),
+    ) as Record<string, Point>;
+    const nextPins: Record<string, Point> = {};
+    for (const id of live.activeRoots) {
+      nextPins[id] = getWorldPositionFromOffsets(id, offsets, INITIAL_JOINTS);
+    }
+    pinTargetsRef.current = nextPins;
+
+    setStateWithHistory('reset_pose_tpose', (prev) => createRigidStartPoint(prev));
+    addConsoleLog('info', 'Reset pose to T Pose.');
+  }, [addConsoleLog, clearTransientInteractionState, setStateWithHistory]);
+
+  const resetEngine = useCallback(() => {
+    clearTransientInteractionState();
+
+    setCanvasRotationDeg(0);
+    canvasRotationDegLiveRef.current = 0;
+
+    const live = stateLiveRef.current;
+    const bgSeqId = live.scene.background.sequence?.id ?? null;
+    const fgSeqId = live.scene.foreground.sequence?.id ?? null;
+    if (bgSeqId) dropReferenceSequence(bgSeqId);
+    if (fgSeqId) dropReferenceSequence(fgSeqId);
+
+    historyCtrlRef.current.clear();
+    pinTargetsRef.current = {};
+    timelinePinTargetsRef.current = null;
+    timelinePinTargetsKeyRef.current = '';
+
+    timelineFrameRef.current = 0;
+    setTimelineFrame(0);
+
+    setSelectedJointId(null);
+    setSelectedConnectionKey(null);
+    setMaskJointId('navel');
+    setPoseSnapshots([]);
+    setSelectedPoseIndices([]);
+    setRigFocus({ track: 'body', index: 0, side: 'front', stage: 'joint' });
+
+    const base = makeDefaultState();
+    const tPose = createRigidStartPoint(base);
+    const groundRootTarget = computeGroundPivotWorld(tPose.joints, INITIAL_JOINTS, 'preview');
+	    const next: SkeletonState = {
+	      ...tPose,
+	      // Reset to a clean FK baseline (no pose physics / IK roots).
+	      controlMode: 'Cardboard',
+	      rigidity: 'cardboard',
+	      physicsRigidity: 0,
+      bendEnabled: false,
+      stretchEnabled: false,
+	      hardStop: true,
+	      footPlungerEnabled: false,
+	      activeRoots: ['r_ankle'],
+	      groundRootTarget,
+      // Clear motion systems.
+      procgen: { ...tPose.procgen, enabled: false },
+      timeline: { ...tPose.timeline, enabled: false, clip: { ...tPose.timeline.clip, keyframes: [] } },
+      // Clear look back to defaults.
+      lookMode: 'default',
+    };
+
+    const snap = snapshotControlSettings(next);
+    const resetCache: ControlSettingsCache = { fk: { ...snap }, ik: { ...snap } };
+    controlSettingsCacheRef.current = resetCache;
+    if (ENGINE_PERSISTENCE_ENABLED) saveControlSettingsCache(resetCache);
+
+    setState(next);
+    if (ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
+    addConsoleLog('success', 'Engine reset: cleared masks + physics and returned to FK T Pose.');
+  }, [addConsoleLog, clearTransientInteractionState, dropReferenceSequence, queueAutosave]);
 
   const importStateFile = useCallback(
     async (file: File) => {
@@ -1508,7 +1745,27 @@ export default function App() {
             jointMasks: {
               ...prev.scene.jointMasks,
               [jointId]: {
-                ...prev.scene.jointMasks[jointId],
+                // Some joints may be user-created and not present in the default mask map.
+                // Ensure required numeric fields exist so UI sliders and rendering don't receive `undefined`/NaN.
+                ...(prev.scene.jointMasks[jointId] ?? {
+                  src: null,
+                  visible: false,
+                  opacity: 1.0,
+                  scale: 0.25,
+                  offsetX: 0,
+                  offsetY: 0,
+                  rotation: 0,
+                  anchorX: 0.5,
+                  anchorY: 0.5,
+                  mode: 'cutout',
+                  lengthScale: 1.0,
+                  volumePreserve: false,
+                  stretchX: 1.0,
+                  stretchY: 1.0,
+                  skewX: 0,
+                  skewY: 0,
+                  relatedJoints: [],
+                }),
                 src: url,
                 visible: true,
                 offsetX: 0,
@@ -2077,8 +2334,9 @@ export default function App() {
             groundPlaneDraggingLiveRef.current ||
             groundRootDraggingLiveRef.current;
 	        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
-	        const allowPosePhysics = !prev.timeline.enabled || prev.procgen.enabled || isDirectManipulation || Boolean(drag);
-	        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activeRoots.length > 0);
+	        // Pose-physics is for interaction/posing. Procgen already includes its own locomotion/grounding dynamics,
+	        // so we avoid stacking the pose solver on top of a live procgen preview (prevents confusing artifacts).
+	        let allowPosePhysics = !prev.timeline.enabled || isDirectManipulation || Boolean(drag);
 
         const applyPoseSnapshotToPreviewOffsetsOnly = (
           joints: Record<string, Joint>,
@@ -2131,6 +2389,12 @@ export default function App() {
           procgenRuntimeRef.current = null;
           procgenNeutralFallbackRef.current = null;
         }
+
+        if (procgenPreviewApplied) {
+          allowPosePhysics = false;
+        }
+
+        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activeRoots.length > 0);
         
         // Exclude balance joints from physics when they're being dragged to prevent tension/jitter.
         // Note: Navel drags proxy to sternum (handled via `drag.id`).
@@ -2214,52 +2478,110 @@ export default function App() {
 
               return [
                 {
-                  kind: 'pin',
-                  id: 'collar',
-                  target: { x: collarWorld.x + nextMom.dx * collarFollow, y: collarWorld.y + nextMom.dy * collarFollow },
-                  compliance: 0.003,
-                },
+	                  kind: 'pin',
+	                  id: 'collar',
+	                  target: { x: collarWorld.x + nextMom.dx * collarFollow, y: collarWorld.y + nextMom.dy * collarFollow },
+	                  compliance: 0.0008,
+	                },
                 {
                   kind: 'pin',
                   id: 'l_shoulder',
-                  target: {
-                    x: lShoulderWorld.x + nextMom.dx * shoulderFollow,
-                    y: lShoulderWorld.y + nextMom.dy * shoulderFollow,
-                  },
-                  compliance: 0.01,
-                },
+	                  target: {
+	                    x: lShoulderWorld.x + nextMom.dx * shoulderFollow,
+	                    y: lShoulderWorld.y + nextMom.dy * shoulderFollow,
+	                  },
+	                  compliance: 0.002,
+	                },
                 {
                   kind: 'pin',
                   id: 'r_shoulder',
-                  target: {
-                    x: rShoulderWorld.x + nextMom.dx * shoulderFollow,
-                    y: rShoulderWorld.y + nextMom.dy * shoulderFollow,
-                  },
-                  compliance: 0.01,
-                },
+	                  target: {
+	                    x: rShoulderWorld.x + nextMom.dx * shoulderFollow,
+	                    y: rShoulderWorld.y + nextMom.dy * shoulderFollow,
+	                  },
+	                  compliance: 0.002,
+	                },
               ] as any;
             })();
 
-	          const result = stepPosePhysics({
-	            joints: jointsForFrame,
-	            activeRoots,
-	            rootTargets: activePinTargets,
-	            drag: dragIsPinned ? null : dragInput,
-	            connectionOverrides: prev.connectionOverrides,
-              extraConstraints,
-	            options: {
-	              dt: isRigidDragMode ? Math.min(dt, 1 / 60) : dt,
-	              iterations: isRigidDragMode ? 28 : 16,
-	              damping: isRigidDragMode ? 0.18 : 0.12,
-	              wireCompliance: 0.0015,
-	              rigidity: prev.rigidity,
-	              hardStop: prev.hardStop,
-	              // Auto-bend is great for settle/idle, but it can fight cursor-locked FK drags and create jitter.
-	              autoBend: prev.bendEnabled && !(isRigidDragMode && isDirectManipulation),
-	              hingeSigns: hingeSignsRef.current,
-	              stretchEnabled: prev.stretchEnabled,
-	            },
-	          });
+            const maxWireStrain = computeMaxWireStrain(jointsForFrame);
+            // Smooth the strain signal so wire-compliance toggles don't chatter near the threshold
+            // (which can show up as end-of-drag "tension flicker").
+            const strainAlpha = 1 - Math.pow(1 - 0.22, dt * 60);
+            tensionReliefSmoothedStrainRef.current = lerp(
+              tensionReliefSmoothedStrainRef.current,
+              maxWireStrain,
+              clamp(strainAlpha, 0, 1),
+            );
+            const strainSmoothed = tensionReliefSmoothedStrainRef.current;
+	            tensionReliefMaxStrainRef.current = strainSmoothed;
+	            const strainOn = 0.3;
+	            const strainOff = 0.22;
+	            const nowMs = performance.now();
+
+	            if (strainSmoothed <= strainOff) tensionReliefArmedRef.current = true;
+
+	            const baseWireCompliance = defaultWireComplianceForRigidity(prev.rigidity);
+	            const iterationsBase = isRigidDragMode ? 28 : 16;
+	            const dampingBase = isRigidDragMode ? 0.18 : 0.12;
+	            const physicsDt = isRigidDragMode ? Math.min(dt, 1 / 60) : dt;
+	            const autoBend = prev.bendEnabled && !(isRigidDragMode && isDirectManipulation);
+
+	            // Tension relief is a *one-shot preconditioner*: when the starting pose is highly strained,
+	            // project it once into a more solvable configuration, then run the normal solver settings.
+	            // This avoids an ongoing "rubbery" mode.
+	            let jointsForPhysics = jointsForFrame;
+	            if (
+	              tensionReliefArmedRef.current &&
+	              strainSmoothed >= strainOn &&
+	              !isDirectManipulation &&
+	              !drag
+	            ) {
+	              tensionReliefArmedRef.current = false;
+	              tensionReliefLastAppliedMsRef.current = nowMs;
+
+	              const pre = stepPosePhysics({
+	                joints: jointsForPhysics,
+	                activeRoots,
+	                rootTargets: activePinTargets,
+	                drag: dragIsPinned ? null : dragInput,
+	                connectionOverrides: prev.connectionOverrides,
+	                extraConstraints,
+	                options: {
+	                  dt: physicsDt,
+	                  iterations: iterationsBase + (isRigidDragMode ? 10 : 8),
+	                  damping: dampingBase + 0.08,
+	                  wireCompliance: baseWireCompliance,
+	                  rigidity: prev.rigidity,
+	                  hardStop: prev.hardStop,
+	                  autoBend,
+	                  hingeSigns: hingeSignsRef.current,
+	                  stretchEnabled: prev.stretchEnabled,
+	                },
+	              });
+	              hingeSignsRef.current = pre.hingeSigns;
+	              jointsForPhysics = pre.joints;
+	            }
+
+		          const result = stepPosePhysics({
+		            joints: jointsForPhysics,
+		            activeRoots,
+		            rootTargets: activePinTargets,
+		            drag: dragIsPinned ? null : dragInput,
+		            connectionOverrides: prev.connectionOverrides,
+		            extraConstraints,
+		            options: {
+		              dt: physicsDt,
+		              iterations: iterationsBase,
+		              damping: dampingBase,
+		              wireCompliance: baseWireCompliance,
+		              rigidity: prev.rigidity,
+		              hardStop: prev.hardStop,
+		              autoBend,
+		              hingeSigns: hingeSignsRef.current,
+		              stretchEnabled: prev.stretchEnabled,
+		            },
+		          });
           hingeSignsRef.current = result.hingeSigns;
 
           // Blend physics results in over a short ramp when settings change, so toggling
@@ -2415,7 +2737,7 @@ export default function App() {
 	              dt: 1 / 60,
 	              iterations: 22,
 	              damping: 0.12,
-	              wireCompliance: 0.0015,
+	              wireCompliance: defaultWireComplianceForRigidity(prev.rigidity),
 	              rigidity: prev.rigidity,
 	              hardStop: prev.hardStop,
 	              autoBend: prev.bendEnabled,
@@ -2478,7 +2800,7 @@ export default function App() {
 	          dt: 1 / 60,
 	          iterations: 22,
 	          damping: 0.12,
-	          wireCompliance: 0.0015,
+	          wireCompliance: defaultWireComplianceForRigidity(prev.rigidity),
 	          rigidity: prev.rigidity,
 	          hardStop: prev.hardStop,
 	          autoBend: prev.bendEnabled,
@@ -2731,6 +3053,7 @@ export default function App() {
     if (cursorHudRef.current) cursorHudRef.current.style.opacity = '0';
     if (cursorTargetRef.current) cursorTargetRef.current.style.opacity = '0';
     if (cursorLabelRef.current) cursorLabelRef.current.style.opacity = '0';
+    if (cursorAlertRef.current) cursorAlertRef.current.style.opacity = '0';
     if (coordHudRef.current) coordHudRef.current.style.opacity = '0';
   };
 
@@ -2742,13 +3065,14 @@ export default function App() {
     altKey: boolean;
     shiftKey: boolean;
     showTarget: boolean;
-  }) => {
-    const hud = cursorHudRef.current;
-    const reticle = cursorReticleRef.current;
-    const label = cursorLabelRef.current;
-    const target = cursorTargetRef.current;
-    const coordHud = coordHudRef.current;
-    if (!hud || !reticle || !label || !target) return;
+	  }) => {
+	    const hud = cursorHudRef.current;
+	    const reticle = cursorReticleRef.current;
+	    const label = cursorLabelRef.current;
+	    const alert = cursorAlertRef.current;
+	    const target = cursorTargetRef.current;
+	    const coordHud = coordHudRef.current;
+	    if (!hud || !reticle || !label || !target) return;
 
     const canvasPos = getMouseCanvasPx(args.clientX, args.clientY);
     if (!canvasPos || !Number.isFinite(canvasPos.x) || !Number.isFinite(canvasPos.y)) return;
@@ -2771,14 +3095,22 @@ export default function App() {
 
     hud.style.opacity = '1';
 
-    reticle.style.left = `${canvasPos.x}px`;
-    reticle.style.top = `${canvasPos.y}px`;
-    reticle.style.setProperty('--cursor-color', color);
-    reticle.style.setProperty('--cursor-glow', glow);
+	    reticle.style.left = `${canvasPos.x}px`;
+	    reticle.style.top = `${canvasPos.y}px`;
+	    reticle.style.setProperty('--cursor-color', color);
+	    reticle.style.setProperty('--cursor-glow', glow);
 
-    // Coords should not follow the cursor; show them in a fixed HUD near the top.
-    // Keep the old cursor label hidden (it caused visual bloat and obscured the canvas).
-    label.style.opacity = '0';
+	    if (alert) {
+	      const nowMs = performance.now();
+	      const show = nowMs - tensionReliefLastAppliedMsRef.current < 900;
+	      alert.style.left = `${canvasPos.x}px`;
+	      alert.style.top = `${canvasPos.y}px`;
+	      alert.style.opacity = show ? '1' : '0';
+	    }
+
+	    // Coords should not follow the cursor; show them in a fixed HUD near the top.
+	    // Keep the old cursor label hidden (it caused visual bloat and obscured the canvas).
+	    label.style.opacity = '0';
     if (coordHud) {
       const rawTxt = `${args.rawWorld.x.toFixed(3)}, ${args.rawWorld.y.toFixed(3)}`;
       const effTxt = `${args.effectiveWorld.x.toFixed(3)}, ${args.effectiveWorld.y.toFixed(3)}`;
@@ -2903,17 +3235,21 @@ export default function App() {
             dy = Math.round(dy);
           }
           const jointId = maskDragging.jointId;
+          const viewScale = Math.max(1e-6, state.viewScale);
+          const dxWorld = dx / viewScale;
+          const dyWorld = dy / viewScale;
           setState((prev) => {
             const mask = prev.scene.jointMasks[jointId];
             if (!mask) return prev;
-            // `offsetX/offsetY` are stored in *screen pixels* so mask movement feels consistent
-            // regardless of the current zoom (`viewScale` is applied to the whole SVG group).
+            // `offsetX/offsetY` are stored in *canvas pixels* (pre-zoom, inside the SVG group).
+            // Convert screen-space mouse deltas into canvas-space by dividing by `viewScale`,
+            // so placement is stable (no "floating") across camera zoom/pan.
             const next = (() => {
               switch (maskDragging.mode) {
                 case 'move': {
                   return {
-                    offsetX: Number.isFinite(maskDragging.startOffsetX + dx) ? maskDragging.startOffsetX + dx : 0,
-                    offsetY: Number.isFinite(maskDragging.startOffsetY + dy) ? maskDragging.startOffsetY + dy : 0,
+                    offsetX: Number.isFinite(maskDragging.startOffsetX + dxWorld) ? maskDragging.startOffsetX + dxWorld : 0,
+                    offsetY: Number.isFinite(maskDragging.startOffsetY + dyWorld) ? maskDragging.startOffsetY + dyWorld : 0,
                   };
                 }
                 case 'widen': {
@@ -3375,6 +3711,7 @@ export default function App() {
     
     if (maskDragging) {
       setMaskDragging(null);
+      maskDraggingLiveRef.current = false;
       setMaskEditArmed(false);
     }
 
@@ -3537,14 +3874,16 @@ export default function App() {
         timeline: {
           ...prev.timeline,
           enabled: true,
-          clip: {
-            ...prev.timeline.clip,
-            fps,
-            frameCount,
-            keyframes: prev.timeline.clip.keyframes.filter((k) => k.frame < frameCount),
-          },
-        },
-      };
+	          clip: {
+	            ...prev.timeline.clip,
+	            fps,
+	            frameCount,
+	            keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
+	              (k) => k.frame < frameCount,
+	            ),
+	          },
+	        },
+	      };
     });
   }, [
     bgVideoMeta?.duration,
@@ -3559,9 +3898,11 @@ export default function App() {
       const frame = clamp(timelineFrame, 0, frameCount - 1);
       const pose = capturePoseSnapshot(prev.joints, 'preview');
 
-      const keyframes = prev.timeline.clip.keyframes.filter((k) => k.frame !== frame);
-      keyframes.push({ frame, pose });
-      keyframes.sort((a, b) => a.frame - b.frame);
+	      const keyframes = (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
+	        (k) => k.frame !== frame,
+	      );
+	      keyframes.push({ frame, pose });
+	      keyframes.sort((a, b) => a.frame - b.frame);
 
       return {
         ...prev,
@@ -3581,11 +3922,12 @@ export default function App() {
     setStateWithHistory('timeline_delete_keyframe', (prev) => {
       const frameCount = Math.max(1, Math.floor(prev.timeline.clip.frameCount));
       const frame = clamp(timelineFrame, 0, frameCount - 1);
-      const keyframes = prev.timeline.clip.keyframes.filter((k) => k.frame !== frame);
-      if (keyframes.length === prev.timeline.clip.keyframes.length) return prev;
-      return {
-        ...prev,
-        timeline: {
+	      const prevKeyframes = Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : [];
+	      const keyframes = prevKeyframes.filter((k) => k.frame !== frame);
+	      if (keyframes.length === prevKeyframes.length) return prev;
+	      return {
+	        ...prev,
+	        timeline: {
           ...prev.timeline,
           clip: {
             ...prev.timeline.clip,
@@ -3602,9 +3944,11 @@ export default function App() {
       const frame = targetFrame !== undefined ? clamp(targetFrame, 0, frameCount - 1) : timelineFrame;
       const pose = capturePoseSnapshot(poseSnapshot.joints, 'preview');
 
-      const keyframes = prev.timeline.clip.keyframes.filter((k) => k.frame !== frame);
-      keyframes.push({ frame, pose });
-      keyframes.sort((a, b) => a.frame - b.frame);
+	      const keyframes = (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
+	        (k) => k.frame !== frame,
+	      );
+	      keyframes.push({ frame, pose });
+	      keyframes.sort((a, b) => a.frame - b.frame);
 
       return {
         ...prev,
@@ -3687,31 +4031,6 @@ export default function App() {
       }
     });
   }, []);
-
-  const resetSkeleton = () => {
-    // Clear long press timer on reset
-    if (longPressTimer) {
-      clearTimeout(longPressTimer);
-      setLongPressTimer(null);
-    }
-    setIsLongPress(false);
-    setRubberbandPose(null);
-    setCanvasRotationDeg(0);
-    canvasRotationDegLiveRef.current = 0;
-    
-    pinTargetsRef.current = {};
-    rubberbandAnchorPinRef.current = null;
-    hingeSignsRef.current = {};
-    const nextJoints = sanitizeJoints(null);
-    setStateWithHistory('reset_engine', (prev) => ({
-      ...prev,
-      joints: nextJoints,
-      activeRoots: [],
-      groundRootTarget: computeGroundPivotWorld(nextJoints, INITIAL_JOINTS),
-      viewScale: 1.0,
-      viewOffset: { x: 0, y: 0 },
-    }));
-  };
 
   const toggleRoot = (id: string) => {
     if (state.activeRoots.includes(id)) {
@@ -4284,8 +4603,8 @@ export default function App() {
           }
         }
 
-        const originX = snapPx(anchorWorldX + mask.offsetX / state.viewScale);
-        const originY = snapPx(anchorWorldY + mask.offsetY / state.viewScale);
+        const originX = snapPx(anchorWorldX + mask.offsetX);
+        const originY = snapPx(anchorWorldY + mask.offsetY);
         const x = snapPx(originX - mask.anchorX * width);
         const y = snapPx(originY - mask.anchorY * height);
 
@@ -4378,8 +4697,8 @@ export default function App() {
         }
       }
 
-      const originX = snapPx(anchorWorldX + mask.offsetX / state.viewScale);
-      const originY = snapPx(anchorWorldY + mask.offsetY / state.viewScale);
+      const originX = snapPx(anchorWorldX + mask.offsetX);
+      const originY = snapPx(anchorWorldY + mask.offsetY);
       const x = snapPx(originX - mask.anchorX * width);
       const y = snapPx(originY - mask.anchorY * height);
 
@@ -4535,20 +4854,19 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div
-        className="flex h-screen w-full text-[#e0e0e0] font-sans selection:bg-white/20"
-        style={{ backgroundColor }}
-        data-build-id={BUILD_ID}
-      >
+	      <div
+	        className="relative isolate flex h-screen w-full text-[#e0e0e0] font-sans selection:bg-white/20 bg-[#0a0a0a]"
+	        data-build-id={BUILD_ID}
+	      >
       {/* Sidebar */}
-      <motion.aside 
-        initial={false}
-        animate={{ width: sidebarOpen ? 360 : 0 }}
-        className="relative bg-[#121212] border-r border-[#222] overflow-hidden flex flex-col"
-        onDragOver={(e) => {
-          if (!WIDGET_DND_ENABLED) return;
-          if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
-        }}
+	      <motion.aside 
+	        initial={false}
+	        animate={{ width: sidebarOpen ? 360 : 0 }}
+	        className="relative z-10 bg-[#121212] border-r border-[#222] overflow-hidden flex flex-col"
+	        onDragOver={(e) => {
+	          if (!WIDGET_DND_ENABLED) return;
+	          if (e.dataTransfer.types.includes(DND_WIDGET_MIME)) e.preventDefault();
+	        }}
         onDrop={(e) => {
           if (!WIDGET_DND_ENABLED) return;
           const payload = e.dataTransfer.getData(DND_WIDGET_MIME);
@@ -4742,20 +5060,6 @@ export default function App() {
                 <div className="text-[9px] font-mono text-[#444] w-14 text-right tabular-nums">{canvasRotationDeg.toFixed(0)}°</div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setRigidRootDragEnabled((v) => !v)}
-                className={`w-full px-3 py-2 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
-                  rigidRootDragEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
-                }`}
-                title={
-                  rigidRootDragEnabled
-                    ? 'Rigid root dragging: rooted joints stay planted unless you hold Ctrl to move the root target.'
-                    : 'Physics root dragging: dragging a rooted joint moves its root target through the solver.'
-                }
-              >
-                Rigid Root Drag: {rigidRootDragEnabled ? 'On' : 'Off'}
-	              </button>
 	              </>
 	              )}
             </div>
@@ -4764,7 +5068,7 @@ export default function App() {
               {(
                 [
                   { id: 'character' as const, label: 'Character' },
-                  { id: 'physics' as const, label: 'Physics' },
+                  { id: 'physics' as const, label: 'Procgen' },
                   { id: 'animation' as const, label: 'Animation' },
                   { id: 'global' as const, label: 'Global' },
                 ] as const
@@ -5475,166 +5779,6 @@ export default function App() {
                   }
                 />
 	              </div>
-	              <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
-	                <div className="flex items-center justify-between mb-2">
-	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Rig Feel</div>
-	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
-	                    {getPhysicsBlendMode(state).toUpperCase()} • {Math.round((state.physicsRigidity ?? 0) * 100)}%
-	                  </div>
-	                </div>
-	                <Slider
-	                  min={0}
-	                  max={1}
-	                  step={0.01}
-	                  value={[state.physicsRigidity ?? 0]}
-	                  onValueChange={(values) => {
-	                    const v = values[0] ?? 0;
-	                    applyEngineTransition('physics_dial', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
-	                  }}
-	                  className="w-full"
-	                  trackClassName="bg-transparent h-2"
-	                  rangeClassName="bg-transparent"
-	                  thumbClassName="border-white/20"
-	                  trackStyle={{
-	                    background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
-	                  }}
-	                  rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.85) }}
-	                  thumbStyle={{
-	                    backgroundColor: getBoneHex(state.boneStyle),
-	                    boxShadow:
-	                      '0 0 0 4px rgb(125 255 170 / 0.22), 0 0 18px rgb(125 255 170 / 0.35)',
-	                  }}
-	                />
-	                <div className="mt-3 grid grid-cols-2 gap-2">
-	                  <button
-	                    type="button"
-	                    onClick={() =>
-                        applyEngineTransition('physics_dial_rigid', (prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, 0)))
-                      }
-	                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-	                  >
-	                    Go Rigid
-	                  </button>
-	                  <button
-	                    type="button"
-	                    onClick={() => applyEngineTransition('rigid_start_point', (prev) => createRigidStartPoint(prev))}
-	                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-	                  >
-	                    Set Rigid Start
-	                  </button>
-	                </div>
-	              </div>
-	              <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
-	                <div className="flex items-center justify-between mb-2">
-	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
-	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">
-	                    {getBoneHex(state.boneStyle)}
-	                  </div>
-	                </div>
-	                <div className="space-y-3">
-	                  <div className="space-y-1">
-	                    <div className="flex items-center justify-between">
-	                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
-	                      <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
-	                    </div>
-	                    <Slider
-	                      min={0}
-	                      max={1}
-	                      step={0.01}
-	                      value={[state.boneStyle?.hueT ?? 0]}
-	                      onValueChange={(values) => {
-	                        const v = values[0] ?? 0;
-	                        setStateWithHistory('bone_style:hue', (prev) => ({
-	                          ...prev,
-	                          boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
-	                        }));
-	                      }}
-	                      className="w-full"
-	                      trackClassName="bg-transparent h-2"
-	                      rangeClassName="bg-transparent"
-	                      thumbClassName="border-white/20"
-	                      trackStyle={{
-	                        background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
-	                      }}
-	                      rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
-	                      thumbStyle={{
-	                        backgroundColor: getBoneHex(state.boneStyle),
-	                        boxShadow:
-	                          '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
-	                      }}
-	                    />
-	                  </div>
-	                  <div className="space-y-1">
-	                    <div className="flex items-center justify-between">
-	                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
-	                      <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
-	                    </div>
-	                    <Slider
-	                      min={-0.5}
-	                      max={0.5}
-	                      step={0.01}
-	                      value={[state.boneStyle?.lightness ?? 0]}
-	                      onValueChange={(values) => {
-	                        const v = values[0] ?? 0;
-	                        setStateWithHistory('bone_style:lightness', (prev) => ({
-	                          ...prev,
-	                          boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), lightness: clamp(v, -1, 1) },
-	                        }));
-	                      }}
-	                      className="w-full"
-	                      trackClassName="bg-transparent h-2"
-	                      rangeClassName="bg-transparent"
-	                      thumbClassName="border-white/20"
-	                      trackStyle={{
-	                        background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(getBoneHex(state.boneStyle), 0.45)})`,
-	                      }}
-	                      rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
-	                      thumbStyle={{
-	                        backgroundColor: getBoneHex(state.boneStyle),
-	                        boxShadow:
-	                          '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
-	                      }}
-	                    />
-	                  </div>
-	                </div>
-	              </div>
-	              <div className="mb-4">
-                <select
-                  value={state.rigidity}
-	                  onChange={(e) =>
-                      applyEngineTransition('rigidity', (prev) =>
-                        applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
-                      )
-                    }
-	                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
-                >
-                  <option value="cardboard">Cardboard (Rigid)</option>
-                  <option value="realistic">Realistic (Hybrid)</option>
-                  <option value="rubberhose">Rubberhose (Elastic)</option>
-                </select>
-              </div>
-              <div className="flex bg-[#222] rounded-xl p-1 mb-4">
-                {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() =>
-                      applyEngineTransition('set_control_mode', (prev) =>
-                        prev.controlMode === mode
-                          ? prev
-                          : applyFluidHandshake(prev, {
-                              ...prev,
-                              controlMode: mode,
-                              ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
-                            }),
-                      )
-                    }
-                    className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'}`}
-                    title={controlModeUi[mode].title}
-                  >
-                    {controlModeUi[mode].label}
-                  </button>
-                ))}
-              </div>
               <div className="space-y-2">
                 <Toggle 
                   label="Mirroring" 
@@ -5791,23 +5935,20 @@ export default function App() {
                             value={state.snappiness}
                             onPointerDown={() => {
                         setTimelinePlaying(false);
-                        historyCtrlRef.current.beginAction('snappiness', state);
+                        historyCtrlRef.current.beginAction('snappiness', stateLiveRef.current);
                       }}
-                    onPointerUp={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onPointerCancel={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onChange={(e) =>
-                      setState((s) => ({ ...s, snappiness: parseFloat(e.target.value) }))
-                    }
+                    onPointerUp={commitHistoryAction}
+                    onPointerCancel={commitHistoryAction}
+                    onChange={(e) => {
+                      const raw = parseFloat(e.target.value || '1');
+                      if (!Number.isFinite(raw)) return;
+                      const v = clamp(raw, 0.05, 1.0);
+                      applyEngineTransition(
+                        'set_snappiness',
+                        (prev) => (prev.snappiness === v ? prev : { ...prev, snappiness: v }),
+                        { pushHistory: false },
+                      );
+                    }}
                     className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                   />
                   <div className="text-[#666] text-[9px]">
@@ -5841,6 +5982,84 @@ export default function App() {
                       </div>
                       <div className="mt-2 text-[#666] text-[9px]">
                         {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
+                      </div>
+
+                      <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">
+                            {getBoneHex(state.boneStyle)}
+                          </div>
+                        </div>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
+                              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
+                            </div>
+                            <Slider
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={[state.boneStyle?.hueT ?? 0]}
+                              onValueChange={(values) => {
+                                const v = values[0] ?? 0;
+                                setStateWithHistory('bone_style:hue', (prev) => ({
+                                  ...prev,
+                                  boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
+                                }));
+                              }}
+                              className="w-full"
+                              trackClassName="bg-transparent h-2"
+                              rangeClassName="bg-transparent"
+                              thumbClassName="border-white/20"
+                              trackStyle={{
+                                background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
+                              }}
+                              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
+                              thumbStyle={{
+                                backgroundColor: getBoneHex(state.boneStyle),
+                                boxShadow:
+                                  '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
+                              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
+                            </div>
+                            <Slider
+                              min={-0.5}
+                              max={0.5}
+                              step={0.01}
+                              value={[state.boneStyle?.lightness ?? 0]}
+                              onValueChange={(values) => {
+                                const v = values[0] ?? 0;
+                                setStateWithHistory('bone_style:lightness', (prev) => ({
+                                  ...prev,
+                                  boneStyle: {
+                                    ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }),
+                                    lightness: clamp(v, -1, 1),
+                                  },
+                                }));
+                              }}
+                              className="w-full"
+                              trackClassName="bg-transparent h-2"
+                              rangeClassName="bg-transparent"
+                              thumbClassName="border-white/20"
+                              trackStyle={{
+                                background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(getBoneHex(state.boneStyle), 0.45)})`,
+                              }}
+                              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
+                              thumbStyle={{
+                                backgroundColor: getBoneHex(state.boneStyle),
+                                boxShadow:
+                                  '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+                              }}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </section>
                 </WidgetPortal>
@@ -6010,12 +6229,12 @@ export default function App() {
                         },
                       }));
                     }}
-                    disabled={state.timeline.clip.keyframes.length === 0}
-                    className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
-                      state.timeline.clip.keyframes.length > 0
-                        ? 'bg-[#222] hover:bg-[#333]'
-                        : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
+	                    disabled={timelineKeyframes.length === 0}
+	                    className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+	                      timelineKeyframes.length > 0
+	                        ? 'bg-[#222] hover:bg-[#333]'
+	                        : 'bg-[#181818] text-[#444] cursor-not-allowed'
+	                    }`}
                     title="Clear all keyframes"
                   >
                     <Trash2 size={12} />
@@ -6046,13 +6265,31 @@ export default function App() {
                   className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
                   title="Open a project file (.json)"
                 >
-                  Open Project
-                </button>
-              </div>
-              <input
-                ref={importStateInputRef}
-                type="file"
-                accept="application/json"
+	                    Open Project
+	                  </button>
+	                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={resetPoseToTPose}
+                    className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                    title="Reset pose to T Pose (keeps masks/settings)"
+                  >
+                    Reset Pose
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetEngine}
+                    className="py-2 bg-[#3a0f0f] hover:bg-[#4a1414] rounded-lg text-[10px] font-bold uppercase transition-all"
+                    title="Reset engine: clears masks, physics, motion, and returns to FK T Pose"
+                  >
+                    Reset Engine
+                  </button>
+                </div>
+	              <input
+	                ref={importStateInputRef}
+	                type="file"
+	                accept="application/json"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -6338,24 +6575,6 @@ export default function App() {
                               className="rounded accent-white"
                             />
                           </label>
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Background Color</span>
-                          <div className="flex gap-2">
-                            <input
-                              type="color"
-                              value={backgroundColor}
-                              onChange={(e) => setBackgroundColor(e.target.value)}
-                              className="w-full h-8 bg-[#222] border border-[#333] rounded cursor-pointer"
-                            />
-                            <button
-                              onClick={() => setBackgroundColor('#0a0a0a')}
-                              className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] whitespace-nowrap"
-                            >
-                              Reset
-                            </button>
-                          </div>
                         </div>
                       </div>
 
@@ -7299,10 +7518,14 @@ export default function App() {
                       max="180"
                       step="1"
                               value={angleDeg}
-                              onPointerDown={() => {
+                              onPointerDown={(e) => {
+                        // Prevent canvas drag handlers from stealing the interaction.
+                        e.stopPropagation();
                           setTimelinePlaying(false);
                           historyCtrlRef.current.beginAction(actionId, state);
                         }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
                       onPointerUp={() =>
                         setState((prev) => {
                           const changed = historyCtrlRef.current.commitAction(prev);
@@ -7324,16 +7547,16 @@ export default function App() {
                       <div className="max-h-[300px] overflow-y-auto pr-2 space-y-1">
                         {buildJointHierarchy().map((item, index) => (
                           <div key={`${item.type}-${item.joint.id}-${index}`}>
-                            {item.type === 'joint' ? (
-                              <div 
-                                onMouseDown={(e) => {
-                                  if (e.detail === 3) {
-                                    e.stopPropagation();
-                                    toggleRoot(item.joint.id);
-                                    return;
-                                  }
-                                  setSelectedJointId(item.joint.id);
-                                }}
+	                            {item.type === 'joint' ? (
+	                              <div 
+	                                onPointerDown={(e) => {
+	                                  if (e.detail === 3) {
+	                                    e.stopPropagation();
+	                                    toggleRoot(item.joint.id);
+	                                    return;
+	                                  }
+	                                  setSelectedJointId(item.joint.id);
+	                                }}
                                 className={`group flex items-center justify-between p-2 rounded-md transition-colors cursor-pointer ${
                                   draggingId === item.joint.id
                                     ? 'bg-white/10'
@@ -7373,13 +7596,13 @@ export default function App() {
             </div>
             </div>
 
-            <div
-              className={`mt-4 h-2 rounded-full bg-white/5 ${
-                widgetDockMinimized ? 'cursor-default opacity-40' : 'cursor-row-resize hover:bg-white/10'
-              }`}
-              onMouseDown={beginWidgetDockResize}
-              title={widgetDockMinimized ? 'Widget dock minimized' : 'Drag to resize widget dock'}
-            />
+	            <div
+	              className={`mt-4 h-2 rounded-full bg-white/5 ${
+	                widgetDockMinimized ? 'cursor-default opacity-40' : 'cursor-row-resize hover:bg-white/10'
+	              }`}
+	              onPointerDown={beginWidgetDockResize}
+	              title={widgetDockMinimized ? 'Widget dock minimized' : 'Drag to resize widget dock'}
+	            />
 
             <section
               className="shrink-0 mt-2 p-3 rounded-xl bg-white/5 border border-white/10 flex flex-col"
@@ -7464,10 +7687,19 @@ export default function App() {
             </section>
           </div>
 
-          <div className="p-6 pt-0">
-            <button 
-              onClick={resetSkeleton}
-              className="w-full flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
+          <div className="p-6 pt-0 flex gap-2">
+            <button
+              onClick={resetPoseToTPose}
+              className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
+              title="Reset pose only (keep masks, timeline, and settings)"
+            >
+              <RotateCw size={14} />
+              RESET POSE
+            </button>
+            <button
+              onClick={resetEngine}
+              className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
+              title="Clear masks + physics and return to FK T Pose"
             >
               <RotateCcw size={14} />
               RESET ENGINE
@@ -7476,8 +7708,11 @@ export default function App() {
         </div>
       </motion.aside>
 
-      {/* Main Viewport */}
-      <main className="flex-1 relative flex flex-col overflow-hidden min-h-0 min-w-0">
+	      {/* Main Viewport */}
+	      <main
+	        className="flex-1 relative z-0 flex flex-col overflow-hidden min-h-0 min-w-0"
+	        style={{ backgroundColor }}
+	      >
         {/* Toggle Sidebar Button */}
         <button 
           onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -7518,6 +7753,9 @@ export default function App() {
               <div className="editor-cursor-dot" />
             </div>
             <div ref={cursorLabelRef} className="editor-cursor-label" />
+            <div ref={cursorAlertRef} className="editor-cursor-alert">
+              {TENSION_RELIEF_LABEL}
+            </div>
           </div>
           <svg
             ref={svgRef}
@@ -7936,7 +8174,7 @@ export default function App() {
           {state.timeline.enabled && (() => {
             const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
             const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
-            const hasKeyframe = state.timeline.clip.keyframes.some((k) => k.frame === timelineFrame);
+	            const hasKeyframe = timelineKeyframes.some((k) => k.frame === timelineFrame);
 
             return (
               <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-[#121212]/90 backdrop-blur-md border border-[#222] rounded-xl px-6 py-4">
@@ -7986,27 +8224,27 @@ export default function App() {
                     Pose Trace
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => jumpToAdjacentKeyframe(-1)}
-                    disabled={!state.timeline.clip.keyframes.length}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                    title="Prev keyframe ([ or Shift+←)"
-                  >
+	                  <button
+	                    type="button"
+	                    onClick={() => jumpToAdjacentKeyframe(-1)}
+	                    disabled={!timelineKeyframes.length}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+	                    }`}
+	                    title="Prev keyframe ([ or Shift+←)"
+	                  >
                     Prev Key
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => jumpToAdjacentKeyframe(1)}
-                    disabled={!state.timeline.clip.keyframes.length}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                    title="Next keyframe (] or Shift+→)"
-                  >
+	                  <button
+	                    type="button"
+	                    onClick={() => jumpToAdjacentKeyframe(1)}
+	                    disabled={!timelineKeyframes.length}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+	                    }`}
+	                    title="Next keyframe (] or Shift+→)"
+	                  >
                     Next Key
                   </button>
 
@@ -8058,13 +8296,15 @@ export default function App() {
                             ...prev,
                             timeline: {
                               ...prev.timeline,
-                              clip: {
-                                ...prev.timeline.clip,
-                                frameCount: next,
-                                keyframes: prev.timeline.clip.keyframes.filter((k) => k.frame < next),
-                              },
-                            },
-                          }));
+	                              clip: {
+	                                ...prev.timeline.clip,
+	                                frameCount: next,
+	                                keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
+	                                  (k) => k.frame < next,
+	                                ),
+	                              },
+	                            },
+	                          }));
                           setTimelineFrame((f) => {
                             const clamped = clamp(f, 0, next - 1);
                             timelineFrameRef.current = clamped;
@@ -8308,8 +8548,13 @@ export default function App() {
             );
           })}
 
-	          {/* HUD Overlay (compact) */}
-          <div className="absolute top-6 left-6 flex gap-3 pointer-events-none">
+          {/* Bottom bar (merged top menus) */}
+          <div
+            className="absolute bottom-6 left-6 right-6 flex items-center justify-between gap-3 pointer-events-auto"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+          >
             <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl">
               <div className="flex items-center gap-3 font-mono text-[11px]">
                 <span className="text-[#777]">COORD</span>
@@ -8318,71 +8563,137 @@ export default function App() {
                 </span>
                 <span className="text-[#555]">ROOTS</span>
                 <span className="text-white tabular-nums">{state.activeRoots.length}</span>
+                {debugOverlayEnabled && (
+                  <>
+                    <span className="text-[#555]">Z</span>
+                    <span className="text-white tabular-nums">{debugGridStats.viewScale.toFixed(2)}</span>
+                    <span className="text-[#555]">DX</span>
+                    <span className="text-white tabular-nums">
+                      {debugGridStats.driftX == null ? '—' : debugGridStats.driftX.toFixed(1)}
+                    </span>
+                    <span className="text-[#555]">DY</span>
+                    <span className="text-white tabular-nums">
+                      {debugGridStats.driftY == null ? '—' : debugGridStats.driftY.toFixed(1)}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
-            {debugOverlayEnabled && (
-              <div className="bg-[#121212]/80 backdrop-blur-md border border-[#222] p-4 rounded-2xl">
-                <p className="text-[10px] text-[#666] uppercase font-bold mb-2 tracking-widest">Debug</p>
-                <div className="grid grid-cols-2 gap-x-6 gap-y-1 font-mono text-xs">
-                  <span className="text-[#444]">CANVAS_W</span>
-                  <span className="text-white">{Math.round(debugGridStats.canvasW)}</span>
-                  <span className="text-[#444]">CANVAS_H</span>
-                  <span className="text-white">{Math.round(debugGridStats.canvasH)}</span>
-                  <span className="text-[#444]">VIEW_Z</span>
-                  <span className="text-white">{debugGridStats.viewScale.toFixed(2)}</span>
-                  <span className="text-[#444]">VIEW_X</span>
-                  <span className="text-white">{debugGridStats.viewOffsetX.toFixed(1)}</span>
-                  <span className="text-[#444]">VIEW_Y</span>
-                  <span className="text-white">{debugGridStats.viewOffsetY.toFixed(1)}</span>
-                  <span className="text-[#444]">GRID_CX</span>
-                  <span className="text-white">
-                    {debugGridStats.gridCenterX == null ? '—' : debugGridStats.gridCenterX.toFixed(1)}
-                  </span>
-                  <span className="text-[#444]">GRID_CY</span>
-                  <span className="text-white">
-                    {debugGridStats.gridCenterY == null ? '—' : debugGridStats.gridCenterY.toFixed(1)}
-                  </span>
-                  <span className="text-[#444]">PX_UNIT</span>
-                  <span className="text-white">{debugGridStats.pxPerUnit == null ? '—' : debugGridStats.pxPerUnit.toFixed(1)}</span>
-                  <span className="text-[#444]">DRIFT_X</span>
-                  <span className="text-white">{debugGridStats.driftX == null ? '—' : debugGridStats.driftX.toFixed(1)}</span>
-                  <span className="text-[#444]">DRIFT_Y</span>
-                  <span className="text-white">{debugGridStats.driftY == null ? '—' : debugGridStats.driftY.toFixed(1)}</span>
-                  <span className="text-[#444]">MAX_DX</span>
-                  <span className="text-white">{debugGridStats.maxAbsDriftX.toFixed(1)}</span>
-                  <span className="text-[#444]">MAX_DY</span>
-                  <span className="text-white">{debugGridStats.maxAbsDriftY.toFixed(1)}</span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="absolute top-8 right-8 flex gap-2">
-             <button
-               onClick={() => setBacklightEnabled(!backlightEnabled)}
-               className={`bg-[#121212]/80 backdrop-blur-md border border-[#222] px-4 py-2 rounded-full flex items-center gap-3 transition-all duration-200 ${
-                 backlightEnabled ? 'bg-yellow-500/20 border-yellow-500/50' : 'hover:bg-[#1a1a1a]'
-               }`}
-             >
-                <Power 
-                  className={`w-4 h-4 transition-colors duration-200 ${
-                    backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
-                  }`} 
-                />
-                <span className={`text-[10px] font-bold tracking-widest uppercase transition-colors duration-200 ${
-                  backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
-                }`}>
-                  {backlightEnabled ? 'Backlight ON' : 'Backlight OFF'}
+            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-[#777] font-mono text-[11px]">FEEL</span>
+	                <input
+	                  type="range"
+	                  min="0"
+	                  max="1"
+	                  step="0.01"
+	                  value={state.physicsRigidity ?? 0}
+	                  onPointerDown={(e) => {
+	                    e.stopPropagation();
+	                    beginPhysicsDialAction();
+	                  }}
+	                  onMouseDown={(e) => e.stopPropagation()}
+	                  onTouchStart={(e) => e.stopPropagation()}
+	                  onPointerUp={() => commitPhysicsDialAction()}
+	                  onPointerCancel={() => commitPhysicsDialAction()}
+	                  onChange={(e) => {
+	                    const v = clamp(parseFloat(e.target.value), 0, 1);
+	                    setState((prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
+	                  }}
+	                  className="w-32 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+	                  title="Rig Feel (0 = rigid)"
+	                />
+                <span className="text-white font-mono text-[11px] tabular-nums w-14 text-right">
+                  {getPhysicsBlendMode(state).toUpperCase()} {Math.round((state.physicsRigidity ?? 0) * 100)}%
                 </span>
-             </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRigidRootDragEnabled((v) => !v)}
+                className={`px-3 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                  rigidRootDragEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                }`}
+                title={
+                  rigidRootDragEnabled
+                    ? 'Rigid root dragging: rooted joints stay planted unless you hold Ctrl to move the root target.'
+                    : 'Physics root dragging: dragging a rooted joint moves its root target through the solver.'
+                }
+              >
+                Root Drag: {rigidRootDragEnabled ? 'Rigid' : 'Physics'}
+              </button>
+            </div>
+
+            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-2">
+              <select
+                value={state.rigidity}
+                onChange={(e) =>
+                  applyEngineTransition('rigidity', (prev) =>
+                    applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
+                  )
+                }
+                className="px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
+                title="Rigidity (FK)"
+              >
+                <option value="cardboard">Cardboard</option>
+                <option value="realistic">Realistic</option>
+                <option value="rubberhose">Rubberhose</option>
+              </select>
+
+              <div className="flex bg-[#222] rounded-lg p-1">
+                {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
+                  <button
+                    key={`barmode:${mode}`}
+                    type="button"
+                    onClick={() =>
+                      applyEngineTransition('set_control_mode', (prev) =>
+                        prev.controlMode === mode
+                          ? prev
+                          : applyFluidHandshake(prev, {
+                              ...prev,
+                              controlMode: mode,
+                              ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
+                            }),
+                      )
+                    }
+                    className={`px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                    }`}
+                    title={controlModeUi[mode].title}
+                  >
+                    {controlModeUi[mode].label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setBacklightEnabled(!backlightEnabled)}
+              className={`bg-[#121212]/70 backdrop-blur-md border border-[#222] px-4 py-2 rounded-full flex items-center gap-3 transition-all duration-200 ${
+                backlightEnabled ? 'bg-yellow-500/20 border-yellow-500/50' : 'hover:bg-[#1a1a1a]'
+              }`}
+            >
+              <Power
+                className={`w-4 h-4 transition-colors duration-200 ${
+                  backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
+                }`}
+              />
+              <span
+                className={`text-[10px] font-bold tracking-widest uppercase transition-colors duration-200 ${
+                  backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
+                }`}
+              >
+                {backlightEnabled ? 'Backlight ON' : 'Backlight OFF'}
+              </span>
+            </button>
           </div>
         </div>
 
           {state.timeline.enabled && (() => {
             const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
             const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
-            const hasKeyframe = state.timeline.clip.keyframes.some((k) => k.frame === timelineFrame);
+	            const hasKeyframe = timelineKeyframes.some((k) => k.frame === timelineFrame);
 
             return (
               <div className="shrink-0 bg-[#121212] border-t border-[#222] px-6 py-4">
@@ -8432,27 +8743,27 @@ export default function App() {
                     Pose Trace
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => jumpToAdjacentKeyframe(-1)}
-                    disabled={!state.timeline.clip.keyframes.length}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                    title="Prev keyframe ([ or Shift+←)"
-                  >
+	                  <button
+	                    type="button"
+	                    onClick={() => jumpToAdjacentKeyframe(-1)}
+	                    disabled={!timelineKeyframes.length}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+	                    }`}
+	                    title="Prev keyframe ([ or Shift+←)"
+	                  >
                     Prev Key
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => jumpToAdjacentKeyframe(1)}
-                    disabled={!state.timeline.clip.keyframes.length}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      state.timeline.clip.keyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                    title="Next keyframe (] or Shift+→)"
-                  >
+	                  <button
+	                    type="button"
+	                    onClick={() => jumpToAdjacentKeyframe(1)}
+	                    disabled={!timelineKeyframes.length}
+	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+	                    }`}
+	                    title="Next keyframe (] or Shift+→)"
+	                  >
                     Next Key
                   </button>
 
@@ -8504,13 +8815,15 @@ export default function App() {
                             ...prev,
                             timeline: {
                               ...prev.timeline,
-                              clip: {
-                                ...prev.timeline.clip,
-                                frameCount: next,
-                                keyframes: prev.timeline.clip.keyframes.filter((k) => k.frame < next),
-                              },
-                            },
-                          }));
+	                              clip: {
+	                                ...prev.timeline.clip,
+	                                frameCount: next,
+	                                keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
+	                                  (k) => k.frame < next,
+	                                ),
+	                              },
+	                            },
+	                          }));
                           setTimelineFrame((f) => {
                             const clamped = clamp(f, 0, next - 1);
                             timelineFrameRef.current = clamped;

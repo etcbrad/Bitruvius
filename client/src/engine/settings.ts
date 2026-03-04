@@ -351,14 +351,14 @@ export const makeDefaultState = (): SkeletonState => {
 	    leadEnabled: true,
 	    hardStop: true, // Enable hard stops for rigid joint limits
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
-	    // Default: planted feet (rigid IK cutout). Users can unroot to return to Ground Root.
-	    activeRoots: ['l_ankle', 'r_ankle'],
+	    // Default: FK-first with a single planted foot for stability.
+	    activeRoots: ['r_ankle'],
 	    groundRootTarget,
-	    footPlungerEnabled: true,
+	    footPlungerEnabled: false,
 	    showJoints: true,
 	    jointsOverMasks: false,
 	    lookMode: 'default',
-	    controlMode: 'IK', // Default to rigid IK with planted feet
+	    controlMode: 'Cardboard', // FK-heavy default
 	    rigidity: 'cardboard', // Most rigid setting by default
 	    snappiness: 1.0, // Maximum snappiness for crisp rigid movement
     viewScale: 1.0,

@@ -20,6 +20,13 @@ export const snapshotControlSettings = (s: SkeletonState): ControlSettingsSnapsh
   snappiness: Number.isFinite(s.snappiness) ? clamp(s.snappiness, 0.05, 1.0) : 1.0,
 });
 
+const sameSnapshot = (a: ControlSettingsSnapshot, b: ControlSettingsSnapshot): boolean =>
+  a.bendEnabled === b.bendEnabled &&
+  a.stretchEnabled === b.stretchEnabled &&
+  a.leadEnabled === b.leadEnabled &&
+  a.hardStop === b.hardStop &&
+  a.snappiness === b.snappiness;
+
 const coerceControlSettingsSnapshot = (
   raw: unknown,
   fallback: ControlSettingsSnapshot,
@@ -37,17 +44,47 @@ const coerceControlSettingsSnapshot = (
   };
 };
 
-export const loadControlSettingsCache = (fallback: ControlSettingsSnapshot): ControlSettingsCache => {
+export const loadControlSettingsCache = (fallback: ControlSettingsCache): ControlSettingsCache => {
   try {
     const txt = localStorage.getItem(CONTROL_SETTINGS_KEY);
-    if (!txt) return { fk: fallback, ik: fallback };
+    if (!txt) return fallback;
     const parsed = JSON.parse(txt) as unknown;
     const input = parsed as { fk?: unknown; ik?: unknown } | null | undefined;
     return {
-      fk: coerceControlSettingsSnapshot(input?.fk, fallback),
-      ik: coerceControlSettingsSnapshot(input?.ik, fallback),
+      fk: coerceControlSettingsSnapshot(input?.fk, fallback.fk),
+      ik: coerceControlSettingsSnapshot(input?.ik, fallback.ik),
     };
   } catch {
-    return { fk: fallback, ik: fallback };
+    return fallback;
+  }
+};
+
+export const updateControlSettingsCache = (
+  cache: ControlSettingsCache,
+  prevState: SkeletonState,
+  nextState: SkeletonState,
+): ControlSettingsCache => {
+  const prevGroup = controlGroupForMode(prevState.controlMode);
+  const nextGroup = controlGroupForMode(nextState.controlMode);
+
+  if (prevGroup !== nextGroup) {
+    const prevSnap = snapshotControlSettings(prevState);
+    const nextSnap = snapshotControlSettings(nextState);
+    const prevSame = sameSnapshot(cache[prevGroup], prevSnap);
+    const nextSame = sameSnapshot(cache[nextGroup], nextSnap);
+    if (prevSame && nextSame) return cache;
+    return { ...cache, [prevGroup]: prevSnap, [nextGroup]: nextSnap };
+  }
+
+  const nextSnap = snapshotControlSettings(nextState);
+  if (sameSnapshot(cache[nextGroup], nextSnap)) return cache;
+  return { ...cache, [nextGroup]: nextSnap };
+};
+
+export const saveControlSettingsCache = (cache: ControlSettingsCache): void => {
+  try {
+    localStorage.setItem(CONTROL_SETTINGS_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore
   }
 };

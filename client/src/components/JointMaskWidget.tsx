@@ -154,6 +154,8 @@ export function JointMaskWidget({
   const selectedJoint = state.joints[maskJointId];
   const jointMask: JointMask | undefined = state.scene.jointMasks[maskJointId];
   const canPlace = Boolean(jointMask?.src && jointMask.visible);
+  const jointMaskOpacity = Number.isFinite(jointMask?.opacity) ? (jointMask!.opacity as number) : 1;
+  const jointMaskScale = Number.isFinite(jointMask?.scale) ? (jointMask!.scale as number) : 1;
 
   const setJointMask = (updates: Partial<JointMask>) => {
     if (!jointMask) return;
@@ -819,13 +821,13 @@ export function JointMaskWidget({
                   <div className="space-y-2">
                     <div className="flex justify-between text-[10px]">
                       <span className="text-[#666]">Opacity</span>
-                      <span>{Math.round(clamp(jointMask.opacity, 0, 1) * 100)}%</span>
+                      <span>{Math.round(clamp(jointMaskOpacity, 0, 1) * 100)}%</span>
                     </div>
                     <Slider
                       min={0}
                       max={1}
                       step={0.01}
-                      value={[jointMask.opacity]}
+                      value={[jointMaskOpacity]}
                       onValueChange={([val]) => setJointMask({ opacity: val })}
                     />
                   </div>
@@ -833,13 +835,13 @@ export function JointMaskWidget({
                   <div className="space-y-2">
                     <div className="flex justify-between text-[10px]">
                       <span className="text-[#666]">Scale</span>
-                      <span>{jointMask.scale.toFixed(2)}×</span>
+                      <span>{jointMaskScale.toFixed(2)}×</span>
                     </div>
                     <Slider
                       min={0.01}
                       max={20}
                       step={0.01}
-                      value={[jointMask.scale]}
+                      value={[jointMaskScale]}
                       onValueChange={([val]) => setJointMask({ scale: val })}
                     />
                   </div>
