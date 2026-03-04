@@ -205,3 +205,50 @@
   font-weight: 400;
   letter-spacing: 0.08em;
 }
+
+/* Range input sliders (used in a few widgets) */
+input[type='range'].slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+input[type='range'].slider::-webkit-slider-runnable-track {
+  height: 6px;
+  background: #333;
+  border-radius: 9999px;
+}
+
+input[type='range'].slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px; /* centers thumb on 6px track */
+  border-radius: 9999px;
+  background: #e0e0e0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+}
+
+input[type='range'].slider:focus-visible::-webkit-slider-thumb {
+  outline: none;
+  box-shadow:
+    0 0 0 2px rgba(0, 0, 0, 0.65),
+    0 0 0 4px rgba(255, 255, 255, 0.22);
+}
+
+input[type='range'].slider::-moz-range-track {
+  height: 6px;
+  background: #333;
+  border-radius: 9999px;
+}
+
+input[type='range'].slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #e0e0e0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.55);
+}

@@ -3,11 +3,13 @@ import { strict as assert } from 'node:assert';
 import { runRigidityTests } from './rigidity.test';
 import { runProcgenGroundingTests } from './procgen_grounding.test';
 import { runControlSettingsTests } from './controlSettings.test';
+import { runFabrikTests } from './fabrik.test';
 
 const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'rigidity', fn: runRigidityTests },
   { name: 'procgen_grounding', fn: runProcgenGroundingTests },
   { name: 'controlSettings', fn: runControlSettingsTests },
+  { name: 'fabrik', fn: runFabrikTests },
 ];
 
 let failed = 0;

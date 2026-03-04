@@ -38,7 +38,10 @@ const clampRigidCardboardDragTarget = (input: {
   //
   // Over-pulling then "saturates" at the fully-extended configuration instead of producing
   // impossible constraints (which show up as flicker/tension).
-  if (!isFinitePoint(drag.target)) return drag.target;
+  if (!isFinitePoint(drag.target)) {
+    const fallback = world0[drag.id];
+    return isFinitePoint(fallback) ? fallback : { x: 0, y: 0 };
+  }
   if (!activeRoots.length) return drag.target;
 
   const maxDepth = 64;
