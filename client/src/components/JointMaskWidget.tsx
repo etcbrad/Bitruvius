@@ -373,17 +373,17 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-[#666]">
                       <span>Skew X</span>
-                      <span>{(state.scene.headMask.skewX ?? 0).toFixed(0)}°</span>
+                      <span>{(getHeadMaskProp('skewX', 0) ?? 0).toFixed(0)}°</span>
                     </div>
                     <Slider
                       min={-45}
                       max={45}
                       step={1}
-                      value={[state.scene.headMask.skewX ?? 0]}
+                      value={[getHeadMaskProp('skewX', 0) ?? 0]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_skew_x', (prev) => ({
                           ...prev,
-                          scene: { ...prev.scene, headMask: { ...prev.scene.headMask, skewX: val } },
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), skewX: val } },
                         }))
                       }
                     />
@@ -391,17 +391,17 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-[#666]">
                       <span>Skew Y</span>
-                      <span>{(state.scene.headMask.skewY ?? 0).toFixed(0)}°</span>
+                      <span>{(getHeadMaskProp('skewY', 0) ?? 0).toFixed(0)}°</span>
                     </div>
                     <Slider
                       min={-45}
                       max={45}
                       step={1}
-                      value={[state.scene.headMask.skewY ?? 0]}
+                      value={[getHeadMaskProp('skewY', 0) ?? 0]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_skew_y', (prev) => ({
                           ...prev,
-                          scene: { ...prev.scene, headMask: { ...prev.scene.headMask, skewY: val } },
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), skewY: val } },
                         }))
                       }
                     />
@@ -411,14 +411,14 @@ export function JointMaskWidget({
                 <div className="space-y-1">
                   <div className="flex justify-between text-[10px]">
                     <span>Mode</span>
-                    <span className="text-[#666]">{(state.scene.headMask.mode || 'cutout').toUpperCase()}</span>
+                    <span className="text-[#666]">{(getHeadMaskProp('mode', 'cutout') || 'cutout').toUpperCase()}</span>
                   </div>
                   <select
-                    value={state.scene.headMask.mode || 'cutout'}
+                    value={getHeadMaskProp('mode', 'cutout') || 'cutout'}
                     onChange={(e) =>
                       setStateWithHistory('head_mask_mode', (prev) => ({
                         ...prev,
-                        scene: { ...prev.scene, headMask: { ...prev.scene.headMask, mode: e.target.value as any } },
+                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), mode: e.target.value as any } },
                       }))
                     }
                     className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
@@ -465,22 +465,22 @@ export function JointMaskWidget({
                   </select>
                 </div>
 
-                {(state.scene.headMask.mode || 'cutout') === 'rubberhose' && (
+                {(getHeadMaskProp('mode', 'cutout') || 'cutout') === 'rubberhose' && (
                   <>
                     <div className="space-y-2">
                       <div className="flex justify-between text-[10px]">
                         <span className="text-[#666]">Length Scale</span>
-                        <span>{(state.scene.headMask.lengthScale || 1).toFixed(2)}×</span>
+                        <span>{(getHeadMaskProp('lengthScale', 1) || 1).toFixed(2)}×</span>
                       </div>
                       <Slider
                         min={0.05}
                         max={3}
                         step={0.01}
-                        value={[state.scene.headMask.lengthScale || 1]}
+                        value={[getHeadMaskProp('lengthScale', 1) || 1]}
                         onValueChange={([val]) =>
                           setStateWithHistory('head_mask_length_scale', (prev) => ({
                             ...prev,
-                            scene: { ...prev.scene, headMask: { ...prev.scene.headMask, lengthScale: val } },
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), lengthScale: val } },
                           }))
                         }
                       />
@@ -489,11 +489,11 @@ export function JointMaskWidget({
                       <span className="text-[#666]">Volume Preserve</span>
                       <input
                         type="checkbox"
-                        checked={Boolean(state.scene.headMask.volumePreserve)}
+                        checked={Boolean(getHeadMaskProp('volumePreserve', false))}
                         onChange={(e) =>
                           setStateWithHistory('head_mask_volume_preserve', (prev) => ({
                             ...prev,
-                            scene: { ...prev.scene, headMask: { ...prev.scene.headMask, volumePreserve: e.target.checked } },
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), volumePreserve: e.target.checked } },
                           }))
                         }
                         className="rounded accent-white"
@@ -505,20 +505,20 @@ export function JointMaskWidget({
                 <div className="space-y-1">
                   <div className="flex justify-between text-[10px]">
                     <span>Rotation</span>
-                    <span>{(state.scene.headMask.rotation ?? 0).toFixed(0)}°</span>
+                    <span>{(getHeadMaskProp('rotation', 0) ?? 0).toFixed(0)}°</span>
                   </div>
                   <RotationWheelControl
-                    value={state.scene.headMask.rotation ?? 0}
+                    value={getHeadMaskProp('rotation', 0) ?? 0}
                     min={-360}
                     max={360}
                     step={1}
                     onChange={(val) =>
                       setStateWithHistory('head_mask_rotation', (prev) => ({
                         ...prev,
-                        scene: { ...prev.scene, headMask: { ...prev.scene.headMask, rotation: val } },
+                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), rotation: val } },
                       }))
                     }
-                    isDisabled={!state.scene.headMask.src}
+                    isDisabled={!getHeadMaskProp('src', null)}
                   />
                 </div>
 
@@ -527,7 +527,7 @@ export function JointMaskWidget({
                     <label className="text-[10px] text-[#666]">Offset X</label>
                     <input
                       type="number"
-                      value={state.scene.headMask.offsetX ?? 0}
+                      value={getHeadMaskProp('offsetX', 0) ?? 0}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_offset_x', (prev) => ({
                           ...prev,
@@ -544,7 +544,7 @@ export function JointMaskWidget({
                     <label className="text-[10px] text-[#666]">Offset Y</label>
                     <input
                       type="number"
-                      value={state.scene.headMask.offsetY ?? 0}
+                      value={getHeadMaskProp('offsetY', 0) ?? 0}
                       onChange={(e) =>
                         setStateWithHistory('head_mask_offset_y', (prev) => ({
                           ...prev,
@@ -563,17 +563,17 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-[#666]">
                       <span>Anchor X</span>
-                      <span>{Math.round((state.scene.headMask.anchorX ?? 0.5) * 100)}%</span>
+                      <span>{Math.round((getHeadMaskProp('anchorX', 0.5) ?? 0.5) * 100)}%</span>
                     </div>
                     <Slider
                       min={0}
                       max={1}
                       step={0.01}
-                      value={[state.scene.headMask.anchorX ?? 0.5]}
+                      value={[getHeadMaskProp('anchorX', 0.5) ?? 0.5]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_anchor_x', (prev) => ({
                           ...prev,
-                          scene: { ...prev.scene, headMask: { ...prev.scene.headMask, anchorX: val } },
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), anchorX: val } },
                         }))
                       }
                     />
@@ -581,17 +581,17 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-[#666]">
                       <span>Anchor Y</span>
-                      <span>{Math.round((state.scene.headMask.anchorY ?? 0.5) * 100)}%</span>
+                      <span>{Math.round((getHeadMaskProp('anchorY', 0.5) ?? 0.5) * 100)}%</span>
                     </div>
                     <Slider
                       min={0}
                       max={1}
                       step={0.01}
-                      value={[state.scene.headMask.anchorY ?? 0.5]}
+                      value={[getHeadMaskProp('anchorY', 0.5) ?? 0.5]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_anchor_y', (prev) => ({
                           ...prev,
-                          scene: { ...prev.scene, headMask: { ...prev.scene.headMask, anchorY: val } },
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), anchorY: val } },
                         }))
                       }
                     />
