@@ -47,6 +47,7 @@ import { deserializeEngineState, serializeEngineState } from './engine/serializa
 import { downloadSvg } from './engine/export/svg';
 import { downloadPngFromSvg } from './engine/export/png';
 import { exportAsWebm } from './engine/export/video';
+import { exportGifFramesZip } from './engine/export/gif';
 import { applyPoseSnapshotToJoints, capturePoseSnapshot, sampleClipPose } from './engine/timeline';
 import {
   bakeRecordingIntoTimeline,
@@ -240,6 +241,20 @@ const computeMaxWireStrain = (joints: Record<string, Joint>): number => {
   return max;
 };
 
+const captureWireRestLengths = (joints: Record<string, Joint>): Record<string, number> => {
+  const world = buildWorldPoseFromJoints(joints, INITIAL_JOINTS, 'preview');
+  const out: Record<string, number> = {};
+  for (const w of WIRE_REST_DEFS) {
+    const a = world[w.a];
+    const b = world[w.b];
+    if (!a || !b) continue;
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (!Number.isFinite(d) || d <= 1e-9) continue;
+    out[canonicalConnKey(w.a, w.b)] = d;
+  }
+  return out;
+};
+
 const computeWorldPoseRmsDelta = (
   a: Record<string, Point>,
   b: Record<string, Point>,
@@ -423,6 +438,13 @@ export default function App() {
   const hipWalkRuntimeRef = useRef<{ tSec: number }>({ tSec: 0 });
   const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
   const physicsHandshakeRef = useRef<{ key: string; blend: number }>({ key: '', blend: 1 });
+  const poseReliefTransitionRef = useRef<null | {
+    token: string;
+    startMs: number;
+    durationMs: number;
+    wireRestLengths: Record<string, number>;
+    pin?: { id: string; target: Point };
+  }>(null);
   const headDragMomentumRef = useRef<{ dx: number; dy: number } | null>(null);
   const posePhysicsWorldHistoryRef = useRef<{
     prev: Record<string, Point> | null;
@@ -580,9 +602,38 @@ export default function App() {
     return clickedId;
   }, []);
 
+  const armPoseReliefTransition = useCallback(
+    (input: { reason: string; durationMs?: number; pin?: { id: string; target: Point } | null }) => {
+      const live = stateLiveRef.current;
+      const nowMs = performance.now();
+      const durationMs = clamp(input.durationMs ?? 1400, 250, 2500);
+      poseReliefTransitionRef.current = {
+        token: `${input.reason}:${Math.round(nowMs)}`,
+        startMs: nowMs,
+        durationMs,
+        wireRestLengths: captureWireRestLengths(live.joints),
+        pin: input.pin ?? undefined,
+      };
+    },
+    [],
+  );
+
   const [manikinMode, setManikinMode] = useState(true);
   const manikinModeLiveRef = useRef(manikinMode);
   manikinModeLiveRef.current = manikinMode;
+  const manikinRigidityRef = useRef<RigidityPreset>('cardboard');
+  const nonManikinResumeRef = useRef<null | Pick<
+    SkeletonState,
+    | 'controlMode'
+    | 'activeRoots'
+    | 'rigidity'
+    | 'physicsRigidity'
+    | 'bendEnabled'
+    | 'stretchEnabled'
+    | 'leadEnabled'
+    | 'hardStop'
+    | 'snappiness'
+  >>(null);
 
 		  useEffect(() => {
 		    if (manikinMode) return;
@@ -1628,6 +1679,7 @@ export default function App() {
     headDragMomentumRef.current = null;
     hingeSignsRef.current = {};
     physicsHandshakeRef.current = { key: '', blend: 1 };
+    poseReliefTransitionRef.current = null;
     posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
 
     tensionReliefArmedRef.current = true;
@@ -1869,6 +1921,50 @@ export default function App() {
 	    state.timeline,
 	    state.joints,
 	  ]);
+
+  const exportGif = useCallback(async () => {
+    if (!canvasSize.width || !canvasSize.height) return;
+    if (!state.timeline.enabled) {
+      alert('Timeline must be enabled to export GIF');
+      return;
+    }
+    if (state.scene.background.mediaType === 'sequence' || state.scene.foreground.mediaType === 'sequence') {
+      alert(
+        'GIF export does not support GIF/ZIP sequences yet. Please use a real video file for reference layers, or turn off sequence reference layers before exporting.',
+      );
+      return;
+    }
+
+    try {
+      setTimelinePlaying(false);
+      await exportGifFramesZip({
+        width: canvasSize.width,
+        height: canvasSize.height,
+        backgroundColor,
+        fps: state.timeline.clip.fps,
+        scale: 1,
+        timeline: state.timeline,
+        baseJoints: INITIAL_JOINTS,
+        connections: CONNECTIONS,
+        scene: state.scene,
+        activeRoots: state.activeRoots,
+        stretchEnabled: state.stretchEnabled,
+        fallbackPose: capturePoseSnapshot(state.joints, 'preview'),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      alert(`GIF export failed: ${message}`);
+    }
+  }, [
+    backgroundColor,
+    canvasSize.height,
+    canvasSize.width,
+    state.activeRoots,
+    state.scene,
+    state.stretchEnabled,
+    state.timeline,
+    state.joints,
+  ]);
 
   const uploadMaskFile = useCallback(
     async (file: File) => {
@@ -4742,6 +4838,22 @@ export default function App() {
     },
     [addConsoleLog],
   );
+
+  const formatPoseSnapshotAsCode = useCallback((pose: EnginePoseSnapshot): string => {
+    const entries = Object.entries(pose.joints).sort(([a], [b]) => a.localeCompare(b));
+    const lines = entries.map(([id, p]) => {
+      const x = Number.isFinite(p.x) ? p.x : 0;
+      const y = Number.isFinite(p.y) ? p.y : 0;
+      return `    ${JSON.stringify(id)}: { x: ${x.toFixed(6)}, y: ${y.toFixed(6)} },`;
+    });
+    return `{\n  joints: {\n${lines.join('\n')}\n  },\n}`;
+  }, []);
+
+  const copyCurrentPoseCode = useCallback(async () => {
+    const pose = capturePoseSnapshot(stateLiveRef.current.joints, 'preview');
+    const text = formatPoseSnapshotAsCode(pose);
+    await copyTextToClipboard(text);
+  }, [copyTextToClipboard, formatPoseSnapshotAsCode]);
 
   const buildJointInfoPayload = useCallback(
     (jointId: string) => {
@@ -9046,11 +9158,7 @@ export default function App() {
                         })
                       }
                       onChange={(e) =>
-                        setJointAngleDeg({
-                          sourceJointId: selected.id,
-                          targetJointId: effectiveAngleId!,
-                          angleDeg: parseFloat(e.target.value),
-                        })
+                        setJointAngleDeg(effectiveAngleId!, parseFloat(e.target.value))
                       }
                       className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                     />
@@ -9201,45 +9309,104 @@ export default function App() {
           </div>
           )}
 
-          <div className="p-6 pt-0 flex gap-2 items-center">
-            <button
-              onClick={resetPoseToTPose}
-              className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
-              title="Reset pose only (keep masks, timeline, and settings)"
-            >
-              <RotateCw size={14} />
-              RESET POSE
-            </button>
-            <button
-              onClick={resetEngine}
-              className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
-              title="Clear masks + physics and return to FK T Pose"
-            >
-              <RotateCcw size={14} />
-              RESET ENGINE
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTimelinePlaying(false);
-                setStateWithHistory('toggle_timeline_footer', (prev) => ({
-                  ...prev,
-                  timeline: {
-                    ...prev.timeline,
-                    enabled: !prev.timeline.enabled,
-                  },
-                }));
-              }}
-              className={`shrink-0 flex items-center justify-center gap-2 px-3 py-3 rounded-xl border text-xs font-bold transition-all active:scale-95 ${
-                state.timeline.enabled
-                  ? 'bg-white text-black border-white'
-                  : 'bg-[#121212] text-[#666] border-[#222] hover:bg-[#222] hover:text-white'
-              }`}
-              title={state.timeline.enabled ? 'Hide timeline' : 'Show timeline'}
-              aria-label="Toggle timeline"
-            >
-              <Activity size={16} />
-            </button>
+          <div className="p-6 pt-0 space-y-3">
+            <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Export</div>
+                <div className="text-[10px] text-[#444]">Bottom actions</div>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void copyCurrentPoseCode()}
+                  className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333] transition-all active:scale-95"
+                  title="Copy current pose code to clipboard"
+                >
+                  Code
+                </button>
+                <button
+                  type="button"
+                  onClick={downloadStateJson}
+                  className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333] transition-all active:scale-95"
+                  title="Download full state as .json"
+                >
+                  File
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void exportPng()}
+                  className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333] transition-all active:scale-95"
+                  title="Export current view as PNG"
+                >
+                  PNG
+                </button>
+                <button
+                  type="button"
+                  onClick={exportSvg}
+                  className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333] transition-all active:scale-95"
+                  title="Export current view as SVG"
+                >
+                  SVG
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void exportVideo()}
+                  className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333] transition-all active:scale-95"
+                  title="Export timeline as WebM video"
+                >
+                  Video
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void exportGif()}
+                  className="py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333] transition-all active:scale-95"
+                  title="Export timeline frames as a ZIP (PNG sequence; convert to GIF)"
+                >
+                  GIF
+                </button>
+              </div>
+            </div>
+
+            <div className="flex gap-2 items-center">
+              <button
+                onClick={resetPoseToTPose}
+                className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
+                title="Reset pose only (keep masks, timeline, and settings)"
+              >
+                <RotateCw size={14} />
+                RESET POSE
+              </button>
+              <button
+                onClick={resetEngine}
+                className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
+                title="Clear masks + physics and return to FK T Pose"
+              >
+                <RotateCcw size={14} />
+                RESET ENGINE
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTimelinePlaying(false);
+                  setStateWithHistory('toggle_timeline_footer', (prev) => ({
+                    ...prev,
+                    timeline: {
+                      ...prev.timeline,
+                      enabled: !prev.timeline.enabled,
+                    },
+                  }));
+                }}
+                className={`shrink-0 flex items-center justify-center gap-2 px-3 py-3 rounded-xl border text-xs font-bold transition-all active:scale-95 ${
+                  state.timeline.enabled
+                    ? 'bg-white text-black border-white'
+                    : 'bg-[#121212] text-[#666] border-[#222] hover:bg-[#222] hover:text-white'
+                }`}
+                title={state.timeline.enabled ? 'Hide timeline' : 'Show timeline'}
+                aria-label="Toggle timeline"
+              >
+                <Activity size={16} />
+              </button>
+            </div>
           </div>
         </div>
       </motion.aside>
@@ -10121,7 +10288,17 @@ export default function App() {
             <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl">
               <div className="flex items-center gap-3 font-mono text-[11px]">
                 <span className="text-[#777]">COORD</span>
-                <span ref={coordHudRef} className="text-white tabular-nums opacity-0">
+                <span
+                  ref={coordHudRef}
+                  className="text-white tabular-nums opacity-0 cursor-pointer select-none"
+                  title="Double-click to copy the current pose code"
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    void copyCurrentPoseCode();
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
                   —
                 </span>
                 <span className="text-[#555]">ROOTS</span>

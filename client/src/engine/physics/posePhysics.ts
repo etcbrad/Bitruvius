@@ -117,6 +117,8 @@ export type PosePhysicsInput = {
     dt: number;
     damping?: number;
     wireCompliance?: number;
+    wireRestLengths?: Record<string, number>;
+    wireRestBlend?: number;
     rigidity?: string;
     hardStop?: boolean;
     autoBend?: boolean;
@@ -196,6 +198,8 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
     if (rigidity === 'cardboard') return Math.min(requested, 0.002);
     return Math.min(requested, 0.02);
   })();
+  const wireRestLengths = input.options.wireRestLengths ?? null;
+  const wireRestBlend = clamp(input.options.wireRestBlend ?? 0, 0, 1);
   const stretchEnabled = Boolean(input.options.stretchEnabled);
   const bendEnabled = Boolean(input.options.bendEnabled);
   const boneElasticCompliance =
@@ -269,11 +273,17 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
     const pb = baseWorld[b];
     if (!pa || !pb) continue;
     const compliance = conn.label === 'Clavicle Brace' ? 0 : wireCompliance;
+    const baseRest = dist(pa, pb);
+    const overrideRest = wireRestLengths?.[key];
+    const rest =
+      wireRestBlend > 1e-6 && typeof overrideRest === 'number' && Number.isFinite(overrideRest) && overrideRest > 1e-9
+        ? baseRest + (overrideRest - baseRest) * wireRestBlend
+        : baseRest;
     constraints.push({
       kind: 'distance',
       a,
       b,
-      rest: dist(pa, pb),
+      rest,
       compliance,
     });
   }

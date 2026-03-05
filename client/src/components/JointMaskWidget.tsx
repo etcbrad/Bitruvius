@@ -780,10 +780,13 @@ export function JointMaskWidget({
                     <button
                       type="button"
                       onClick={() => {
-                        jointInputRef.current?.click();
-                        setJointPickerOpen(false);
+                        if (selectedJoint) {
+                          jointInputRef.current?.click();
+                          setJointPickerOpen(false);
+                        }
                       }}
-                      className="flex-1 py-1.5 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333]"
+                      disabled={!selectedJoint}
+                      className="flex-1 py-1.5 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333] disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Upload to Selected
                     </button>
@@ -830,6 +833,9 @@ export function JointMaskWidget({
                         skewX: 0,
                         skewY: 0,
                         relatedJoints: [],
+                        mode: 'replace',
+                        lengthScale: 1,
+                        volumePreserve: true,
                       } as any)
                     }
                     className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"

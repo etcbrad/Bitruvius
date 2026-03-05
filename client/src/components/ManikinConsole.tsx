@@ -577,13 +577,20 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
           const fkSign = Math.sign(followDeg);
 
           return (
-            <button
+            <div
               key={slotId}
-              type="button"
-              onClick={() => selectSlot(slotId)}
-              className={`flex items-center justify-between gap-2 p-2 rounded-md border transition-colors ${
+              className={`flex items-center justify-between gap-2 p-2 rounded-md border transition-colors cursor-pointer ${
                 selected ? 'bg-white/10 border-white/10' : 'bg-white/5 border-white/5 hover:bg-white/10'
               }`}
+              onClick={() => selectSlot(slotId)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  selectSlot(slotId);
+                }
+              }}
             >
               <div className="flex items-center gap-2 min-w-0">
                 <div className={`w-1.5 h-1.5 rounded-full ${hasMask ? 'bg-[#00ff88]' : 'bg-[#444]'}`} />
@@ -622,7 +629,7 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
                   </button>
                 </div>
               )}
-            </button>
+            </div>
           );
         })}
       </div>

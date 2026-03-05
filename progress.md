@@ -120,6 +120,11 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - Head drag smoothness:
 
 2026-03-05
+- COORD HUD: double-clicking the coordinate readout copies the current pose snapshot as code to clipboard (`client/src/App.tsx`).
+- Sidebar footer: added a persistent Export panel at the bottom of the side console with buttons for Code, File (state .json), PNG, SVG, Video (WebM), and GIF (PNG-frames ZIP) (`client/src/App.tsx`).
+- Added timeline 2D renderer shared by video + GIF-frame exports, plus `exportGifFramesZip` (PNG sequence ZIP) (`client/src/engine/export/timeline2d.ts`, `client/src/engine/export/video.ts`, `client/src/engine/export/gif.ts`).
+
+2026-03-05
 Original prompt (this session): replace the shoulder-spanning bone with thin green tendons; make `collar` the physical parent hosting neck/head + arms; shoulder joint is the end of the bicep that connects arm to collar; arms move with collar; refine bend/stretch via per-connection "x degrees with/against parent".
 
 - Rig topology: `l_clavicle`/`r_clavicle` now parent to `collar` (offsets adjusted to preserve the same base-world pose) (`client/src/engine/model.ts`).
