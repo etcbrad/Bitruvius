@@ -118,6 +118,19 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 
 2026-03-03
 - Head drag smoothness:
+
+2026-03-05
+Original prompt (this session): replace the shoulder-spanning bone with thin green tendons; make `collar` the physical parent hosting neck/head + arms; shoulder joint is the end of the bicep that connects arm to collar; arms move with collar; refine bend/stretch via per-connection "x degrees with/against parent".
+
+- Rig topology: `l_clavicle`/`r_clavicle` now parent to `collar` (offsets adjusted to preserve the same base-world pose) (`client/src/engine/model.ts`).
+- Tendons: replaced the shoulder brace and clavicle-span "collar" bar with `type: 'tendon'` + thin green `shape: 'tendon'` render-only links; tendons follow the collar rigid transform but do not participate in physics wire constraints (`client/src/engine/model.ts`, `client/src/engine/physics/posePhysics.ts`, `client/src/App.tsx`).
+- FK follow defaults: added default `connectionOverrides[*].fkFollowDeg = 90` down the collar→neck/head and collar→arms chains so collar rotation carries the limbs (and supports +/- degrees "with/against") (`client/src/engine/settings.ts`).
+- FK behavior: Cardboard/FK collar dragging now uses `applyManikinFkRotation(... rotateBaseOffsets:false)` so collar rotation drives its subtree without mutating rest pose (`client/src/engine/interaction.ts`, `client/src/engine/manikinFk.ts`).
+- UX/testing aid: when timeline is disabled, `ArrowLeft/ArrowRight` now nudges collar ±5° (pose-only) so the behavior is testable headlessly and useful for quick blocking (`client/src/App.tsx`).
+- Default: `collarLock.enabled` now defaults to false (tendons are visual grounding; lock is optional) (`client/src/engine/settings.ts`).
+- Checks: `npm run check` + `npm test` pass. Playwright artifacts:
+  - Rest pose: `output/web-game/collar-tendon-2026-03-05/shot-0.png`
+  - Collar nudge: `output/web-game/collar-nudge2-2026-03-05/shot-0.png`
   - When dragging `head`/`neck_base` under pose physics, collar motion is driven by a smoothed momentum delta and shoulders follow lightly (prevents collar twitch) (`client/src/App.tsx`).
   - Disabled the internal shoulder→collar bias constraint while head/neck is directly dragged to avoid competing targets (`client/src/engine/physics/posePhysics.ts`).
 
@@ -152,3 +165,17 @@ Original prompt: get the joint tinkering from these files and add it to our curr
   - Resets stabilizer history on engine reset, physics handshake changes, and when pose-physics is inactive.
 - Build/test: `npm run check` + `npm test` pass.
 - Playwright smoke artifacts: `output/web-game/flicker-median-2cycle-2026-03-04/shot-0.png`, `output/web-game/flicker-median-2cycle-2026-03-04/state-0.json` (Playwright crashed mid-run with page closed).
+
+2026-03-04
+- Startup: app boots in Manikin (FK) mode with an auto-pin on `navel` (`client/src/App.tsx`).
+- Title screen: green “BITRUVIUS” behind the rig, dismissed on first canvas click (click is consumed) (`client/src/App.tsx`).
+- Manikin FK: added per-connection `fkMode` (stretch/bend) with sanitizer + default bend edges for ankles/toes; added `applyManikinFkRotation` and wired it into Manikin rotation (`client/src/engine/types.ts`, `client/src/engine/settings.ts`, `client/src/engine/manikinFk.ts`, `client/src/App.tsx`).
+- Manikin sidebar: new simplified piece console (rotation slider, mask upload/replace, visibility, S/B toggles; waist is mask-only) (`client/src/components/ManikinConsole.tsx`, `client/src/App.tsx`).
+- Tests: added `manikin_fk` unit tests for stretch/bend propagation + defaults (`script/tests/manikin_fk.test.ts`, `script/tests/run.ts`).
+
+2026-03-04
+- Mask upload processing: added border background removal (white/black) + content crop for uploaded masks (`client/src/app/maskImageProcessing.ts`).
+- Manikin piece masks: upload now processes image + auto-fits initial slot scale to bone length (preserves user tweaks on replace) (`client/src/components/ManikinConsole.tsx`).
+- Cutout slot render: `state.cutoutSlots` images now render in `cutoutsLayer` (legacy `scene.headMask` / `scene.jointMasks` still render separately) (`client/src/App.tsx`).
+- Head/joint mask uploads now run through the same processing; joint first upload auto-fits scale to bone length (`client/src/App.tsx`).
+- Build/test: `npm run check` + `npm test` pass. Playwright still fails to launch Chromium with `bootstrap_check_in ... Permission denied (1100)` in this environment.

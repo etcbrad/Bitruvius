@@ -259,7 +259,7 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   const baseWorld = buildWorldPoseFromJoints(baseJoints, baseJoints, 'preview');
   const wireKey = new Set<string>();
   for (const conn of CONNECTIONS) {
-    if (conn.type === 'bone') continue;
+    if (conn.type === 'bone' || conn.type === 'tendon') continue;
     const a = conn.from;
     const b = conn.to;
     const key = a < b ? `${a}:${b}` : `${b}:${a}`;

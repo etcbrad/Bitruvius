@@ -6,6 +6,7 @@ import { runControlSettingsTests } from './controlSettings.test';
 import { runFabrikTests } from './fabrik.test';
 import { runInvariantTests } from './invariants.test';
 import { runTimelineBakeTests } from './timelineBake.test';
+import { runManikinFkTests } from './manikin_fk.test';
 
 const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'rigidity', fn: runRigidityTests },
@@ -14,6 +15,7 @@ const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'fabrik', fn: runFabrikTests },
   { name: 'invariants', fn: runInvariantTests },
   { name: 'timeline_bake', fn: runTimelineBakeTests },
+  { name: 'manikin_fk', fn: runManikinFkTests },
 ];
 
 let failed = 0;

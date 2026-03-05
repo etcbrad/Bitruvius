@@ -31,7 +31,17 @@ import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connectio
 import { LOOK_MODES, type LookModeId } from './engine/lookModes';
 import { throttle, normA, d2r, r2d, clamp, lerp } from './utils';
 import { applyBalanceDragToState, applyDragToState } from './engine/interaction';
-import { fromAngleDeg, getWorldPosition, getWorldPositionFromOffsets, toAngleDeg, unwrapAngleRad, vectorLength } from './engine/kinematics';
+import {
+  fromAngleDeg,
+  getWorldPosition,
+  getWorldPositionFromOffsets,
+  rotateJointOffsets,
+  toAngleDeg,
+  unwrapAngleRad,
+  vectorLength,
+} from './engine/kinematics';
+import { clampClavicleTargetAngleRad } from './engine/clavicleConstraint';
+import { applyManikinFkRotation } from './engine/manikinFk';
 import { HistoryController } from './engine/history';
 import { deserializeEngineState, serializeEngineState } from './engine/serialization';
 import { downloadSvg } from './engine/export/svg';
@@ -68,6 +78,7 @@ import { ProcgenWidget } from './components/ProcgenWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
+import { ManikinConsole } from './components/ManikinConsole';
 import type { TransitionIssue } from '@/lib/transitionIssues';
 import {
   BACKGROUND_COLOR_KEY,
@@ -79,6 +90,7 @@ import {
   POSE_TRACE_KEY,
   WIDGET_DND_ENABLED,
 } from './app/constants';
+import { isAppShellRuntime } from './app/platform';
 import { applyLightness, getBoneHex, rgbCss } from './app/color';
 import {
   controlGroupForMode,
@@ -90,6 +102,7 @@ import {
 } from './app/controlSettings';
 import { applyRigidTransformToJointSubset, collectSubtreeJointIds } from './app/jointTransforms';
 import { cacheImageFromUrl, cleanupImageCache } from './app/imageCache';
+import { processMaskImageFile } from './app/maskImageProcessing';
 import {
   fitModeToObjectFit,
   SyncedReferenceSequenceCanvas,
@@ -201,7 +214,7 @@ const WIRE_REST_DEFS: WireRestDef[] = (() => {
   };
 
   for (const conn of CONNECTIONS) {
-    if (conn.type === 'bone') continue;
+    if (conn.type === 'bone' || conn.type === 'tendon') continue;
     push(conn.from, conn.to);
   }
 
@@ -247,6 +260,7 @@ const computeWorldPoseRmsDelta = (
 };
 
 export default function App() {
+  const appShellRuntime = isAppShellRuntime();
   const initialSanitizeIssuesRef = useRef<TransitionIssue[] | null>(null);
 
   const initRef = useRef<{
@@ -256,10 +270,24 @@ export default function App() {
 
   if (!initRef.current) {
     const initialState = makeDefaultState();
-    const snap = snapshotControlSettings(initialState);
+    const initialManikinState: SkeletonState = {
+      ...initialState,
+      // Startup baseline: Manikin mode (pure FK rotation-only).
+      controlMode: 'Cardboard',
+      activeRoots: [],
+      stretchEnabled: false,
+      bendEnabled: false,
+      // Hard-set FK defaults: no lead/lag, no soft limits.
+      leadEnabled: false,
+      hardStop: true,
+      snappiness: 1.0,
+      rigidity: 'cardboard',
+      physicsRigidity: 0,
+    };
+    const snap = snapshotControlSettings(initialManikinState);
     const fallbackCache: ControlSettingsCache = { fk: { ...snap }, ik: { ...snap } };
     initRef.current = {
-      state: initialState,
+      state: initialManikinState,
       controlSettingsCache: ENGINE_PERSISTENCE_ENABLED ? loadControlSettingsCache(fallbackCache) : fallbackCache,
     };
   }
@@ -311,6 +339,7 @@ export default function App() {
 
   type PoseSnapshot = Omit<SkeletonState, 'timeline'> & { timestamp?: number };
   const [poseSnapshots, setPoseSnapshots] = useState<PoseSnapshot[]>([]);
+  const [manikinPoseSelectedIndex, setManikinPoseSelectedIndex] = useState<number | null>(null);
   const [selectedPoseIndices, setSelectedPoseIndices] = useState<number[]>([]);
 
   const [autoPoseCaptureEnabled, setAutoPoseCaptureEnabled] = useState(false);
@@ -323,6 +352,29 @@ export default function App() {
 
   const autoPoseRecordingRef = useRef<DragRecordingSession | null>(null);
   const autoPoseRecordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const addPoseSnapshot = useCallback(() => {
+    setPoseSnapshots((h) => {
+      const { timeline, ...snapshot } = state;
+      void timeline;
+      const timestampedSnapshot = { ...snapshot, timestamp: Date.now() };
+      return [timestampedSnapshot, ...h].slice(0, 20);
+    });
+  }, [state]);
+
+  const updatePoseSnapshotAtIndex = useCallback(
+    (index: number) => {
+      setPoseSnapshots((h) => {
+        if (!Number.isFinite(index) || index < 0 || index >= h.length) return h;
+        const { timeline, ...snapshot } = state;
+        void timeline;
+        const next = [...h];
+        next[index] = { ...snapshot, timestamp: Date.now() };
+        return next;
+      });
+    },
+    [state],
+  );
 
   useEffect(() => {
     return () => {
@@ -337,10 +389,18 @@ export default function App() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const draggingIdLiveRef = useRef<string | null>(null);
   const effectiveDraggingIdLiveRef = useRef<string | null>(null);
-  const [manikinRotateDragging, setManikinRotateDragging] = useState<null | { jointId: string; deltaRad: number }>(
-    null,
-  );
-  const manikinRotateDraggingLiveRef = useRef<null | { jointId: string; deltaRad: number }>(null);
+  const [manikinRotateDragging, setManikinRotateDragging] = useState<null | {
+    sourceJointId: string;
+    targetJointId: string;
+    deltaRad: number;
+    localOnly: boolean;
+  }>(null);
+  const manikinRotateDraggingLiveRef = useRef<null | {
+    sourceJointId: string;
+    targetJointId: string;
+    deltaRad: number;
+    localOnly: boolean;
+  }>(null);
   const dragProxyOffsetWorldRef = useRef<Point | null>(null);
   const [groundRootDragging, setGroundRootDragging] = useState(false);
   const groundRootDraggingLiveRef = useRef(false);
@@ -357,6 +417,10 @@ export default function App() {
   const dragTargetRef = useRef<{ id: string; target: Point } | null>(null);
   const pinTargetsRef = useRef<Record<string, Point>>({});
   const hingeSignsRef = useRef<Record<string, number>>({});
+  const baseHipLockRestRef = useRef<number | null>(null);
+  const baseCollarLockRestRef = useRef<number | null>(null);
+  const baseTorsoDiamondRestRef = useRef<Record<string, number> | null>(null);
+  const hipWalkRuntimeRef = useRef<{ tSec: number }>({ tSec: 0 });
   const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
   const physicsHandshakeRef = useRef<{ key: string; blend: number }>({ key: '', blend: 1 });
   const headDragMomentumRef = useRef<{ dx: number; dy: number } | null>(null);
@@ -516,10 +580,15 @@ export default function App() {
     return clickedId;
   }, []);
 
-	  useEffect(() => {
-	    if (state.activeRoots.length > 0) return;
-	    setState((prev) => {
-	      if (prev.activeRoots.length > 0) return prev;
+  const [manikinMode, setManikinMode] = useState(true);
+  const manikinModeLiveRef = useRef(manikinMode);
+  manikinModeLiveRef.current = manikinMode;
+
+		  useEffect(() => {
+		    if (manikinMode) return;
+		    if (state.activeRoots.length > 0) return;
+		    setState((prev) => {
+		      if (prev.activeRoots.length > 0) return prev;
 	      const corrected = applyGroundRootCorrectionToJoints({
 	        joints: prev.joints,
 	        baseJoints: INITIAL_JOINTS,
@@ -529,7 +598,7 @@ export default function App() {
       if (corrected === prev.joints) return prev;
       return { ...prev, joints: corrected };
     });
-  }, [state.activeRoots.length, state.groundRootTarget.x, state.groundRootTarget.y, state.joints]);
+  }, [manikinMode, state.activeRoots.length, state.groundRootTarget.x, state.groundRootTarget.y, state.joints]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -634,6 +703,7 @@ export default function App() {
       : 0;
   
   const [titleFont, setTitleFont] = useState('pixel-mono');
+  const [titleScreenVisible, setTitleScreenVisible] = useState(true);
   
   const titleFontClassMap = {
     'pixel-mono': 'font-pixel-mono',
@@ -648,7 +718,6 @@ export default function App() {
   };
 
   const [floatingWidgets, setFloatingWidgets] = useState<FloatingWidget[]>([]);
-  const [manikinMode, setManikinMode] = useState(false);
   const [activeWidgetId, setActiveWidgetId] = useState<WidgetId>(
     () => WIDGET_TAB_ORDER.character.find((id) => id !== 'tools') ?? 'tools',
   );
@@ -1221,6 +1290,15 @@ export default function App() {
     [],
   );
 
+  const applyPoseSnapshotAtIndex = useCallback(
+    (index: number) => {
+      const snap = poseSnapshots[index];
+      if (!snap) return;
+      setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...snap }));
+    },
+    [poseSnapshots, setStateWithHistory],
+  );
+
   const captureProcgenNeutralFromCurrent = useCallback(() => {
     setTimelinePlaying(false);
     setStateWithHistory('procgen:setNeutralFromCurrent', (prev) => ({
@@ -1592,26 +1670,52 @@ export default function App() {
       if (!MANIKIN_MODE_ENABLED) return;
       setManikinMode(enabled);
       if (!enabled) {
+        // Leaving FK "paper puppet" mode -> upgrade to full digital (IK/FABRIK/dragging).
+        clearTransientInteractionState();
         setManikinRotateDragging(null);
         manikinRotateDraggingLiveRef.current = null;
-        addConsoleLog('info', 'Manikin mode disabled.');
+        setStateWithHistory('manikin_mode:off', (prev) => {
+          const upgraded: SkeletonState = applyFluidHandshake(prev, {
+            ...prev,
+            controlMode: 'IK',
+            activeRoots: ['l_ankle', 'r_ankle'].filter((id) => id in prev.joints),
+            ...controlSettingsCacheRef.current.ik,
+          });
+          // Hard-set the visible pose so nothing "swims" as we unlock the digital rig.
+          const pose = capturePoseSnapshot(prev.joints, 'current');
+          return { ...upgraded, joints: applyPoseSnapshotToJoints(upgraded.joints, pose) };
+        });
+        addConsoleLog('info', 'Manikin mode disabled: upgraded to digital IK.');
         return;
       }
 
       clearTransientInteractionState();
       setManikinRotateDragging(null);
       manikinRotateDraggingLiveRef.current = null;
-      setStateWithHistory('manikin_mode:on', (prev) => ({
-        ...prev,
-        // Manikin mode: rotation-only (no IK roots, no dragging, no rubberband).
-        controlMode: 'Cardboard',
-        activeRoots: [],
-        stretchEnabled: false,
-        bendEnabled: false,
-      }));
+      pinTargetsRef.current = {};
+      setStateWithHistory('manikin_mode:on', (prev) => {
+        const next: SkeletonState = applyFluidHandshake(prev, {
+          ...prev,
+          // Manikin mode: pure FK rotation-only (no pose physics, no IK roots).
+          controlMode: 'Cardboard',
+          rigidity: 'cardboard',
+          physicsRigidity: 0,
+          activeRoots: [],
+          stretchEnabled: false,
+          bendEnabled: false,
+          leadEnabled: false,
+          snappiness: 1.0,
+          hardStop: true,
+          footPlungerEnabled: false,
+        });
+
+        // Hard-set offsets to the current visible pose (no jitter/settling after a mode switch).
+        const pose = capturePoseSnapshot(prev.joints, 'current');
+        return { ...next, joints: applyPoseSnapshotToJoints(next.joints, pose) };
+      });
       addConsoleLog('info', 'Manikin mode enabled: rotation-only.');
     },
-    [addConsoleLog, clearTransientInteractionState, setStateWithHistory],
+    [addConsoleLog, applyFluidHandshake, clearTransientInteractionState, setStateWithHistory],
   );
 
   const resetEngine = useCallback(() => {
@@ -1652,12 +1756,14 @@ export default function App() {
 	      physicsRigidity: 0,
       bendEnabled: false,
       stretchEnabled: false,
-	      hardStop: true,
-	      footPlungerEnabled: false,
-	      activeRoots: ['r_ankle'],
-	      groundRootTarget,
-      // Clear motion systems.
-      procgen: { ...tPose.procgen, enabled: false },
+      leadEnabled: false,
+      snappiness: 1.0,
+		      hardStop: true,
+		      footPlungerEnabled: false,
+		      activeRoots: manikinMode ? [] : ['r_ankle'],
+		      groundRootTarget,
+	      // Clear motion systems.
+	      procgen: { ...tPose.procgen, enabled: false },
       timeline: { ...tPose.timeline, enabled: false, clip: { ...tPose.timeline.clip, keyframes: [] } },
       // Clear look back to defaults.
       lookMode: 'default',
@@ -1671,7 +1777,7 @@ export default function App() {
     setState(next);
     if (ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
     addConsoleLog('success', 'Engine reset: cleared masks + physics and returned to FK T Pose.');
-  }, [addConsoleLog, clearTransientInteractionState, dropReferenceSequence, queueAutosave]);
+  }, [addConsoleLog, clearTransientInteractionState, dropReferenceSequence, manikinMode, queueAutosave]);
 
   const importStateFile = useCallback(
     async (file: File) => {
@@ -1767,7 +1873,12 @@ export default function App() {
   const uploadMaskFile = useCallback(
     async (file: File) => {
       try {
-        const url = URL.createObjectURL(file);
+        const processed = await processMaskImageFile(file, {
+          removeBorderBackground: true,
+          cropToContent: true,
+          cropPaddingPx: 6,
+        });
+        const url = URL.createObjectURL(processed.blob);
         setStateWithHistory('upload_mask', (prev) => ({
           ...prev,
           scene: {
@@ -1810,47 +1921,86 @@ export default function App() {
   const uploadJointMaskFile = useCallback(
     async (file: File, jointId: string) => {
       try {
-        const url = URL.createObjectURL(file);
+        const processed = await processMaskImageFile(file, {
+          removeBorderBackground: true,
+          cropToContent: true,
+          cropPaddingPx: 6,
+        });
+        const url = URL.createObjectURL(processed.blob);
         
         // Auto-center by setting offset to 0 and anchor to 0.5
-        setStateWithHistory(`upload_joint_mask:${jointId}`, (prev) => ({
-          ...prev,
-          scene: {
-            ...prev.scene,
-            jointMasks: {
-              ...prev.scene.jointMasks,
-              [jointId]: {
-                // Some joints may be user-created and not present in the default mask map.
-                // Ensure required numeric fields exist so UI sliders and rendering don't receive `undefined`/NaN.
-                ...(prev.scene.jointMasks[jointId] ?? {
-                  src: null,
-                  visible: false,
-                  opacity: 1.0,
-                  scale: 0.25,
-                  offsetX: 0,
-                  offsetY: 0,
-                  rotation: 0,
-                  anchorX: 0.5,
-                  anchorY: 0.5,
-                  mode: 'cutout',
-                  lengthScale: 1.0,
-                  volumePreserve: false,
-                  stretchX: 1.0,
-                  stretchY: 1.0,
-                  skewX: 0,
-                  skewY: 0,
-                  relatedJoints: [],
-                }),
-                src: url,
-                visible: true,
-                offsetX: 0,
-                offsetY: 0,
-                anchorX: 0.5,
-                anchorY: 0.5,
+        setStateWithHistory(`upload_joint_mask:${jointId}`, (prev) => {
+          const baseMask =
+            prev.scene.jointMasks[jointId] ??
+            ({
+              src: null,
+              visible: false,
+              opacity: 1.0,
+              scale: 0.25,
+              offsetX: 0,
+              offsetY: 0,
+              rotation: 0,
+              anchorX: 0.5,
+              anchorY: 0.5,
+              mode: 'cutout',
+              lengthScale: 1.0,
+              volumePreserve: false,
+              stretchX: 1.0,
+              stretchY: 1.0,
+              skewX: 0,
+              skewY: 0,
+              relatedJoints: [],
+            } as any);
+
+          const firstUpload = !baseMask.src;
+
+          let nextMask = {
+            ...baseMask,
+            src: url,
+            visible: true,
+            offsetX: 0,
+            offsetY: 0,
+            anchorX: 0.5,
+            anchorY: 0.5,
+          };
+
+          if (firstUpload) {
+            const joint = prev.joints[jointId] ?? INITIAL_JOINTS[jointId];
+            const parentId = joint?.parent ?? null;
+            const jp = getWorldPosition(jointId, prev.joints, INITIAL_JOINTS);
+            const pp = parentId ? getWorldPosition(parentId, prev.joints, INITIAL_JOINTS) : { x: jp.x, y: jp.y - 1 };
+
+            const boneLenPx = Math.max(1, Math.hypot(jp.x - pp.x, jp.y - pp.y) * 20);
+
+            const headPos = getWorldPosition('head', prev.joints, INITIAL_JOINTS);
+            const neckBasePos = getWorldPosition('neck_base', prev.joints, INITIAL_JOINTS);
+            const headLenPx = Math.max(1, Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y) * 20);
+
+            const w = Math.max(1, processed.width);
+            const h = Math.max(1, processed.height);
+            const scaleRaw = (boneLenPx / Math.max(1e-6, headLenPx)) * (w / h);
+            const scale = clamp(scaleRaw, 0.01, 20);
+
+            nextMask = {
+              ...nextMask,
+              mode: 'rubberhose',
+              lengthScale: 1.0,
+              volumePreserve: false,
+              scale,
+            };
+          }
+
+          return {
+            ...prev,
+            scene: {
+              ...prev.scene,
+              jointMasks: {
+                ...prev.scene.jointMasks,
+                [jointId]: nextMask,
               },
             },
-          },
-        }));
+          };
+        });
         
 	        // Cache the image for persistence
 	        if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, `joint_mask_${jointId}`);
@@ -2138,18 +2288,38 @@ export default function App() {
         return;
       }
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        if (!state.timeline.enabled) return;
-        e.preventDefault();
-        if (poseTracingEnabled && e.shiftKey) {
-          jumpToAdjacentKeyframe(e.key === 'ArrowLeft' ? -1 : 1);
+        if (state.timeline.enabled) {
+          e.preventDefault();
+          if (poseTracingEnabled && e.shiftKey) {
+            jumpToAdjacentKeyframe(e.key === 'ArrowLeft' ? -1 : 1);
+            return;
+          }
+          setTimelinePlaying(false);
+          const delta = e.key === 'ArrowLeft' ? -1 : 1;
+          const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
+          const nextFrame = clamp(timelineFrameRef.current + delta, 0, maxFrame);
+          timelineFrameRef.current = nextFrame;
+          setTimelineFrame(nextFrame);
           return;
         }
-        setTimelinePlaying(false);
-        const delta = e.key === 'ArrowLeft' ? -1 : 1;
-        const maxFrame = Math.max(0, state.timeline.clip.frameCount - 1);
-        const nextFrame = clamp(timelineFrameRef.current + delta, 0, maxFrame);
-        timelineFrameRef.current = nextFrame;
-        setTimelineFrame(nextFrame);
+
+        // Non-timeline: Arrow keys nudge the collar (shoulder socket) so arms/head follow for quick pose blocking.
+        e.preventDefault();
+        const deltaDeg = e.key === 'ArrowLeft' ? -5 : 5;
+        const deltaRad = (deltaDeg * Math.PI) / 180;
+        setStateWithHistory('collar_nudge', (prev) => {
+          if (!prev.joints.collar?.parent) return prev;
+          const nextJoints = applyManikinFkRotation({
+            joints: prev.joints,
+            baseJoints: INITIAL_JOINTS,
+            rootRotateJointId: 'collar',
+            deltaRad,
+            connectionOverrides: prev.connectionOverrides,
+            rotateBaseOffsets: false,
+          });
+          return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
+        });
+        return;
       }
     };
 
@@ -2455,6 +2625,9 @@ export default function App() {
               physics: prev.procgen.physics,
               idle: prev.procgen.idle,
               options: prev.procgen.options,
+              hipWalk: prev.hipLock?.walkModeEnabled
+                ? { enabled: true, amount: Number.isFinite(prev.hipLock.walkAmount) ? prev.hipLock.walkAmount : 0.75 }
+                : undefined,
             });
 
             jointsForFrame = applyPoseSnapshotToPreviewOffsetsOnly(prev.joints, snapshot);
@@ -2469,7 +2642,37 @@ export default function App() {
           allowPosePhysics = false;
         }
 
-        const physicsActive = shouldRunPosePhysics(prev) && allowPosePhysics && (Boolean(drag) || prev.activeRoots.length > 0);
+        // FK/IK hip walk (non-procgen): apply a small oscillation to hip offsets for 3D leg motion hinting.
+        if (prev.hipLock?.walkModeEnabled && !procgenPreviewApplied && !prev.timeline.enabled && !isDirectManipulation) {
+          hipWalkRuntimeRef.current.tSec += dt;
+          const amp = clamp(Number.isFinite(prev.hipLock.walkAmount) ? prev.hipLock.walkAmount : 0.75, 0, 10);
+          const phase = hipWalkRuntimeRef.current.tSec * Math.PI * 2 * 1.0;
+          const dy = Math.sin(phase) * amp;
+          const dx = Math.cos(phase) * amp * 0.25;
+
+          const applyHip = (id: 'l_hip' | 'r_hip', ox: number, oy: number) => {
+            const j = jointsForFrame[id] ?? INITIAL_JOINTS[id]!;
+            const off = (j.previewOffset ?? j.targetOffset ?? j.baseOffset) as any;
+            return {
+              ...j,
+              previewOffset: { x: off.x + ox, y: off.y + oy },
+            };
+          };
+
+          jointsForFrame = {
+            ...jointsForFrame,
+            l_hip: applyHip('l_hip', dx, dy),
+            r_hip: applyHip('r_hip', -dx, dy),
+          };
+        } else if (!prev.hipLock?.walkModeEnabled) {
+          hipWalkRuntimeRef.current.tSec = 0;
+        }
+
+	        const physicsActive =
+	          !manikinModeLiveRef.current &&
+	          shouldRunPosePhysics(prev) &&
+	          allowPosePhysics &&
+	          (Boolean(drag) || prev.activeRoots.length > 0);
         
         // Exclude balance joints from physics when they're being dragged to prevent tension/jitter.
         // Note: Navel drags proxy to sternum (handled via `drag.id`).
@@ -2514,19 +2717,182 @@ export default function App() {
 	            activePinTargets[dragInput.id] = dragInput.target;
 	          }
 
-            // When dragging the head, keep the collar motion smooth and let shoulders follow with light momentum.
-            // This avoids collar "twitch" from competing shoulder/collar constraints.
+            const ensureBaseHipLockRest = () => {
+              const cached = baseHipLockRestRef.current;
+              if (typeof cached === 'number' && Number.isFinite(cached) && cached > 1e-6) return cached;
+              const l = getWorldPosition('l_hip', INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
+              const r = getWorldPosition('r_hip', INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
+              const rest = Math.hypot(r.x - l.x, r.y - l.y);
+              const next = Number.isFinite(rest) && rest > 1e-6 ? rest : 4;
+              baseHipLockRestRef.current = next;
+              return next;
+            };
+
+            const ensureBaseCollarLockRest = () => {
+              const cached = baseCollarLockRestRef.current;
+              if (typeof cached === 'number' && Number.isFinite(cached) && cached > 1e-6) return cached;
+              const l = getWorldPosition('l_clavicle', INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
+              const r = getWorldPosition('r_clavicle', INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
+              const rest = Math.hypot(r.x - l.x, r.y - l.y);
+              const next = Number.isFinite(rest) && rest > 1e-6 ? rest : 3;
+              baseCollarLockRestRef.current = next;
+              return next;
+            };
+
+            const ensureBaseTorsoDiamondRests = () => {
+              const cached = baseTorsoDiamondRestRef.current;
+              if (cached) return cached;
+              const ids = ['l_clavicle', 'r_clavicle', 'neck_base', 'sternum'] as const;
+              const w: Record<string, Point> = {};
+              for (const id of ids) w[id] = getWorldPosition(id, INITIAL_JOINTS, INITIAL_JOINTS, 'preview');
+              const dist = (a: string, b: string) => {
+                const pa = w[a];
+                const pb = w[b];
+                const d = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+                return Number.isFinite(d) && d > 1e-6 ? d : 1;
+              };
+              const rests: Record<string, number> = {
+                'l_clavicle:sternum': dist('l_clavicle', 'sternum'),
+                'r_clavicle:sternum': dist('r_clavicle', 'sternum'),
+                'l_clavicle:neck_base': dist('l_clavicle', 'neck_base'),
+                'r_clavicle:neck_base': dist('r_clavicle', 'neck_base'),
+                'neck_base:sternum': dist('neck_base', 'sternum'),
+              };
+              baseTorsoDiamondRestRef.current = rests;
+              return rests;
+            };
+
+            // Extra constraints: explicit hip lock + head-drag smoothing.
             const extraConstraints = (() => {
+              const constraints: any[] = [];
+              const shapeOn = Boolean(prev.shapeshiftingEnabled);
+
+		              if (prev.hipLock?.enabled) {
+		                const restLen = prev.hipLock.restLen;
+		                const baseRest = typeof restLen === 'number' && Number.isFinite(restLen) ? restLen : ensureBaseHipLockRest();
+		                if (shapeOn && prev.hipLock.extendCompressEnabled) {
+		                  const minScale = Number.isFinite(prev.hipLock.minScale) ? prev.hipLock.minScale : 1;
+		                  const maxScale = Number.isFinite(prev.hipLock.maxScale) ? prev.hipLock.maxScale : 1;
+	                  const minLen = baseRest * Math.min(minScale, maxScale);
+                  const maxLen = baseRest * Math.max(minScale, maxScale);
+
+                  constraints.push({
+                    kind: 'distanceLimit',
+                    a: 'l_hip',
+                    b: 'r_hip',
+                    min: minLen,
+                    max: maxLen,
+                    compliance: 0,
+                  });
+
+                  if (prev.hipLock.fkEnabled) {
+                    const fkScale = Number.isFinite(prev.hipLock.fkLengthScale) ? prev.hipLock.fkLengthScale : 1;
+                    constraints.push({
+                      kind: 'distance',
+                      a: 'l_hip',
+                      b: 'r_hip',
+                      rest: baseRest * fkScale,
+                      compliance: 0,
+                    });
+                  }
+                } else {
+                  constraints.push({
+                    kind: 'distance',
+                    a: 'l_hip',
+                    b: 'r_hip',
+                    rest: baseRest,
+                    compliance: 0,
+                  });
+                }
+              }
+
+		              if (prev.collarLock?.enabled) {
+		                const restLen = prev.collarLock.restLen;
+		                const baseRest = typeof restLen === 'number' && Number.isFinite(restLen) ? restLen : ensureBaseCollarLockRest();
+		                if (shapeOn && prev.collarLock.extendCompressEnabled) {
+		                  const minScale = Number.isFinite(prev.collarLock.minScale) ? prev.collarLock.minScale : 1;
+		                  const maxScale = Number.isFinite(prev.collarLock.maxScale) ? prev.collarLock.maxScale : 1;
+	                  const minLen = baseRest * Math.min(minScale, maxScale);
+                  const maxLen = baseRest * Math.max(minScale, maxScale);
+                  constraints.push({
+                    kind: 'distanceLimit',
+                    a: 'l_clavicle',
+                    b: 'r_clavicle',
+                    min: minLen,
+                    max: maxLen,
+                    compliance: 0,
+                  });
+                } else {
+                  constraints.push({
+                    kind: 'distance',
+                    a: 'l_clavicle',
+                    b: 'r_clavicle',
+                    rest: baseRest,
+                    compliance: 0,
+                  });
+                }
+              }
+
+	              if (prev.torsoDiamond?.enabled) {
+	                const rests = ensureBaseTorsoDiamondRests();
+	                const compliance = shapeOn && prev.torsoDiamond.dynamic ? 0.0025 : 0;
+	                const edges: Array<[string, string, string]> = [
+	                  ['l_clavicle', 'sternum', 'l_clavicle:sternum'],
+	                  ['r_clavicle', 'sternum', 'r_clavicle:sternum'],
+	                  ['l_clavicle', 'neck_base', 'l_clavicle:neck_base'],
+	                  ['r_clavicle', 'neck_base', 'r_clavicle:neck_base'],
+	                  ['neck_base', 'sternum', 'neck_base:sternum'],
+	                ];
+	                for (const [a, b, key] of edges) {
+	                  const restEdge = (prev.torsoDiamond as any)?.restEdges?.[key];
+	                  constraints.push({
+	                    kind: 'distance',
+	                    a,
+	                    b,
+	                    rest: Number.isFinite(restEdge) ? restEdge : (rests[key] ?? 1),
+	                    compliance,
+	                  });
+	                }
+	              }
+
+	              if (shapeOn && prev.hipLock?.enabled && prev.hipLock.pelvisBiasEnabled) {
+	                const navelWorld = getWorldPosition('navel', jointsForFrame, INITIAL_JOINTS, 'preview');
+	                const baseY = navelWorld.y;
+	                if (Number.isFinite(baseY)) {
+	                  const amt = Number.isFinite(prev.hipLock.pelvisBiasAmount) ? prev.hipLock.pelvisBiasAmount : 0;
+	                  const s = prev.hipLock.pelvisBiasSide === 'above' ? -1 : 1;
+	                  const targetY = baseY + s * amt;
+	                  constraints.push({
+	                    kind: 'axisSpring',
+	                    id: 'l_hip',
+	                    axis: 'y',
+	                    target: targetY,
+	                    compliance: 0.004,
+	                  });
+	                  constraints.push({
+	                    kind: 'axisSpring',
+	                    id: 'r_hip',
+	                    axis: 'y',
+	                    target: targetY,
+	                    compliance: 0.004,
+	                  });
+	                }
+	              }
+
+              // When dragging the head, keep the collar motion smooth and let shoulders follow with light momentum.
+              // This avoids collar "twitch" from competing shoulder/collar constraints.
               const d = dragInput;
               if (!d || (d.id !== 'head' && d.id !== 'neck_base')) {
                 headDragMomentumRef.current = null;
-                return undefined;
+                return constraints.length ? constraints : undefined;
               }
 
               const alpha = 1 - Math.pow(1 - 0.35, dt * 60); // stable smoothing across FPS
               const headWorld = getWorldPosition(d.id, jointsForFrame, INITIAL_JOINTS, 'preview');
               const desiredDelta = { x: d.target.x - headWorld.x, y: d.target.y - headWorld.y };
-              if (!Number.isFinite(desiredDelta.x) || !Number.isFinite(desiredDelta.y)) return undefined;
+              if (!Number.isFinite(desiredDelta.x) || !Number.isFinite(desiredDelta.y)) {
+                return constraints.length ? constraints : undefined;
+              }
 
               const prevMom = headDragMomentumRef.current ?? { dx: 0, dy: 0 };
               const nextMom = {
@@ -2546,13 +2912,13 @@ export default function App() {
                 !Number.isFinite(rShoulderWorld.x) ||
                 !Number.isFinite(rShoulderWorld.y)
               ) {
-                return undefined;
+                return constraints.length ? constraints : undefined;
               }
 
               const collarFollow = 0.42;
               const shoulderFollow = 0.18;
 
-              return [
+              constraints.push(
                 {
 	                  kind: 'pin',
 	                  id: 'collar',
@@ -2577,7 +2943,9 @@ export default function App() {
 	                  },
 	                  compliance: 0.002,
 	                },
-              ] as any;
+              );
+
+              return constraints.length ? constraints : undefined;
             })();
 
             const maxWireStrain = computeMaxWireStrain(jointsForFrame);
@@ -2750,24 +3118,25 @@ export default function App() {
         const nextJoints = { ...jointsForFrame };
         let changed = false;
 
-        // While the user is actively dragging (joint or mask), the rig should
-        // track the cursor exactly (no smoothing/lead lag).
-        // Convert snappiness into a stable per-frame alpha.
-        // - When snappiness=1, snaps immediately.
-        // - When snappiness is small, follows smoothly; dt keeps it consistent across FPS.
-        const sn = clamp(prev.snappiness, 0.05, 1.0);
-        const alpha = isDirectManipulation ? 1 : 1 - Math.pow(1 - sn, dt * 60);
+	        // While the user is actively dragging (joint or mask), the rig should
+	        // track the cursor exactly (no smoothing/lead lag).
+	        // Convert snappiness into a stable per-frame alpha.
+	        // - When snappiness=1, snaps immediately.
+	        // - When snappiness is small, follows smoothly; dt keeps it consistent across FPS.
+	        const forceNoDrag = manikinModeLiveRef.current;
+	        const sn = forceNoDrag ? 1 : clamp(prev.snappiness, 0.05, 1.0);
+	        const alpha = isDirectManipulation || forceNoDrag ? 1 : 1 - Math.pow(1 - sn, dt * 60);
 
         Object.keys(nextJoints).forEach(id => {
-          const joint = nextJoints[id];
+	          const joint = nextJoints[id];
 
-          // 1) Preview -> Target (Lead)
-          const nextTarget = prev.leadEnabled && !isDirectManipulation
-            ? {
-                x: joint.targetOffset.x + (joint.previewOffset.x - joint.targetOffset.x) * alpha,
-                y: joint.targetOffset.y + (joint.previewOffset.y - joint.targetOffset.y) * alpha,
-              }
-            : { ...joint.previewOffset };
+	          // 1) Preview -> Target (Lead)
+	          const nextTarget = !forceNoDrag && prev.leadEnabled && !isDirectManipulation
+	            ? {
+	                x: joint.targetOffset.x + (joint.previewOffset.x - joint.targetOffset.x) * alpha,
+	                y: joint.targetOffset.y + (joint.previewOffset.y - joint.targetOffset.y) * alpha,
+	              }
+	            : { ...joint.previewOffset };
 
           // 2) Target -> Current (Mesh/Reality)
           const nextCurrent = {
@@ -2958,7 +3327,9 @@ export default function App() {
       setSelectedConnectionKey(focusBoneKeyForJointId(id, state.joints));
       syncRigFocusFromJointId(id);
 
-      const joint = state.joints[id];
+      const sourceJointId = id;
+      const targetJointId = sourceJointId === 'navel' ? 'sternum' : sourceJointId;
+      const joint = state.joints[targetJointId];
       if (!joint?.parent) return;
 
       const mouseWorld = getMouseWorld(e.clientX, e.clientY);
@@ -2967,8 +3338,13 @@ export default function App() {
       const currentAngle = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
       if (!Number.isFinite(mouseAngle) || !Number.isFinite(currentAngle)) return;
 
-      historyCtrlRef.current.beginAction(`manikin_rotate:${id}`, state);
-      const drag = { jointId: id, deltaRad: currentAngle - mouseAngle };
+      historyCtrlRef.current.beginAction(`manikin_rotate:${sourceJointId}`, state);
+      const drag = {
+        sourceJointId,
+        targetJointId,
+        deltaRad: currentAngle - mouseAngle,
+        localOnly: sourceJointId === 'navel',
+      };
       setManikinRotateDragging(drag);
       manikinRotateDraggingLiveRef.current = drag;
       return;
@@ -3305,12 +3681,13 @@ export default function App() {
 
 	  const isRootRotateGesture = (e: React.MouseEvent) => e.button === 0 && e.shiftKey;
 
-	  const handleCanvasRootRotateMouseDown = (e: React.MouseEvent) => {
-	    // Root-rotate is a power gesture; don't enter it on normal canvas clicks/drags.
-	    if (!isRootRotateGesture(e)) return;
-	    e.stopPropagation();
-	    setTimelinePlaying(false);
-	    setSelectedJointId(null);
+		  const handleCanvasRootRotateMouseDown = (e: React.MouseEvent) => {
+		    // Root-rotate is a power gesture; don't enter it on normal canvas clicks/drags.
+		    if (!isRootRotateGesture(e)) return;
+		    if (manikinMode) return;
+		    e.stopPropagation();
+		    setTimelinePlaying(false);
+		    setSelectedJointId(null);
 
     const mouseWorld = getMouseWorld(e.clientX, e.clientY);
     const pivot =
@@ -3371,7 +3748,7 @@ export default function App() {
         if (manikinMode) {
           const drag = manikinRotateDraggingLiveRef.current;
           if (drag) {
-            const joint = state.joints[drag.jointId];
+            const joint = state.joints[drag.targetJointId];
             if (!joint?.parent) return;
 
             const pivot = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS, 'preview');
@@ -3379,27 +3756,38 @@ export default function App() {
             if (!Number.isFinite(mouseAngle)) return;
             const desiredAngleRaw = mouseAngle + drag.deltaRad;
 
-            setState((prev) => {
-              const j = prev.joints[drag.jointId];
-              if (!j?.parent) return prev;
+	            setState((prev) => {
+	              const j = prev.joints[drag.targetJointId];
+	              if (!j?.parent) return prev;
 
-              const cur = Math.atan2(j.previewOffset.y, j.previewOffset.x);
-              const next = unwrapAngleRad(cur, desiredAngleRaw);
-              const delta = next - cur;
-              const c = Math.cos(delta);
-              const s = Math.sin(delta);
-              const rot = (p: Point) => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c });
+	              const cur = Math.atan2(j.previewOffset.y, j.previewOffset.x);
+	              let next = unwrapAngleRad(cur, desiredAngleRaw);
+	              if (prev.clavicleConstraintEnabled) {
+	                next = clampClavicleTargetAngleRad({
+	                  jointId: drag.targetJointId,
+	                  currentAngleRad: cur,
+	                  desiredAngleRad: next,
+	                  joints: prev.joints,
+	                  baseJoints: INITIAL_JOINTS,
+	                });
+	              }
+	              const delta = next - cur;
 
-              const nextJoints = { ...prev.joints };
-              nextJoints[drag.jointId] = {
-                ...j,
-                baseOffset: rot(j.baseOffset),
-                currentOffset: rot(j.currentOffset),
-                targetOffset: rot(j.targetOffset),
-                previewOffset: rot(j.previewOffset),
-              };
-              return { ...prev, joints: nextJoints };
-            });
+                if (drag.localOnly) {
+                  const nextJoints = { ...prev.joints };
+                  nextJoints[drag.targetJointId] = rotateJointOffsets(j, delta);
+                  return { ...prev, joints: nextJoints };
+                }
+
+	              const nextJoints = applyManikinFkRotation({
+	                joints: prev.joints,
+	                baseJoints: INITIAL_JOINTS,
+	                rootRotateJointId: drag.targetJointId,
+	                deltaRad: delta,
+	                connectionOverrides: prev.connectionOverrides,
+	              });
+	              return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
+	            });
             return;
           }
         }
@@ -3529,11 +3917,11 @@ export default function App() {
           return;
         }
 
-        if (rootRotateDragging) {
-          const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
-          const effectiveWorld = (() => {
-            let next = mouseWorldRaw;
-            if (e.altKey) {
+	        if (!manikinMode && rootRotateDragging) {
+	          const snapWorld = (v: number, step: number) => Math.round(v / step) * step;
+	          const effectiveWorld = (() => {
+	            let next = mouseWorldRaw;
+	            if (e.altKey) {
               const anchor =
                 precisionAnchorRef.current ??
                 (() => {
@@ -3964,6 +4352,38 @@ export default function App() {
     }
   };
 
+	  const setManikinJointAngleDeg = useCallback((jointId: string, angleDeg: number) => {
+	    setState((prev) => {
+	      const joint = prev.joints[jointId];
+	      if (!joint?.parent) return prev;
+
+	      const desiredAngleRadRaw = (angleDeg * Math.PI) / 180;
+	      const currentAngleRad = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
+	      let desiredAngleRad = unwrapAngleRad(currentAngleRad, desiredAngleRadRaw);
+	      if (prev.clavicleConstraintEnabled) {
+	        desiredAngleRad = clampClavicleTargetAngleRad({
+	          jointId,
+	          currentAngleRad,
+	          desiredAngleRad,
+	          joints: prev.joints,
+	          baseJoints: INITIAL_JOINTS,
+	        });
+	      }
+	      const deltaRad = desiredAngleRad - currentAngleRad;
+	      if (!Number.isFinite(deltaRad) || Math.abs(deltaRad) < 1e-12) return prev;
+
+	      const nextJoints = applyManikinFkRotation({
+	        joints: prev.joints,
+        baseJoints: INITIAL_JOINTS,
+        rootRotateJointId: jointId,
+        deltaRad,
+        connectionOverrides: prev.connectionOverrides,
+      });
+
+      return nextJoints === prev.joints ? prev : { ...prev, joints: nextJoints };
+    });
+  }, []);
+
   const setJointAngleDeg = useCallback((jointId: string, angleDeg: number) => {
     setState((prev) => {
       const applyToOneJoint = (draft: SkeletonState, id: string, targetAngleDeg: number): SkeletonState => {
@@ -3977,12 +4397,21 @@ export default function App() {
 
         const pivot = getWorldPosition(joint.parent, draft.joints, INITIAL_JOINTS, 'preview');
 
-        const desiredAngleRadRaw = (targetAngleDeg * Math.PI) / 180;
-        const currentAngleRad = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
-        const targetAngleRad = unwrapAngleRad(currentAngleRad, desiredAngleRadRaw);
+	        const desiredAngleRadRaw = (targetAngleDeg * Math.PI) / 180;
+	        const currentAngleRad = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
+	        let targetAngleRad = unwrapAngleRad(currentAngleRad, desiredAngleRadRaw);
+	        if (draft.clavicleConstraintEnabled) {
+	          targetAngleRad = clampClavicleTargetAngleRad({
+	            jointId: id,
+	            currentAngleRad,
+	            desiredAngleRad: targetAngleRad,
+	            joints: draft.joints,
+	            baseJoints: INITIAL_JOINTS,
+	          });
+	        }
 
-        const currentOffsetLen = Number.isFinite(currentLen) ? currentLen : 0;
-        const deltaRad = currentOffsetLen <= 1e-9 ? 0 : targetAngleRad - currentAngleRad;
+	        const currentOffsetLen = Number.isFinite(currentLen) ? currentLen : 0;
+	        const deltaRad = currentOffsetLen <= 1e-9 ? 0 : targetAngleRad - currentAngleRad;
 
         const desiredDir = { x: Math.cos(targetAngleRad), y: Math.sin(targetAngleRad) };
         const dr = desiredLen - currentOffsetLen;
@@ -4273,13 +4702,138 @@ export default function App() {
   const isNosferatuLook = state.lookMode === 'nosferatu';
   const isSkeletalLook = state.lookMode === 'skeletal';
 
+  const childrenByParentId = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const [id, j] of Object.entries(state.joints)) {
+      const p = j.parent;
+      if (!p) continue;
+      (out[p] ??= []).push(id);
+    }
+    for (const ids of Object.values(out)) ids.sort();
+    return out;
+  }, [state.joints]);
+
+  const copyTextToClipboard = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        addConsoleLog('success', 'Copied to clipboard.');
+        return true;
+      } catch {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.style.top = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          if (ok) addConsoleLog('success', 'Copied to clipboard.');
+          else addConsoleLog('warning', 'Copy failed (clipboard permission).');
+          return ok;
+        } catch {
+          addConsoleLog('warning', 'Copy failed (clipboard permission).');
+          return false;
+        }
+      }
+    },
+    [addConsoleLog],
+  );
+
+  const buildJointInfoPayload = useCallback(
+    (jointId: string) => {
+      const j = state.joints[jointId];
+      const parentId = j?.parent ?? null;
+      const children = childrenByParentId[jointId] ?? [];
+      const pos = getWorldPosition(jointId, state.joints, INITIAL_JOINTS);
+      return {
+        kind: 'joint' as const,
+        id: jointId,
+        label: j?.label ?? jointId,
+        parentId,
+        children,
+        world: { x: pos.x, y: pos.y },
+      };
+    },
+    [childrenByParentId, state.joints],
+  );
+
+  const buildBoneInfoPayload = useCallback(
+    (conn: Connection, connKey: string, mergeTo: string | null) => {
+      const fromId = conn.from;
+      const toId = conn.to;
+      const toEffectiveId = mergeTo ?? toId;
+      const override = state.connectionOverrides?.[connKey] ?? null;
+      const from = state.joints[fromId] ?? null;
+      const to = state.joints[toEffectiveId] ?? null;
+
+      const start = getWorldPosition(fromId, state.joints, INITIAL_JOINTS);
+      const end = getWorldPosition(toEffectiveId, state.joints, INITIAL_JOINTS);
+
+      return {
+        kind: 'bone' as const,
+        key: connKey,
+        label: conn.label ?? null,
+        type: conn.type ?? null,
+        fromId,
+        toId,
+        toEffectiveId,
+        fromParentId: from?.parent ?? null,
+        toParentId: to?.parent ?? null,
+        fromChildren: childrenByParentId[fromId] ?? [],
+        toChildren: childrenByParentId[toEffectiveId] ?? [],
+        world: {
+          from: { x: start.x, y: start.y },
+          to: { x: end.x, y: end.y },
+        },
+        override,
+      };
+    },
+    [childrenByParentId, state.connectionOverrides, state.joints],
+  );
+
   const renderConnection = (conn: Connection) => {
     const fromJoint = state.joints[conn.from];
     const toJoint = state.joints[conn.to];
     if (!fromJoint || !toJoint) return null;
 
-    const start = getWorldPosition(conn.from, state.joints, INITIAL_JOINTS);
-    const end = getWorldPosition(conn.to, state.joints, INITIAL_JOINTS);
+    const connKey = canonicalConnKey(conn.from, conn.to);
+    const override = state.connectionOverrides?.[connKey];
+    if (override?.hidden) return null;
+
+    const mergeTo = override?.mergeToJointId && override.mergeToJointId in state.joints ? override.mergeToJointId : null;
+
+    const isTendon = conn.type === 'tendon';
+    const getTendonPoint = (jointId: string) => {
+      const baseP = getWorldPosition(jointId, INITIAL_JOINTS, INITIAL_JOINTS);
+      const baseAnchor = getWorldPosition('collar', INITIAL_JOINTS, INITIAL_JOINTS);
+      const liveAnchor = getWorldPosition('collar', state.joints, INITIAL_JOINTS);
+
+      const baseParent = getWorldPosition('sternum', INITIAL_JOINTS, INITIAL_JOINTS);
+      const liveParent = getWorldPosition('sternum', state.joints, INITIAL_JOINTS);
+      const baseAxis = { x: baseAnchor.x - baseParent.x, y: baseAnchor.y - baseParent.y };
+      const liveAxis = { x: liveAnchor.x - liveParent.x, y: liveAnchor.y - liveParent.y };
+      const baseAng = Math.atan2(baseAxis.y, baseAxis.x);
+      const liveAng = Math.atan2(liveAxis.y, liveAxis.x);
+      const dAng = unwrapAngleRad(baseAng, liveAng) - baseAng;
+      const c = Math.cos(dAng);
+      const s = Math.sin(dAng);
+
+      const rel = { x: baseP.x - baseAnchor.x, y: baseP.y - baseAnchor.y };
+      const rot = { x: rel.x * c - rel.y * s, y: rel.x * s + rel.y * c };
+      return { x: liveAnchor.x + rot.x, y: liveAnchor.y + rot.y };
+    };
+    const start = (() => {
+      if (!isTendon) return getWorldPosition(conn.from, state.joints, INITIAL_JOINTS);
+      return getTendonPoint(conn.from);
+    })();
+    const end = (() => {
+      if (!isTendon) return getWorldPosition(mergeTo ?? conn.to, state.joints, INITIAL_JOINTS);
+      return getTendonPoint(conn.to);
+    })();
 
     // Use raw engine units, the <g> transform handles the rest
     const scale = 20;
@@ -4304,11 +4858,14 @@ export default function App() {
     let strokeWidth = 4;
     let opacity = 0.9;
     let dashArray = "";
-    const connKey = canonicalConnKey(conn.from, conn.to);
-    const override = state.connectionOverrides?.[connKey];
     const isSelectedConn = selectedConnectionKey === connKey;
 
-    if (conn.type === 'soft_limit') {
+    if (conn.type === 'tendon') {
+      strokeWidth = 1;
+      opacity = 0.65;
+      strokeColor = isNosferatuLook ? '#ffffff' : '#00ff00';
+      dashArray = '';
+    } else if (conn.type === 'soft_limit') {
       strokeWidth = 2;
       opacity = 0.6;
       dashArray = "2 2";
@@ -4324,20 +4881,40 @@ export default function App() {
       strokeWidth = Math.max(strokeWidth, 4) + 2;
       dashArray = '';
     }
+    const hipWalkActive =
+      Boolean(state.hipLock?.walkModeEnabled) &&
+      (connKey === canonicalConnKey('l_hip', 'r_hip') ||
+        connKey === canonicalConnKey('navel', 'l_hip') ||
+        connKey === canonicalConnKey('navel', 'r_hip'));
+    if (hipWalkActive && !isSelectedConn) {
+      strokeColor = '#ff3344';
+      opacity = 1.0;
+      dashArray = '';
+      strokeWidth = Math.max(strokeWidth, 4);
+    }
 
     const renderShape = () => {
       const shape = override?.shape || conn.shape || 'standard';
       const fillColor = isNosferatuLook ? '#ffffff' : strokeColor;
       const lineColor = isNosferatuLook ? '#ffffff' : strokeColor;
       const shapeOpacity = isNosferatuLook ? Math.max(opacity, 0.85) : opacity;
+      const shapeScale = clamp(Number.isFinite(override?.shapeScale) ? (override!.shapeScale as number) : 1, 0.25, 4);
       
       switch (shape) {
+        case 'tendon':
+          return (
+            <g transform={`translate(${x1}, ${y1}) rotate(${angle})`} style={{ opacity: shapeOpacity }}>
+              <rect x="0" y={-1.25 * shapeScale} width={len} height={2.5 * shapeScale} rx={1.25 * shapeScale} ry={1.25 * shapeScale} fill={fillColor} />
+              <circle cx="0" cy="0" r={2.25 * shapeScale} fill={fillColor} />
+              <circle cx={len} cy="0" r={2.25 * shapeScale} fill={fillColor} />
+            </g>
+          );
         case 'bone':
           return (
             <g transform={`translate(${x1}, ${y1}) rotate(${angle})`} style={{ opacity: shapeOpacity }}>
-              <rect x="0" y="-3.5" width={len} height="7" rx="3.5" ry="3.5" fill={fillColor} />
-              <circle cx="0" cy="0" r="5.5" fill={fillColor} />
-              <circle cx={len} cy="0" r="5.5" fill={fillColor} />
+              <rect x="0" y={-3.5 * shapeScale} width={len} height={7 * shapeScale} rx={3.5 * shapeScale} ry={3.5 * shapeScale} fill={fillColor} />
+              <circle cx="0" cy="0" r={5.5 * shapeScale} fill={fillColor} />
+              <circle cx={len} cy="0" r={5.5 * shapeScale} fill={fillColor} />
             </g>
           );
         case 'muscle':
@@ -4345,8 +4922,8 @@ export default function App() {
             <path
               d={`
                 M 0,0
-                Q ${len * 0.5}, -15 ${len}, 0
-                Q ${len * 0.5}, 15 0, 0
+                Q ${len * 0.5}, ${-15 * shapeScale} ${len}, 0
+                Q ${len * 0.5}, ${15 * shapeScale} 0, 0
                 Z
               `}
               fill={fillColor}
@@ -4358,11 +4935,11 @@ export default function App() {
           return (
             <rect
               x="0"
-              y="-4"
+              y={-4 * shapeScale}
               width={len}
-              height="8"
-              rx="4"
-              ry="4"
+              height={8 * shapeScale}
+              rx={4 * shapeScale}
+              ry={4 * shapeScale}
               fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
               style={{ opacity: shapeOpacity }}
@@ -4371,7 +4948,7 @@ export default function App() {
         case 'diamond':
           return (
             <polygon
-              points={`0,0 ${len * 0.5},-7 ${len},0 ${len * 0.5},7`}
+              points={`0,0 ${len * 0.5},${-7 * shapeScale} ${len},0 ${len * 0.5},${7 * shapeScale}`}
               fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
               style={{ opacity: shapeOpacity }}
@@ -4381,10 +4958,10 @@ export default function App() {
           return (
             <path
               d={`
-                M 0,-5
-                C ${len * 0.25}, -10, ${len * 0.75}, 0, ${len}, -5
-                L ${len}, 5
-                C ${len * 0.75}, 0, ${len * 0.25}, 10, 0, 5
+                M 0,${-5 * shapeScale}
+                C ${len * 0.25}, ${-10 * shapeScale}, ${len * 0.75}, 0, ${len}, ${-5 * shapeScale}
+                L ${len}, ${5 * shapeScale}
+                C ${len * 0.75}, 0, ${len * 0.25}, ${10 * shapeScale}, 0, ${5 * shapeScale}
                 Z
               `}
               fill={fillColor}
@@ -4396,10 +4973,10 @@ export default function App() {
           return (
              <path
               d={`
-                M 0,-4
-                L ${len}, -1
-                L ${len}, 1
-                L 0, 4
+                M 0,${-4 * shapeScale}
+                L ${len}, ${-1 * shapeScale}
+                L ${len}, ${1 * shapeScale}
+                L 0, ${4 * shapeScale}
                 Z
               `}
               fill={fillColor}
@@ -4410,7 +4987,7 @@ export default function App() {
         case 'cylinder':
            return (
             <rect
-              x="0" y="-4" width={len} height="8"
+              x="0" y={-4 * shapeScale} width={len} height={8 * shapeScale}
               fill={fillColor}
               transform={`translate(${x1}, ${y1}) rotate(${angle})`}
               style={{ opacity: shapeOpacity }}
@@ -4421,7 +4998,7 @@ export default function App() {
             <line
               x1={x1} y1={y1} x2={x2} y2={y2}
               stroke={lineColor}
-              strokeWidth="2"
+              strokeWidth={2 * shapeScale}
               style={{ opacity: shapeOpacity }}
             />
           );
@@ -4430,7 +5007,7 @@ export default function App() {
             <line
               x1={x1} y1={y1} x2={x2} y2={y2}
               stroke={isNosferatuLook ? '#ffffff' : '#00ff00'}
-              strokeWidth={isNosferatuLook ? '1' : '0.5'}
+              strokeWidth={isNosferatuLook ? 1 * shapeScale : 0.5 * shapeScale}
               style={{ opacity: isNosferatuLook ? shapeOpacity : 0.6 }}
             />
           );
@@ -4439,14 +5016,14 @@ export default function App() {
           return (
             <path
               d={`
-                M 0,-5 
-                L ${len * 0.2},-2 
-                L ${len * 0.8},-2 
-                L ${len},-5 
-                L ${len},5 
-                L ${len * 0.8},2 
-                L ${len * 0.2},2 
-                L 0,5 
+                M 0,${-5 * shapeScale} 
+                L ${len * 0.2},${-2 * shapeScale} 
+                L ${len * 0.8},${-2 * shapeScale} 
+                L ${len},${-5 * shapeScale} 
+                L ${len},${5 * shapeScale} 
+                L ${len * 0.8},${2 * shapeScale} 
+                L ${len * 0.2},${2 * shapeScale} 
+                L 0,${5 * shapeScale} 
                 Z
               `}
               fill={fillColor}
@@ -4458,7 +5035,40 @@ export default function App() {
     };
 
     return (
-      <g key={`conn-${conn.from}-${conn.to}`}>
+      <g
+        key={`conn-${conn.from}-${conn.to}`}
+        onContextMenu={
+          appShellRuntime
+            ? async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const payload = buildBoneInfoPayload(conn, connKey, mergeTo);
+                const text = `/* BITRUVIUS_SELECTION v1 */\n${JSON.stringify(payload, null, 2)}`;
+                await copyTextToClipboard(text);
+              }
+            : undefined
+        }
+        style={{ cursor: appShellRuntime ? 'context-menu' : 'default' }}
+      >
+        <title>
+          {(() => {
+            const fromId = conn.from;
+            const toId = mergeTo ?? conn.to;
+            const from = state.joints[fromId];
+            const to = state.joints[toId];
+            const fromParent = from?.parent ?? '—';
+            const toParent = to?.parent ?? '—';
+            const fromChildren = (childrenByParentId[fromId] ?? []).join(', ') || '—';
+            const toChildren = (childrenByParentId[toId] ?? []).join(', ') || '—';
+            const name = conn.label || `${fromId} → ${toId}`;
+            return [
+              `Bone: ${name}`,
+              `From: ${fromId} (parent: ${fromParent}; children: ${fromChildren})`,
+              `To: ${toId} (parent: ${toParent}; children: ${toChildren})`,
+              `Key: ${connKey}`,
+            ].join('\n');
+          })()}
+        </title>
         {/* Main Connection Shape */}
         {renderShape()}
       </g>
@@ -4530,7 +5140,29 @@ export default function App() {
     const glowOpacity = clamp(baseGlow + selectedGlow + pinnedGlow, 0, 0.75);
 
     return (
-      <g key={`joint-${id}`}>
+      <g
+        key={`joint-${id}`}
+        onContextMenu={
+          appShellRuntime
+            ? async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const payload = buildJointInfoPayload(id);
+                const text = `/* BITRUVIUS_SELECTION v1 */\n${JSON.stringify(payload, null, 2)}`;
+                await copyTextToClipboard(text);
+              }
+            : undefined
+        }
+        style={{ cursor: appShellRuntime ? 'context-menu' : 'default' }}
+      >
+        <title>
+          {(() => {
+            const parent = joint.parent ?? '—';
+            const children = (childrenByParentId[id] ?? []).join(', ') || '—';
+            const label = joint.label ?? id;
+            return [`Joint: ${label} (${id})`, `Parent: ${parent}`, `Children: ${children}`].join('\n');
+          })()}
+        </title>
         {glowOpacity > 0.001 && (
           <circle
             cx={sx}
@@ -4760,6 +5392,28 @@ export default function App() {
     const headLenUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
     const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
 
+    const slotItems = Object.entries(state.cutoutSlots).flatMap(([slotId, slot]) => {
+      const visible = effectiveVisible(slotId, Boolean(slot.visible));
+      if (!visible) return [];
+      if (!slot.assetId) return [];
+
+      // Avoid double-rendering: legacy joint/head masks are still drawn from `state.scene.*`.
+      if (slot.assetId === 'legacy_head_mask' || slot.assetId.startsWith('legacy_joint_mask:')) return [];
+
+      const asset = state.assets[slot.assetId];
+      if (!asset || asset.kind !== 'image' || !asset.image?.src) return [];
+
+      return [
+        {
+          kind: 'slot' as const,
+          slotId,
+          zIndex: effectiveZIndex(slotId, slot.zIndex ?? 50),
+          slot,
+          asset,
+        },
+      ];
+    });
+
     const jointItems = Object.entries(state.scene.jointMasks)
       .flatMap(([jointId, mask]) => {
         if (!mask?.src) return [];
@@ -4787,18 +5441,93 @@ export default function App() {
       };
     })();
 
-    const items = [...jointItems, ...(headItem ? [headItem] : [])].sort((a, b) => a.zIndex - b.zIndex);
+    const items = [...slotItems, ...jointItems, ...(headItem ? [headItem] : [])].sort((a, b) => a.zIndex - b.zIndex);
 
     return items.map((item) => {
+      if (item.kind === 'slot') {
+        const { slotId, slot, asset } = item;
+        const img = asset.image!;
+        const fromPos = getWorldPosition(slot.attachment.fromJointId, state.joints, INITIAL_JOINTS);
+        const toPos = getWorldPosition(slot.attachment.toJointId, state.joints, INITIAL_JOINTS);
+
+        const dx = toPos.x - fromPos.x;
+        const dy = toPos.y - fromPos.y;
+        const boneLenPx = Math.max(1, Math.hypot(dx, dy) * pxPerUnit);
+
+        const baseAngle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
+        const mode = slot.mode || 'cutout';
+        const finalAngle = (mode === 'roto' ? 0 : baseAngle) + (slot.rotation || 0);
+
+        const thicknessPx = headLenPx * Math.max(0.01, slot.scale);
+        const imgW = Math.max(1, img.naturalWidth || 1);
+        const imgH = Math.max(1, img.naturalHeight || 1);
+        const imgAspect = imgH / imgW;
+
+        let width = thicknessPx;
+        let height = thicknessPx * imgAspect;
+        const midX = (fromPos.x + toPos.x) / 2;
+        const midY = (fromPos.y + toPos.y) / 2;
+        let anchorWorldX = midX * pxPerUnit + centerX;
+        let anchorWorldY = midY * pxPerUnit + centerY;
+
+        if (mode === 'rubberhose') {
+          anchorWorldX = midX * pxPerUnit + centerX;
+          anchorWorldY = midY * pxPerUnit + centerY;
+          height = Math.max(1, boneLenPx * Math.max(0.05, slot.lengthScale || 1));
+          if (slot.volumePreserve) {
+            width = clamp((thicknessPx * thicknessPx) / height, thicknessPx * 0.15, thicknessPx * 4);
+          } else {
+            width = thicknessPx;
+          }
+        }
+
+        const originX = snapPx(anchorWorldX + slot.offsetX);
+        const originY = snapPx(anchorWorldY + slot.offsetY);
+        const x = snapPx(originX - slot.anchorX * width);
+        const y = snapPx(originY - slot.anchorY * height);
+
+        return (
+          <image
+            key={`cutout-slot:${slotId}`}
+            href={img.src}
+            x={x}
+            y={y}
+            width={width}
+            height={height}
+            opacity={slot.opacity}
+            style={{
+              transformOrigin: `${originX}px ${originY}px`,
+              transform: `rotate(${finalAngle}deg)`,
+              pointerEvents: 'none',
+            }}
+          />
+        );
+      }
+
       if (item.kind === 'head') {
         const mask = item.mask;
+
+        const baseId = (mask.relatedJoints?.[0] && mask.relatedJoints[0] in state.joints ? mask.relatedJoints[0] : null) ?? 'neck_base';
+        const secondaryIds = (mask.relatedJoints || []).slice(1).filter((id) => id in state.joints);
+        const basePos = getWorldPosition(baseId, state.joints, INITIAL_JOINTS);
+        const secondaryCentroid = (() => {
+          if (!secondaryIds.length) return null;
+          let sx = 0;
+          let sy = 0;
+          for (const id of secondaryIds) {
+            const p = getWorldPosition(id, state.joints, INITIAL_JOINTS);
+            sx += p.x;
+            sy += p.y;
+          }
+          return { x: sx / secondaryIds.length, y: sy / secondaryIds.length };
+        })();
 
         const headX = headPos.x * pxPerUnit + centerX;
         const headY = headPos.y * pxPerUnit + centerY;
         if (isNaN(headX) || isNaN(headY)) return null;
 
-        const dx = headPos.x - neckBasePos.x;
-        const dy = headPos.y - neckBasePos.y;
+        const dx = headPos.x - basePos.x;
+        const dy = headPos.y - basePos.y;
         const baseAngle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
         const mode = mask.mode || 'cutout';
         const finalAngle = (mode === 'roto' ? 0 : baseAngle) + (mask.rotation || 0);
@@ -4806,13 +5535,19 @@ export default function App() {
         const thicknessPx = headLenPx * Math.max(0.01, mask.scale);
         let width = thicknessPx;
         let height = thicknessPx;
-        let anchorWorldX = headX;
-        let anchorWorldY = headY;
+        const anchorUnits = (() => {
+          if (secondaryCentroid) return { x: (headPos.x + secondaryCentroid.x) / 2, y: (headPos.y + secondaryCentroid.y) / 2 };
+          // When using a custom base joint (e.g. collar), default to a midpoint anchor to keep the head/neck piece balanced.
+          if (baseId !== 'neck_base') return { x: (headPos.x + basePos.x) / 2, y: (headPos.y + basePos.y) / 2 };
+          return headPos;
+        })();
+        let anchorWorldX = anchorUnits.x * pxPerUnit + centerX;
+        let anchorWorldY = anchorUnits.y * pxPerUnit + centerY;
 
         if (mode === 'rubberhose') {
           const boneLenPx = Math.max(1, Math.hypot(dx, dy) * pxPerUnit);
-          anchorWorldX = ((headPos.x + neckBasePos.x) / 2) * pxPerUnit + centerX;
-          anchorWorldY = ((headPos.y + neckBasePos.y) / 2) * pxPerUnit + centerY;
+          anchorWorldX = ((headPos.x + basePos.x) / 2) * pxPerUnit + centerX;
+          anchorWorldY = ((headPos.y + basePos.y) / 2) * pxPerUnit + centerY;
           height = Math.max(1, boneLenPx * Math.max(0.05, mask.lengthScale || 1));
           if (mask.volumePreserve) {
             width = clamp((thicknessPx * thicknessPx) / height, thicknessPx * 0.15, thicknessPx * 4);
@@ -4866,7 +5601,22 @@ export default function App() {
         return { x: sx / secondaryIds.length, y: sy / secondaryIds.length };
       })();
 
+      // Waist default: hang from navel, but move at the hip midpoint for stability.
+      // If the navel mask is related directly to both hips (and only those hips),
+      // treat the midpoint between hips as the anchor and the relationship base.
+      const waistHipMidpoint = (() => {
+        if (jointId !== 'navel') return null;
+        if (relatedIds.length !== 2) return null;
+        const hasL = relatedIds.includes('l_hip');
+        const hasR = relatedIds.includes('r_hip');
+        if (!hasL || !hasR) return null;
+        const l = getWorldPosition('l_hip', state.joints, INITIAL_JOINTS);
+        const r = getWorldPosition('r_hip', state.joints, INITIAL_JOINTS);
+        return { x: (l.x + r.x) / 2, y: (l.y + r.y) / 2 };
+      })();
+
       const anchorUnits = (() => {
+        if (waistHipMidpoint) return waistHipMidpoint;
         if (secondaryCentroid) {
           return { x: (jointPos.x + secondaryCentroid.x) / 2, y: (jointPos.y + secondaryCentroid.y) / 2 };
         }
@@ -4883,7 +5633,9 @@ export default function App() {
       const joint = state.joints[jointId];
       const parentId = joint.parent;
       let pPos = { x: jointPos.x, y: jointPos.y - 1 };
-      if (driverPos) {
+      if (waistHipMidpoint) {
+        pPos = waistHipMidpoint;
+      } else if (driverPos) {
         pPos = driverPos;
       } else if (parentId && state.joints[parentId]) {
         pPos = getWorldPosition(parentId, state.joints, INITIAL_JOINTS);
@@ -5084,15 +5836,19 @@ export default function App() {
         <div className="w-[360px] h-full flex flex-col">
           <div className="p-6 pb-4">
             <div
-              className={`flex items-center gap-3 ${sidebarTab === 'global' ? 'opacity-0 pointer-events-none select-none' : ''}`}
+              className={`flex items-center gap-3 ${sidebarTab === 'global' && !manikinMode ? 'opacity-0 pointer-events-none select-none' : ''}`}
             >
               <div className="p-2 bg-white rounded-lg">
                 <button
                   type="button"
                   onClick={() => setManikinModeEnabled(!manikinMode)}
                   className={`rounded-md p-0.5 ${manikinMode ? 'ring-2 ring-black/60' : ''}`}
-                  title={manikinMode ? 'Manikin mode (on)' : 'Enable manikin mode'}
-                  aria-label="Toggle manikin mode"
+                  title={
+                    manikinMode
+                      ? 'FK mode (paper puppet). Click to upgrade to digital IK/physics.'
+                      : 'Digital rig. Click to return to FK (paper puppet).'
+                  }
+                  aria-label={manikinMode ? 'Switch to digital rig mode' : 'Switch to FK (paper puppet) mode'}
                 >
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     <circle cx="10" cy="4.4" r="2.0" stroke="black" strokeWidth="1.6" />
@@ -5117,7 +5873,77 @@ export default function App() {
               </div>
             </div>
 
-            <div className="mt-4 mb-3 flex flex-col gap-2">
+            {manikinMode && (
+              <div className="mt-4 mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">FK (Rigid)</div>
+                  <div className="text-[9px] font-mono text-[#444]">Hard set</div>
+                </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[#666]">Rigidity</span>
+                  <select
+                    value={state.rigidity}
+                    onChange={(e) =>
+                      applyEngineTransition('rigidity', (prev) =>
+                        applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
+                      )
+                    }
+                    className="ml-auto px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
+                    title="Rigidity (FK)"
+                  >
+                    <option value="cardboard">Cardboard</option>
+                    <option value="realistic">Realistic</option>
+                    <option value="rubberhose">Rubberhose</option>
+                  </select>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
+                    <input
+                      type="checkbox"
+                      checked={state.showJoints}
+                      onChange={() =>
+                        applyEngineTransition('toggle_show_joints', (prev) => ({ ...prev, showJoints: !prev.showJoints }))
+                      }
+                      className="accent-white"
+                    />
+                    Joints
+                  </label>
+                  <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
+                    <input
+                      type="checkbox"
+                      checked={state.mirroring}
+                      onChange={() =>
+                        applyEngineTransition('toggle_mirroring', (prev) => ({ ...prev, mirroring: !prev.mirroring }))
+                      }
+                      className="accent-white"
+                    />
+                    Mirror
+                  </label>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={resetPoseToTPose}
+                    className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                    title="Reset pose to T Pose (keeps masks/settings)"
+                  >
+                    Reset Pose
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetEngine}
+                    className="py-2 bg-[#3a0f0f] hover:bg-[#4a1414] rounded-lg text-[10px] font-bold uppercase transition-all"
+                    title="Reset engine: clears masks, motion, and returns to FK T Pose"
+                  >
+                    Reset Engine
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className={`mt-4 mb-3 flex flex-col gap-2 ${manikinMode ? 'hidden' : ''}`}>
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">Roots</div>
                 <div className="flex items-center gap-2">
@@ -5287,33 +6113,58 @@ export default function App() {
 	              )}
             </div>
 
-            <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
-              {(
-                [
-                  { id: 'character' as const, label: 'Character' },
-                  { id: 'physics' as const, label: 'Procgen' },
-                  { id: 'animation' as const, label: 'Animation' },
-                  { id: 'global' as const, label: 'Global' },
-                ] as const
-              ).map((tab) => {
-                const active = sidebarTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setSidebarTab(tab.id)}
-                    className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      active ? 'bg-white text-black' : 'text-[#666] hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                );
-              })}
-            </div>
+            {!manikinMode && (
+              <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
+                {(
+                  [
+                    { id: 'character' as const, label: 'Character' },
+                    { id: 'physics' as const, label: 'Procgen' },
+                    { id: 'animation' as const, label: 'Animation' },
+                    { id: 'global' as const, label: 'Global' },
+                  ] as const
+                ).map((tab) => {
+                  const active = sidebarTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setSidebarTab(tab.id)}
+                      className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                        active ? 'bg-white text-black' : 'text-[#666] hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
-          <div ref={sidebarWidgetDockRef} className="flex-1 min-h-0 flex flex-col px-6 pb-6">
+          {manikinMode ? (
+            <div className="flex-1 min-h-0 flex flex-col px-6 pb-6">
+              <div className="flex-1 min-h-0 overflow-y-auto mt-4">
+                <ManikinConsole
+                  state={state}
+                  setStateNoHistory={setStateNoHistory}
+                  setStateWithHistory={setStateWithHistory}
+                  beginHistoryAction={beginHistoryAction}
+                  commitHistoryAction={commitHistoryAction}
+                  setSelectedJointId={setSelectedJointId}
+                  setSelectedConnectionKey={setSelectedConnectionKey}
+                  setMaskJointId={setMaskJointId}
+                  setManikinJointAngleDeg={setManikinJointAngleDeg}
+                  poseSnapshots={poseSnapshots}
+                  selectedPoseIndex={manikinPoseSelectedIndex}
+                  setSelectedPoseIndex={setManikinPoseSelectedIndex}
+                  onAddPose={addPoseSnapshot}
+                  onUpdatePose={updatePoseSnapshotAtIndex}
+                  onApplyPose={applyPoseSnapshotAtIndex}
+                />
+              </div>
+            </div>
+          ) : (
+            <div ref={sidebarWidgetDockRef} className="flex-1 min-h-0 flex flex-col px-6 pb-6">
             <div className="flex-1 min-h-0 flex flex-col" style={{ minHeight: '33%' }}>
               <section className="shrink-0 mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
                 <div className="flex items-center justify-between gap-3">
@@ -5336,8 +6187,8 @@ export default function App() {
             <section>
               <div className="flex items-center gap-2 mb-4 text-[#666]">
                 <Move size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Edit</h2>
-              </div>
+                      <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Edit</h2>
+                    </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
@@ -5629,6 +6480,74 @@ export default function App() {
                                 </select>
                                 <div className="text-[10px] text-[#444] italic">
                                   Shape overrides apply at render-time (physics is unchanged).
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                                  Bone Merging
+                                </div>
+
+                                <label className="flex items-center justify-between gap-2 text-[10px]">
+                                  <span className="text-[#666]">Hide This Bone</span>
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(override?.hidden)}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      setStateWithHistory(`conn_hidden:${connKey}`, (prev) => {
+                                        const nextOverrides = { ...(prev.connectionOverrides ?? {}) };
+                                        const existing = (nextOverrides[connKey] ?? {}) as Record<string, unknown>;
+                                        if (!checked) {
+                                          const cleaned = { ...existing };
+                                          delete cleaned.hidden;
+                                          if (Object.keys(cleaned).length === 0) delete nextOverrides[connKey];
+                                          else nextOverrides[connKey] = cleaned as any;
+                                        } else {
+                                          nextOverrides[connKey] = { ...existing, hidden: true } as any;
+                                        }
+                                        return { ...prev, connectionOverrides: nextOverrides as any };
+                                      });
+                                    }}
+                                    className="rounded accent-white"
+                                  />
+                                </label>
+
+                                <div className="space-y-1">
+                                  <div className="flex justify-between text-[10px]">
+                                    <span className="text-[#666]">Merge To</span>
+                                    <span className="text-[#555] font-mono">{override?.mergeToJointId ?? '—'}</span>
+                                  </div>
+                                  <select
+                                    value={override?.mergeToJointId ?? ''}
+                                    onChange={(e) => {
+                                      const next = e.target.value.trim();
+                                      setStateWithHistory(`conn_merge_to:${connKey}`, (prev) => {
+                                        const nextOverrides = { ...(prev.connectionOverrides ?? {}) };
+                                        const existing = (nextOverrides[connKey] ?? {}) as Record<string, unknown>;
+                                        if (!next) {
+                                          const cleaned = { ...existing };
+                                          delete cleaned.mergeToJointId;
+                                          if (Object.keys(cleaned).length === 0) delete nextOverrides[connKey];
+                                          else nextOverrides[connKey] = cleaned as any;
+                                        } else {
+                                          nextOverrides[connKey] = { ...existing, mergeToJointId: next } as any;
+                                        }
+                                        return { ...prev, connectionOverrides: nextOverrides as any };
+                                      });
+                                    }}
+                                    className="w-full px-2 py-2 bg-[#222] rounded-md text-[10px] border border-white/5 font-bold uppercase tracking-widest"
+                                  >
+                                    <option value="">None</option>
+                                    {Object.keys(state.joints).map((id) => (
+                                      <option key={id} value={id}>
+                                        {id}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div className="text-[10px] text-[#444] italic">
+                                    Render-only: draws this bone to the chosen joint (use with Hide on intermediate bones).
+                                  </div>
                                 </div>
                               </div>
 
@@ -5997,16 +6916,417 @@ export default function App() {
                       }))
                     }
                   />
-                        <Toggle 
-                          label="Hard Stop" 
-                          active={state.hardStop} 
+	                        <Toggle 
+	                          label="Hard Stop" 
+	                          active={state.hardStop} 
+	                          onClick={() =>
+	                    applyEngineTransition('toggle_hard_stop', (prev) =>
+	                      applyFluidHandshake(prev, { ...prev, hardStop: !prev.hardStop }),
+	                    )
+	                  }
+	                />
+	              </div>
+
+                <div className="mt-3 p-3 rounded-xl bg-white/5 border border-white/10">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Shapeshifting</div>
+                    <Toggle
+                      label={state.shapeshiftingEnabled ? 'On' : 'Off'}
+                      active={state.shapeshiftingEnabled}
+                      onClick={() =>
+                        applyEngineTransition('toggle_shapeshifting', (prev) => ({
+                          ...prev,
+                          shapeshiftingEnabled: !prev.shapeshiftingEnabled,
+                        }))
+                      }
+                    />
+                  </div>
+	                  <div className="mt-2 flex items-center justify-between gap-3">
+	                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Torso Diamond</div>
+	                    <div className="flex items-center gap-2">
+                        <button
+                          type="button"
                           onClick={() =>
-                    applyEngineTransition('toggle_hard_stop', (prev) =>
-                      applyFluidHandshake(prev, { ...prev, hardStop: !prev.hardStop }),
-                    )
-                  }
-                />
-              </div>
+                            applyEngineTransition('set_torso_diamond_rest', (prev) => {
+                              const wp = (id: string) => getWorldPosition(id, prev.joints, INITIAL_JOINTS, 'preview');
+                              const d = (a: string, b: string) => {
+                                const pa = wp(a);
+                                const pb = wp(b);
+                                const v = Math.hypot(pb.x - pa.x, pb.y - pa.y);
+                                return Number.isFinite(v) && v > 1e-6 ? v : 1;
+                              };
+                              const restEdges: Record<string, number> = {
+                                'l_clavicle:sternum': d('l_clavicle', 'sternum'),
+                                'r_clavicle:sternum': d('r_clavicle', 'sternum'),
+                                'l_clavicle:neck_base': d('l_clavicle', 'neck_base'),
+                                'r_clavicle:neck_base': d('r_clavicle', 'neck_base'),
+                                'neck_base:sternum': d('neck_base', 'sternum'),
+                              };
+                              baseTorsoDiamondRestRef.current = restEdges;
+                              const td = prev.torsoDiamond ?? makeDefaultState().torsoDiamond;
+                              return { ...prev, torsoDiamond: { ...td, restEdges } };
+                            })
+                          }
+                          className="px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                          title="Capture current diamond edge lengths as the rigid baseline"
+                        >
+                          Set
+                        </button>
+	                      <Toggle
+	                        label="Enabled"
+	                        active={Boolean(state.torsoDiamond?.enabled)}
+	                        onClick={() =>
+                          applyEngineTransition('toggle_torso_diamond', (prev) => ({
+                            ...prev,
+                            torsoDiamond: (() => {
+                              const td = prev.torsoDiamond ?? makeDefaultState().torsoDiamond;
+                              return { ...td, enabled: !td.enabled };
+                            })(),
+                          }))
+                        }
+                      />
+                      <Toggle
+                        label="Dynamic"
+                        active={Boolean(state.torsoDiamond?.dynamic) && state.shapeshiftingEnabled}
+                        onClick={() =>
+                          applyEngineTransition('toggle_torso_diamond_dynamic', (prev) => ({
+                            ...prev,
+                            torsoDiamond: (() => {
+                              const td = prev.torsoDiamond ?? makeDefaultState().torsoDiamond;
+                              return { ...td, dynamic: !td.dynamic };
+                            })(),
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[10px] text-[#555]">
+                    When Shapeshifting is off, the base stays rigid.
+                  </div>
+                </div>
+	
+		              <div className="mt-3 p-3 rounded-xl bg-white/5 border border-white/10">
+		                <div className="flex items-center justify-between gap-3">
+		                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Hip Lock</div>
+                      <div className="flex items-center gap-2">
+		                    <button
+                          type="button"
+                          onClick={() =>
+                            applyEngineTransition('set_hip_lock_rest', (prev) => {
+                              const l = getWorldPosition('l_hip', prev.joints, INITIAL_JOINTS, 'preview');
+                              const r = getWorldPosition('r_hip', prev.joints, INITIAL_JOINTS, 'preview');
+                              const restLen = Math.hypot(r.x - l.x, r.y - l.y);
+                              const safe = Number.isFinite(restLen) && restLen > 1e-6 ? restLen : undefined;
+                              if (safe) baseHipLockRestRef.current = safe;
+                              const hip = prev.hipLock ?? makeDefaultState().hipLock;
+                              return { ...prev, hipLock: { ...hip, restLen: safe } };
+                            })
+                          }
+                          className="px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                          title="Capture current hip width as the rigid baseline"
+                        >
+                          Set
+                        </button>
+		                    <Toggle
+		                      label="Enabled"
+		                      active={Boolean(state.hipLock?.enabled)}
+		                      onClick={() =>
+		                        applyEngineTransition('toggle_hip_lock', (prev) => ({
+		                          ...prev,
+		                          hipLock: (() => {
+		                            const hip = prev.hipLock ?? makeDefaultState().hipLock;
+		                            return { ...hip, enabled: !hip.enabled };
+		                          })(),
+		                        }))
+		                      }
+		                    />
+                      </div>
+		                </div>
+
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Extend/Compress</div>
+                    <Toggle
+                      label={state.hipLock?.extendCompressEnabled ? 'On' : 'Off'}
+                      active={Boolean(state.hipLock?.extendCompressEnabled)}
+                      onClick={() =>
+                        applyEngineTransition('toggle_hip_lock_extend', (prev) => ({
+                          ...prev,
+                          hipLock: (() => {
+                            const hip = prev.hipLock ?? makeDefaultState().hipLock;
+                            return { ...hip, extendCompressEnabled: !hip.extendCompressEnabled };
+                          })(),
+                        }))
+                      }
+                    />
+                  </div>
+	
+	                <div className="mt-2 grid grid-cols-2 gap-2">
+	                  <label className="flex items-center justify-between gap-2 text-[10px] text-[#bbb]">
+	                    <span className="uppercase tracking-widest">Min</span>
+	                    <input
+	                      type="text"
+	                      value={String(state.hipLock?.minScale ?? 1)}
+                        disabled={!state.hipLock?.extendCompressEnabled}
+	                      onChange={(e) => {
+	                        const v = Number(e.target.value);
+	                        if (!Number.isFinite(v)) return;
+	                        setStateNoHistory((prev) => ({
+	                          ...prev,
+	                          hipLock: { ...(prev.hipLock ?? makeDefaultState().hipLock), minScale: clamp(v, 0.1, 10) },
+	                        }));
+	                      }}
+	                      className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+                          state.hipLock?.extendCompressEnabled ? 'text-white' : 'text-[#555]'
+                        }`}
+	                      title="Min hip width scale (relative to base)"
+	                    />
+	                  </label>
+	                  <label className="flex items-center justify-between gap-2 text-[10px] text-[#bbb]">
+	                    <span className="uppercase tracking-widest">Max</span>
+	                    <input
+	                      type="text"
+	                      value={String(state.hipLock?.maxScale ?? 1)}
+                        disabled={!state.hipLock?.extendCompressEnabled}
+	                      onChange={(e) => {
+	                        const v = Number(e.target.value);
+	                        if (!Number.isFinite(v)) return;
+	                        setStateNoHistory((prev) => ({
+	                          ...prev,
+	                          hipLock: { ...(prev.hipLock ?? makeDefaultState().hipLock), maxScale: clamp(v, 0.1, 10) },
+	                        }));
+	                      }}
+	                      className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+                          state.hipLock?.extendCompressEnabled ? 'text-white' : 'text-[#555]'
+                        }`}
+	                      title="Max hip width scale (relative to base)"
+	                    />
+	                  </label>
+	                </div>
+	
+	                <div className="mt-2 flex items-center justify-between gap-3">
+	                  <label className="flex items-center gap-2 text-[10px] text-[#bbb]">
+	                    <input
+	                      type="checkbox"
+	                      checked={Boolean(state.hipLock?.fkEnabled)}
+                        disabled={!state.hipLock?.extendCompressEnabled}
+	                      onChange={() =>
+	                        applyEngineTransition('toggle_hip_lock_fk', (prev) => ({
+	                          ...prev,
+	                          hipLock: (() => {
+	                            const hip = prev.hipLock ?? makeDefaultState().hipLock;
+	                            return { ...hip, fkEnabled: !hip.fkEnabled };
+	                          })(),
+	                        }))
+	                      }
+	                    />
+	                    <span className="uppercase tracking-widest">FK Length</span>
+	                  </label>
+	                  <input
+	                    type="text"
+	                    value={String(state.hipLock?.fkLengthScale ?? 1)}
+	                    disabled={!state.hipLock?.extendCompressEnabled || !state.hipLock?.fkEnabled}
+	                    onChange={(e) => {
+	                      const v = Number(e.target.value);
+	                      if (!Number.isFinite(v)) return;
+	                      setStateNoHistory((prev) => ({
+	                        ...prev,
+	                        hipLock: { ...(prev.hipLock ?? makeDefaultState().hipLock), fkLengthScale: clamp(v, 0.1, 10) },
+	                      }));
+	                    }}
+	                    className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+	                      state.hipLock?.extendCompressEnabled && state.hipLock?.fkEnabled ? 'text-white' : 'text-[#555]'
+	                    }`}
+	                    title="FK hip width scale (only applies when enabled)"
+	                  />
+	                </div>
+
+	                  <div className="mt-2 flex items-center justify-between gap-3">
+	                    <label className="flex items-center gap-2 text-[10px] text-[#bbb]">
+	                      <input
+	                        type="checkbox"
+	                        checked={Boolean(state.hipLock?.walkModeEnabled)}
+                        onChange={() =>
+                          applyEngineTransition('toggle_hip_walk_mode', (prev) => ({
+                            ...prev,
+                            hipLock: (() => {
+                              const hip = prev.hipLock ?? makeDefaultState().hipLock;
+                              return { ...hip, walkModeEnabled: !hip.walkModeEnabled };
+                            })(),
+                          }))
+                        }
+                      />
+                      <span className="uppercase tracking-widest">Walk Mode</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={String(state.hipLock?.walkAmount ?? 0.75)}
+                      disabled={!state.hipLock?.walkModeEnabled}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isFinite(v)) return;
+                        setStateNoHistory((prev) => ({
+                          ...prev,
+                          hipLock: { ...(prev.hipLock ?? makeDefaultState().hipLock), walkAmount: clamp(v, 0, 10) },
+                        }));
+                      }}
+                      className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+                        state.hipLock?.walkModeEnabled ? 'text-white' : 'text-[#555]'
+                      }`}
+	                      title="Hip walk oscillation amount (procgen)"
+	                    />
+	                  </div>
+
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-[10px] text-[#bbb]">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(state.hipLock?.pelvisBiasEnabled)}
+                          onChange={() =>
+                            applyEngineTransition('toggle_pelvis_bias', (prev) => ({
+                              ...prev,
+                              hipLock: (() => {
+                                const hip = prev.hipLock ?? makeDefaultState().hipLock;
+                                return { ...hip, pelvisBiasEnabled: !hip.pelvisBiasEnabled };
+                              })(),
+                            }))
+                          }
+                        />
+                        <span className="uppercase tracking-widest">Pelvis Bias</span>
+                      </label>
+                      <select
+                        value={state.hipLock?.pelvisBiasSide ?? 'below'}
+                        disabled={!state.hipLock?.pelvisBiasEnabled}
+                        onChange={(e) => {
+                          const v = e.target.value === 'above' ? 'above' : 'below';
+                          setStateNoHistory((prev) => ({
+                            ...prev,
+                            hipLock: { ...(prev.hipLock ?? makeDefaultState().hipLock), pelvisBiasSide: v },
+                          }));
+                        }}
+                        className="px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-bold uppercase tracking-widest text-white disabled:text-[#555]"
+                        title="Bias hips above/below waist when Shapeshifting is on"
+                      >
+                        <option value="below">Below</option>
+                        <option value="above">Above</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={String(state.hipLock?.pelvisBiasAmount ?? 1)}
+                        disabled={!state.hipLock?.pelvisBiasEnabled}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v)) return;
+                          setStateNoHistory((prev) => ({
+                            ...prev,
+                            hipLock: { ...(prev.hipLock ?? makeDefaultState().hipLock), pelvisBiasAmount: clamp(v, 0, 10) },
+                          }));
+                        }}
+                        className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+                          state.hipLock?.pelvisBiasEnabled ? 'text-white' : 'text-[#555]'
+                        }`}
+                        title="Pelvis bias amount (engine units)"
+                      />
+                    </div>
+		              </div>
+	
+	                <div className="mt-3 p-3 rounded-xl bg-white/5 border border-white/10">
+	                  <div className="flex items-center justify-between gap-3">
+	                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Collar</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyEngineTransition('set_collar_lock_rest', (prev) => {
+                              const l = getWorldPosition('l_clavicle', prev.joints, INITIAL_JOINTS, 'preview');
+                              const r = getWorldPosition('r_clavicle', prev.joints, INITIAL_JOINTS, 'preview');
+                              const restLen = Math.hypot(r.x - l.x, r.y - l.y);
+                              const safe = Number.isFinite(restLen) && restLen > 1e-6 ? restLen : undefined;
+                              if (safe) baseCollarLockRestRef.current = safe;
+                              const collar = prev.collarLock ?? makeDefaultState().collarLock;
+                              return { ...prev, collarLock: { ...collar, restLen: safe } };
+                            })
+                          }
+                          className="px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+                          title="Capture current collar width as the rigid baseline"
+                        >
+                          Set
+                        </button>
+                        <Toggle
+                          label="Enabled"
+                          active={Boolean(state.collarLock?.enabled)}
+                          onClick={() =>
+                            applyEngineTransition('toggle_collar_lock', (prev) => ({
+                              ...prev,
+                              collarLock: (() => {
+                                const collar = prev.collarLock ?? makeDefaultState().collarLock;
+                                return { ...collar, enabled: !collar.enabled };
+                              })(),
+                            }))
+                          }
+                        />
+                      </div>
+	                  </div>
+
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Extend/Compress</div>
+                    <Toggle
+                      label={state.collarLock?.extendCompressEnabled ? 'On' : 'Off'}
+                      active={Boolean(state.collarLock?.extendCompressEnabled)}
+                      onClick={() =>
+                        applyEngineTransition('toggle_collar_lock_extend', (prev) => ({
+                          ...prev,
+                          collarLock: (() => {
+                            const collar = prev.collarLock ?? makeDefaultState().collarLock;
+                            return { ...collar, extendCompressEnabled: !collar.extendCompressEnabled };
+                          })(),
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <label className="flex items-center justify-between gap-2 text-[10px] text-[#bbb]">
+                      <span className="uppercase tracking-widest">Min</span>
+                      <input
+                        type="text"
+                        value={String(state.collarLock?.minScale ?? 1)}
+                        disabled={!state.collarLock?.extendCompressEnabled}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v)) return;
+                          setStateNoHistory((prev) => ({
+                            ...prev,
+                            collarLock: { ...(prev.collarLock ?? makeDefaultState().collarLock), minScale: clamp(v, 0.1, 10) },
+                          }));
+                        }}
+                        className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+                          state.collarLock?.extendCompressEnabled ? 'text-white' : 'text-[#555]'
+                        }`}
+                        title="Min collar width scale (relative to base)"
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-[10px] text-[#bbb]">
+                      <span className="uppercase tracking-widest">Max</span>
+                      <input
+                        type="text"
+                        value={String(state.collarLock?.maxScale ?? 1)}
+                        disabled={!state.collarLock?.extendCompressEnabled}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (!Number.isFinite(v)) return;
+                          setStateNoHistory((prev) => ({
+                            ...prev,
+                            collarLock: { ...(prev.collarLock ?? makeDefaultState().collarLock), maxScale: clamp(v, 0.1, 10) },
+                          }));
+                        }}
+                        className={`w-16 px-2 py-1 rounded bg-[#111] border border-white/10 text-[10px] font-mono ${
+                          state.collarLock?.extendCompressEnabled ? 'text-white' : 'text-[#555]'
+                        }`}
+                        title="Max collar width scale (relative to base)"
+                      />
+                    </label>
+                  </div>
+                </div>
 	              <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10 flex flex-col">
 	                <div className="flex items-center justify-between gap-3">
 	                  <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Root Controls</div>
@@ -6535,19 +7855,12 @@ export default function App() {
                         <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pose Capture</h2>
                       </div>
               <div className="space-y-2">
-                <button 
-                  onClick={() =>
-                    setPoseSnapshots((h) => {
-                      const { timeline, ...snapshot } = state;
-                      void timeline;
-                      const timestampedSnapshot = { ...snapshot, timestamp: Date.now() };
-                      return [timestampedSnapshot, ...h].slice(0, 5);
-                    })
-                  }
-                  className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
-                >
-                  Save Pose
-                </button>
+	                <button 
+	                  onClick={addPoseSnapshot}
+	                  className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+	                >
+	                  Save Pose
+	                </button>
 
                 <div className="p-2 bg-white/5 rounded-lg space-y-2">
                   <label className="flex items-center justify-between gap-3 text-[10px] select-none">
@@ -6684,18 +7997,32 @@ export default function App() {
                     return (
                       <button 
                         key={i}
-                        onClick={() => setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...h }))}
-                        onDoubleClick={() => sendPoseToTimeline(h)}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          togglePoseSelection(i);
+                        onClick={(e) => {
+                          if (e.shiftKey) {
+                            togglePoseSelection(i);
+                            return;
+                          }
+                          setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...h }));
                         }}
-                        className={`w-full flex items-center justify-between p-2 rounded-md text-[10px] transition-colors ${
+                        onDoubleClick={() => sendPoseToTimeline(h)}
+                        onContextMenu={
+                          appShellRuntime
+                            ? (e) => {
+                                e.preventDefault();
+                                togglePoseSelection(i);
+                              }
+                            : undefined
+                        }
+                        className={`w-full flex items-center justify-between p-2 rounded-md text-[10px] transition-colors select-none ${
                           isSelected 
                             ? 'bg-[#3366cc]/30 border border-[#3366cc]/50' 
                             : 'bg-white/5 hover:bg-white/10'
                         }`}
-                        title={`Click to apply • Double-click to send to timeline • Right-click (or Ctrl-click) to ${isSelected ? 'deselect' : 'select'} for interpolation`}
+                        title={
+                          appShellRuntime
+                            ? `Click to apply • Double-click to send to timeline • Right-click (or Ctrl-click) to ${isSelected ? 'deselect' : 'select'} for interpolation`
+                            : `Click to apply • Double-click to send to timeline • Shift-click to ${isSelected ? 'deselect' : 'select'} for interpolation`
+                        }
                       >
                         <div className="flex items-center gap-2">
                           {isSelected && (
@@ -6703,7 +8030,7 @@ export default function App() {
                           )}
                           <span>Pose {snapshotIndex}</span>
                         </div>
-                        <span className="text-[#444]">
+                        <span className="text-white/50">
                           {h.timestamp 
                             ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                             : "—"
@@ -7678,7 +9005,8 @@ export default function App() {
                   );
                 }
 
-                const angleDeg = toAngleDeg(effective.previewOffset);
+                const angleDegRaw = toAngleDeg(effective.previewOffset);
+                const displayDeg = ((angleDegRaw % 360) + 360) % 360;
                 const actionId = `joint_angle:${selected.id}`;
                 const labelSuffix = selected.id === 'navel' && effectiveAngleId === 'sternum' ? ' (Sternum)' : '';
 
@@ -7689,14 +9017,14 @@ export default function App() {
                         {selected.label}
                         {labelSuffix} Angle
                       </div>
-                      <div className="font-mono text-xs text-white">{angleDeg.toFixed(1)}°</div>
+                      <div className="font-mono text-xs text-white">{displayDeg.toFixed(1)}°</div>
                     </div>
                     <input
                       type="range"
-                      min="-180"
-                      max="180"
+                      min="0"
+                      max="360"
                       step="1"
-                              value={angleDeg}
+                              value={displayDeg}
                               onPointerDown={(e) => {
                         // Prevent canvas drag handlers from stealing the interaction.
                         e.stopPropagation();
@@ -7717,7 +9045,13 @@ export default function App() {
                           return changed ? { ...prev } : prev;
                         })
                       }
-                      onChange={(e) => setJointAngleDeg(effectiveAngleId!, parseFloat(e.target.value))}
+                      onChange={(e) =>
+                        setJointAngleDeg({
+                          sourceJointId: selected.id,
+                          targetJointId: effectiveAngleId!,
+                          angleDeg: parseFloat(e.target.value),
+                        })
+                      }
                       className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
                     />
                   </div>
@@ -7865,8 +9199,9 @@ export default function App() {
               )}
             </section>
           </div>
+          )}
 
-          <div className="p-6 pt-0 flex gap-2">
+          <div className="p-6 pt-0 flex gap-2 items-center">
             <button
               onClick={resetPoseToTPose}
               className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#222] hover:bg-[#333] rounded-xl text-xs font-bold transition-all active:scale-95"
@@ -7882,6 +9217,28 @@ export default function App() {
             >
               <RotateCcw size={14} />
               RESET ENGINE
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTimelinePlaying(false);
+                setStateWithHistory('toggle_timeline_footer', (prev) => ({
+                  ...prev,
+                  timeline: {
+                    ...prev.timeline,
+                    enabled: !prev.timeline.enabled,
+                  },
+                }));
+              }}
+              className={`shrink-0 flex items-center justify-center gap-2 px-3 py-3 rounded-xl border text-xs font-bold transition-all active:scale-95 ${
+                state.timeline.enabled
+                  ? 'bg-white text-black border-white'
+                  : 'bg-[#121212] text-[#666] border-[#222] hover:bg-[#222] hover:text-white'
+              }`}
+              title={state.timeline.enabled ? 'Hide timeline' : 'Show timeline'}
+              aria-label="Toggle timeline"
+            >
+              <Activity size={16} />
             </button>
           </div>
         </div>
@@ -7901,9 +9258,21 @@ export default function App() {
         </button>
 
         {/* Canvas */}
-	        <div 
-	          ref={canvasRef}
-	          className="flex-1 cursor-crosshair relative min-h-0 min-w-0 overflow-hidden"
+		        <div 
+		          ref={canvasRef}
+	          className="flex-1 cursor-crosshair relative min-h-0 min-w-0 overflow-hidden select-none"
+	            onPointerDownCapture={(e) => {
+	              if (!titleScreenVisible) return;
+	              setTitleScreenVisible(false);
+	              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onMouseDownCapture={(e) => {
+              if (!titleScreenVisible) return;
+              setTitleScreenVisible(false);
+              e.preventDefault();
+              e.stopPropagation();
+            }}
 	          onMouseDown={(e) => {
 	            if (e.button !== 0 || !e.shiftKey) return;
 	            handleCanvasRootRotateMouseDown(e);
@@ -8115,6 +9484,20 @@ export default function App() {
               {/* Note: I'm wrapping the rest of the SVG contents in this <g> */}
 
               {renderProcgenGroundPlane()}
+              {titleScreenVisible && (
+                <text
+                  x={canvasSize.width / 2}
+                  y={canvasSize.height / 2}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize={clamp(Math.min(canvasSize.width, canvasSize.height) * 0.18, 48, 140)}
+                  fill="rgba(0,255,136,0.25)"
+                  pointerEvents="none"
+                  className={titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}
+                >
+                  BITRUVIUS
+                </text>
+              )}
 
               {/* Bones & Connections */}
               {CONNECTIONS.map(renderConnection)}
@@ -8760,49 +10143,51 @@ export default function App() {
               </div>
             </div>
 
-            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <span className="text-[#777] font-mono text-[11px]">FEEL</span>
-	                <input
-	                  type="range"
-	                  min="0"
-	                  max="1"
-	                  step="0.01"
-	                  value={state.physicsRigidity ?? 0}
-	                  onPointerDown={(e) => {
-	                    e.stopPropagation();
-	                    beginPhysicsDialAction();
-	                  }}
-	                  onMouseDown={(e) => e.stopPropagation()}
-	                  onTouchStart={(e) => e.stopPropagation()}
-	                  onPointerUp={() => commitPhysicsDialAction()}
-	                  onPointerCancel={() => commitPhysicsDialAction()}
-	                  onChange={(e) => {
-	                    const v = clamp(parseFloat(e.target.value), 0, 1);
-	                    setState((prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
-	                  }}
-	                  className="w-32 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-	                  title="Rig Feel (0 = rigid)"
-	                />
-                <span className="text-white font-mono text-[11px] tabular-nums w-14 text-right">
-                  {getPhysicsBlendMode(state).toUpperCase()} {Math.round((state.physicsRigidity ?? 0) * 100)}%
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setRigidRootDragEnabled((v) => !v)}
-                className={`px-3 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
-                  rigidRootDragEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
-                }`}
-                title={
-                  rigidRootDragEnabled
-                    ? 'Rigid root dragging: rooted joints stay planted unless you hold Ctrl to move the root target.'
-                    : 'Physics root dragging: dragging a rooted joint moves its root target through the solver.'
-                }
-              >
-                Root Drag: {rigidRootDragEnabled ? 'Rigid' : 'Physics'}
-              </button>
-            </div>
+	            {!manikinMode && (
+	              <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-3">
+	                <div className="flex items-center gap-2">
+	                  <span className="text-[#777] font-mono text-[11px]">FEEL</span>
+	                  <input
+	                    type="range"
+	                    min="0"
+	                    max="1"
+	                    step="0.01"
+	                    value={state.physicsRigidity ?? 0}
+	                    onPointerDown={(e) => {
+	                      e.stopPropagation();
+	                      beginPhysicsDialAction();
+	                    }}
+	                    onMouseDown={(e) => e.stopPropagation()}
+	                    onTouchStart={(e) => e.stopPropagation()}
+	                    onPointerUp={() => commitPhysicsDialAction()}
+	                    onPointerCancel={() => commitPhysicsDialAction()}
+	                    onChange={(e) => {
+	                      const v = clamp(parseFloat(e.target.value), 0, 1);
+	                      setState((prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
+	                    }}
+	                    className="w-32 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+	                    title="Rig Feel (0 = rigid)"
+	                  />
+	                  <span className="text-white font-mono text-[11px] tabular-nums w-14 text-right">
+	                    {getPhysicsBlendMode(state).toUpperCase()} {Math.round((state.physicsRigidity ?? 0) * 100)}%
+	                  </span>
+	                </div>
+	                <button
+	                  type="button"
+	                  onClick={() => setRigidRootDragEnabled((v) => !v)}
+	                  className={`px-3 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+	                    rigidRootDragEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+	                  }`}
+	                  title={
+	                    rigidRootDragEnabled
+	                      ? 'Rigid root dragging: rooted joints stay planted unless you hold Ctrl to move the root target.'
+	                      : 'Physics root dragging: dragging a rooted joint moves its root target through the solver.'
+	                  }
+	                >
+	                  Root Drag: {rigidRootDragEnabled ? 'Rigid' : 'Physics'}
+	                </button>
+	              </div>
+	            )}
 
             <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-2">
               <select
@@ -8820,37 +10205,35 @@ export default function App() {
                 <option value="rubberhose">Rubberhose</option>
               </select>
 
-              <div className="flex bg-[#222] rounded-lg p-1">
-                {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
-                  <button
-                    key={`barmode:${mode}`}
-                    type="button"
-                    onClick={() => {
-                      if (manikinMode) return;
-                      applyEngineTransition('set_control_mode', (prev) =>
-                        prev.controlMode === mode
-                          ? prev
-                          : applyFluidHandshake(prev, {
-                              ...prev,
-                              controlMode: mode,
-                              ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
-                            }),
-                      )
-                    }}
-                    className={`px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      state.controlMode === mode
-                        ? 'bg-white text-black'
-                        : manikinMode
-                          ? 'text-[#444] cursor-not-allowed'
-                          : 'text-[#666] hover:text-white'
-                    }`}
-                    title={controlModeUi[mode].title}
-                  >
-                    {controlModeUi[mode].label}
-                  </button>
-                ))}
-              </div>
-            </div>
+	              {!manikinMode && (
+	                <div className="flex bg-[#222] rounded-lg p-1">
+	                  {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
+	                    <button
+	                      key={`barmode:${mode}`}
+	                      type="button"
+	                      onClick={() => {
+	                        if (manikinMode) return;
+	                        applyEngineTransition('set_control_mode', (prev) =>
+	                          prev.controlMode === mode
+	                            ? prev
+	                            : applyFluidHandshake(prev, {
+	                                ...prev,
+	                                controlMode: mode,
+	                                ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
+	                              }),
+	                        )
+	                      }}
+	                      className={`px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+	                        state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+	                      }`}
+	                      title={controlModeUi[mode].title}
+	                    >
+	                      {controlModeUi[mode].label}
+	                    </button>
+	                  ))}
+	                </div>
+	              )}
+	            </div>
 
             <button
               type="button"

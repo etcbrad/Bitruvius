@@ -108,3 +108,20 @@ export const fromAngleDeg = (angleDeg: number, length: number): Point => {
     y: Math.sin(rad) * length,
   };
 };
+
+export const rotatePointRad = (p: Point, rad: number): Point => {
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  return { x: p.x * c - p.y * s, y: p.x * s + p.y * c };
+};
+
+export const rotateJointOffsets = (joint: Joint, deltaRad: number): Joint => {
+  if (!Number.isFinite(deltaRad) || Math.abs(deltaRad) < 1e-12) return joint;
+  return {
+    ...joint,
+    baseOffset: rotatePointRad(joint.baseOffset, deltaRad),
+    currentOffset: rotatePointRad(joint.currentOffset, deltaRad),
+    targetOffset: rotatePointRad(joint.targetOffset, deltaRad),
+    previewOffset: rotatePointRad(joint.previewOffset, deltaRad),
+  };
+};

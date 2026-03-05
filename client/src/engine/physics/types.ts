@@ -10,6 +10,15 @@ export type DistanceConstraint = {
   compliance: number; // 0 = rigid
 };
 
+export type DistanceLimitConstraint = {
+  kind: 'distanceLimit';
+  a: string;
+  b: string;
+  min: number;
+  max: number;
+  compliance: number; // 0 = rigid
+};
+
 export type PinConstraint = {
   kind: 'pin';
   id: string;
@@ -55,6 +64,7 @@ export type HingeSoftConstraint = {
 
 export type XpbdConstraint =
   | DistanceConstraint
+  | DistanceLimitConstraint
   | PinConstraint
   | AxisSpringConstraint
   | AxisLimitConstraint

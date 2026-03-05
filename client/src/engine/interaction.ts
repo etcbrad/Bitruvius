@@ -1,6 +1,8 @@
 import { INITIAL_JOINTS } from './model';
 import { getWorldPosition, unwrapAngleRad, vectorLength } from './kinematics';
 import { solveFabrikChainOffsets } from './ik/fabrik';
+import { clampClavicleTargetAngleRad } from './clavicleConstraint';
+import { applyManikinFkRotation } from './manikinFk';
 import type { Point, SkeletonState } from './types';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -124,47 +126,46 @@ export const applyDragToState = (
   const nextJoints = { ...prev.joints };
 
   
-  // Special handling for collar in rigid FK mode: ensure proper rotation with children
-  if (draggingId === 'collar' && prev.controlMode === 'Cardboard' && !prev.stretchEnabled) {
-    // Get parent position (sternum)
-    let parentPos = { x: 0, y: 0 };
-    if (joint.parent) {
-      parentPos = getWorldPosition(joint.parent, nextJoints, INITIAL_JOINTS, 'preview');
-    }
-    
-    // Calculate desired collar offset with rigid length
+  // Collar as shoulder socket: in FK/Cardboard, rotating the collar rotates its entire subtree (neck/head + arms)
+  // according to per-bone `fkFollowDeg` settings in `connectionOverrides`.
+  if (draggingId === 'collar' && prev.controlMode === 'Cardboard' && joint.parent) {
+    const parentPos = getWorldPosition(joint.parent, nextJoints, INITIAL_JOINTS, 'preview');
     const dx = mouseWorld.x - parentPos.x;
     const dy = mouseWorld.y - parentPos.y;
     let newPreview = { x: dx, y: dy };
-    
-    // Maintain bone length for rigid rotation
+
+    // Cardboard FK preserves base lengths.
     const baseDist = Math.sqrt(joint.baseOffset.x ** 2 + joint.baseOffset.y ** 2);
     const currentDist = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
-    if (currentDist > 0) {
+    if (currentDist > 1e-9 && baseDist > 1e-9) {
       const factor = baseDist / currentDist;
-      newPreview.x *= factor;
-      newPreview.y *= factor;
+      newPreview = { x: newPreview.x * factor, y: newPreview.y * factor };
     }
-    
-    // Keep rotation continuous
+
+    // Keep rotation continuous + compute delta for FK follow.
     const prevA = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
     const desiredA = Math.atan2(newPreview.y, newPreview.x);
     const desiredD = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
-    if (desiredD > 0) {
-      const unwrappedA = unwrapAngleRad(prevA, desiredA);
-      newPreview = { x: Math.cos(unwrappedA) * desiredD, y: Math.sin(unwrappedA) * desiredD };
+    const unwrappedA = desiredD > 1e-9 ? unwrapAngleRad(prevA, desiredA) : prevA;
+    if (desiredD > 1e-9) newPreview = { x: Math.cos(unwrappedA) * desiredD, y: Math.sin(unwrappedA) * desiredD };
+    const deltaRad = unwrappedA - prevA;
+
+    const rotated = applyManikinFkRotation({
+      joints: nextJoints,
+      baseJoints: INITIAL_JOINTS,
+      rootRotateJointId: 'collar',
+      deltaRad,
+      connectionOverrides: prev.connectionOverrides,
+      rotateBaseOffsets: false,
+    });
+
+    const next = { ...rotated };
+    const collar = next.collar ?? nextJoints.collar;
+    if (collar) {
+      next.collar = { ...collar, previewOffset: newPreview, targetOffset: newPreview, currentOffset: newPreview };
     }
-    
-    // Update collar
-    nextJoints.collar = {
-      ...nextJoints.collar,
-      previewOffset: newPreview,
-      targetOffset: newPreview,
-      currentOffset: newPreview,
-    };
-    
-    // Children will automatically follow through the kinematic chain in the physics system
-    return { ...prev, joints: nextJoints };
+
+    return { ...prev, joints: next };
   }
   
   // Special handling for sacrum: rotate everything above it instead of translating.
@@ -187,7 +188,7 @@ export const applyDragToState = (
     // This respects the hierarchy: Sacrum → Navel → Sternum → Collar (Branch Point)
     const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 'head', 
                           'l_nipple', 'r_nipple', 'l_rib', 'r_rib',
-                          'l_shoulder', 'r_shoulder', 'l_elbow', 'r_elbow', 
+                          'l_clavicle', 'r_clavicle', 'l_shoulder', 'r_shoulder', 'l_elbow', 'r_elbow', 
                           'l_wrist', 'r_wrist', 'l_fingertip', 'r_fingertip'];
     
     for (const jointId of jointsToRotate) {
@@ -333,6 +334,23 @@ export const applyDragToState = (
     if (desiredD > 0) {
       const unwrappedA = unwrapAngleRad(prevA, desiredA);
       newPreview = { x: Math.cos(unwrappedA) * desiredD, y: Math.sin(unwrappedA) * desiredD };
+    }
+  }
+
+  // Clavicle constraint: keep clavicles near their horizontal baseline (per torso axis).
+  if (prev.clavicleConstraintEnabled && (draggingId === 'l_clavicle' || draggingId === 'r_clavicle') && joint.parent) {
+    const curA = Math.atan2(joint.previewOffset.y, joint.previewOffset.x);
+    const desiredA = Math.atan2(newPreview.y, newPreview.x);
+    const clampedA = clampClavicleTargetAngleRad({
+      jointId: draggingId,
+      currentAngleRad: curA,
+      desiredAngleRad: desiredA,
+      joints: nextJoints,
+      baseJoints: INITIAL_JOINTS,
+    });
+    const desiredD = Math.sqrt(newPreview.x ** 2 + newPreview.y ** 2);
+    if (Number.isFinite(clampedA) && desiredD > 0) {
+      newPreview = { x: Math.cos(clampedA) * desiredD, y: Math.sin(clampedA) * desiredD };
     }
   }
 

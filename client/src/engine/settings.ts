@@ -213,9 +213,90 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
     if (stretchMode === 'rigid' || stretchMode === 'elastic' || stretchMode === 'stretch') next.stretchMode = stretchMode;
     const shape = v.shape;
     if (typeof shape === 'string' && ALLOWED_SHAPES.has(shape)) next.shape = shape;
+    const shapeScale = v.shapeScale;
+    if (isFiniteNumber(shapeScale)) next.shapeScale = clamp(shapeScale, 0.25, 4);
+    const fkMode = v.fkMode;
+    if (fkMode === 'stretch' || fkMode === 'bend') next.fkMode = fkMode;
+    const fkFollowDeg = v.fkFollowDeg;
+    if (isFiniteNumber(fkFollowDeg)) next.fkFollowDeg = clamp(fkFollowDeg, -360, 360);
+
+    const mergeToJointId = v.mergeToJointId;
+    if (typeof mergeToJointId === 'string' && mergeToJointId in INITIAL_JOINTS) next.mergeToJointId = mergeToJointId;
+    const hidden = v.hidden;
+    if (typeof hidden === 'boolean') next.hidden = hidden;
     if (Object.keys(next).length > 0) out[key] = next;
   }
   return out;
+};
+
+const sanitizeHipLock = (rawValue: unknown, base: SkeletonState['hipLock']): SkeletonState['hipLock'] => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+  const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : base.enabled;
+  const extendCompressEnabled =
+    typeof raw.extendCompressEnabled === 'boolean' ? raw.extendCompressEnabled : base.extendCompressEnabled;
+  const restLen = isFiniteNumber(raw.restLen) ? clamp(raw.restLen, 0.1, 100) : base.restLen;
+  const minScale = isFiniteNumber(raw.minScale) ? clamp(raw.minScale, 0.1, 10) : base.minScale;
+  const maxScale = isFiniteNumber(raw.maxScale) ? clamp(raw.maxScale, 0.1, 10) : base.maxScale;
+  const fkEnabled = typeof raw.fkEnabled === 'boolean' ? raw.fkEnabled : base.fkEnabled;
+  const fkLengthScale = isFiniteNumber(raw.fkLengthScale) ? clamp(raw.fkLengthScale, 0.1, 10) : base.fkLengthScale;
+  const walkModeEnabled = typeof raw.walkModeEnabled === 'boolean' ? raw.walkModeEnabled : base.walkModeEnabled;
+  const walkAmount = isFiniteNumber(raw.walkAmount) ? clamp(raw.walkAmount, 0, 10) : base.walkAmount;
+  const pelvisBiasEnabled = typeof raw.pelvisBiasEnabled === 'boolean' ? raw.pelvisBiasEnabled : base.pelvisBiasEnabled;
+  const pelvisBiasSide =
+    raw.pelvisBiasSide === 'above' || raw.pelvisBiasSide === 'below' ? raw.pelvisBiasSide : base.pelvisBiasSide;
+  const pelvisBiasAmount = isFiniteNumber(raw.pelvisBiasAmount) ? clamp(raw.pelvisBiasAmount, 0, 10) : base.pelvisBiasAmount;
+  return {
+    enabled,
+    extendCompressEnabled,
+    restLen,
+    minScale: Math.min(minScale, maxScale),
+    maxScale: Math.max(minScale, maxScale),
+    fkEnabled,
+    fkLengthScale,
+    walkModeEnabled,
+    walkAmount,
+    pelvisBiasEnabled,
+    pelvisBiasSide,
+    pelvisBiasAmount,
+  };
+};
+
+const sanitizeTorsoDiamond = (rawValue: unknown, base: SkeletonState['torsoDiamond']): SkeletonState['torsoDiamond'] => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+  const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : base.enabled;
+  const dynamic = typeof raw.dynamic === 'boolean' ? raw.dynamic : base.dynamic;
+  const restEdgesRaw = raw.restEdges;
+  let restEdges: Record<string, number> | undefined = base.restEdges;
+  if (restEdgesRaw && typeof restEdgesRaw === 'object') {
+    const r = restEdgesRaw as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (!isFiniteNumber(v)) continue;
+      out[k] = clamp(v, 0.1, 100);
+    }
+    restEdges = Object.keys(out).length ? out : undefined;
+  }
+  return { enabled, dynamic, restEdges };
+};
+
+const sanitizeCollarLock = (rawValue: unknown, base: SkeletonState['collarLock']): SkeletonState['collarLock'] => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+  const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : base.enabled;
+  const extendCompressEnabled =
+    typeof raw.extendCompressEnabled === 'boolean' ? raw.extendCompressEnabled : base.extendCompressEnabled;
+  const restLen = isFiniteNumber(raw.restLen) ? clamp(raw.restLen, 0.1, 100) : base.restLen;
+  const minScale = isFiniteNumber(raw.minScale) ? clamp(raw.minScale, 0.1, 10) : base.minScale;
+  const maxScale = isFiniteNumber(raw.maxScale) ? clamp(raw.maxScale, 0.1, 10) : base.maxScale;
+  return {
+    enabled,
+    extendCompressEnabled,
+    restLen,
+    minScale: Math.min(minScale, maxScale),
+    maxScale: Math.max(minScale, maxScale),
+  };
 };
 
 const sanitizeBoneStyle = (rawValue: unknown, base: SkeletonState['boneStyle']): SkeletonState['boneStyle'] => {
@@ -249,6 +330,7 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
     stretchY: isFiniteNumber(mask.stretchY) ? clamp(mask.stretchY, 0.1, 10) : base.stretchY,
     skewX: isFiniteNumber(mask.skewX) ? clamp(mask.skewX, -45, 45) : base.skewX,
     skewY: isFiniteNumber(mask.skewY) ? clamp(mask.skewY, -45, 45) : base.skewY,
+    relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
 
@@ -310,6 +392,29 @@ export const makeDefaultState = (): SkeletonState => {
   const joints = sanitizeJoints(null);
   const defaultSlots = createDefaultCutoutSlots();
   const groundRootTarget = computeGroundPivotWorld(joints, INITIAL_JOINTS, 'preview');
+  const canonicalConnKey = (a: string, b: string): string => (a < b ? `${a}:${b}` : `${b}:${a}`);
+  const defaultConnectionOverrides: SkeletonState['connectionOverrides'] = {};
+
+  const setFkFollowDeg = (a: string, b: string, fkFollowDeg: number) => {
+    const key = canonicalConnKey(a, b);
+    defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), fkFollowDeg };
+  };
+
+  // Default FK follow: collar acts as the shoulder socket. Rotating the collar rotates neck/head and both arms.
+  // `fkFollowDeg` is a per-rotation-step clamp in degrees (positive = with-parent, negative = against-parent).
+  const COLLAR_SOCKET_FOLLOW_DEG = 90;
+  setFkFollowDeg('collar', 'neck_base', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('neck_base', 'head', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_clavicle', 'l_shoulder', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_shoulder', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_elbow', 'l_wrist', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_wrist', 'l_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('collar', 'r_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_clavicle', 'r_shoulder', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_shoulder', 'r_elbow', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_elbow', 'r_wrist', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_wrist', 'r_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
   
   // Create default views (Front, Side, Back, 3/4)
   const defaultViews = [
@@ -349,7 +454,10 @@ export const makeDefaultState = (): SkeletonState => {
     bendEnabled: false, // Default: no auto-bend (rigid)
     stretchEnabled: false, // Ensure stretching is disabled by default
 	    leadEnabled: true,
+      clavicleConstraintEnabled: true,
 	    hardStop: true, // Enable hard stops for rigid joint limits
+      shapeshiftingEnabled: false,
+      torsoDiamond: { enabled: true, dynamic: false },
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
 	    // Default: FK-first with a single planted foot for stability.
 	    activeRoots: ['r_ankle'],
@@ -436,6 +544,7 @@ export const makeDefaultState = (): SkeletonState => {
         stretchY: 1.0,
         skewX: 0,
         skewY: 0,
+        relatedJoints: [],
       },
       jointMasks: makeDefaultJointMasks(),
       textOverlays: [],
@@ -445,7 +554,22 @@ export const makeDefaultState = (): SkeletonState => {
     views: defaultViews,
     activeViewId: 'front',
     boneStyle: { hueT: 0, lightness: 0 },
-    connectionOverrides: {},
+    hipLock: {
+      enabled: true,
+      extendCompressEnabled: false,
+      restLen: undefined,
+      minScale: 1,
+      maxScale: 1,
+      fkEnabled: false,
+      fkLengthScale: 1,
+      walkModeEnabled: false,
+      walkAmount: 0.75,
+      pelvisBiasEnabled: true,
+      pelvisBiasSide: 'below',
+      pelvisBiasAmount: 1,
+    },
+    collarLock: { enabled: false, extendCompressEnabled: false, restLen: undefined, minScale: 1, maxScale: 1 },
+    connectionOverrides: defaultConnectionOverrides,
   };
 };
 
@@ -668,6 +792,10 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     }
     return { joints: next };
   };
+
+  const hipLock = sanitizeHipLock((raw as any).hipLock, base.hipLock);
+  const collarLock = sanitizeCollarLock((raw as any).collarLock, base.collarLock);
+  const torsoDiamond = sanitizeTorsoDiamond((raw as any).torsoDiamond, base.torsoDiamond);
 
   const rawKeyframes = Array.isArray(rawClip?.keyframes) ? rawClip!.keyframes : [];
   const keyframeByFrame = new Map<number, { frame: number; pose: { joints: Record<string, Point> } }>();
@@ -896,16 +1024,25 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     }
   }
 
-  const state: SkeletonState = {
-    joints,
-    mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
-    bendEnabled: finalBendEnabled,
-    stretchEnabled: finalStretchEnabled,
-    leadEnabled: typeof raw.leadEnabled === 'boolean' ? raw.leadEnabled : base.leadEnabled,
-    hardStop: finalHardStop,
-    physicsRigidity: finalPhysicsRigidity,
-    activeRoots,
-    groundRootTarget,
+	  const state: SkeletonState = {
+	    joints,
+	    mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
+	    bendEnabled: finalBendEnabled,
+	    stretchEnabled: finalStretchEnabled,
+	    leadEnabled: typeof raw.leadEnabled === 'boolean' ? raw.leadEnabled : base.leadEnabled,
+      clavicleConstraintEnabled:
+        typeof (raw as any).clavicleConstraintEnabled === 'boolean'
+          ? (raw as any).clavicleConstraintEnabled
+          : base.clavicleConstraintEnabled,
+	    hardStop: finalHardStop,
+      shapeshiftingEnabled:
+        typeof (raw as any).shapeshiftingEnabled === 'boolean'
+          ? (raw as any).shapeshiftingEnabled
+          : base.shapeshiftingEnabled,
+      torsoDiamond,
+	    physicsRigidity: finalPhysicsRigidity,
+	    activeRoots,
+	    groundRootTarget,
     footPlungerEnabled,
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,
     jointsOverMasks: typeof raw.jointsOverMasks === 'boolean' ? raw.jointsOverMasks : base.jointsOverMasks,
@@ -940,6 +1077,8 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     views,
     activeViewId,
     boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),
+    hipLock,
+    collarLock,
     connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
     viewScale,
     viewOffset,

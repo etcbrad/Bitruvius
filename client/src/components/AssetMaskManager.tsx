@@ -638,6 +638,31 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                     />
                     Visible
                   </label>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px]">
+                      <span>Head/Neck</span>
+                      <span className="text-[#999]">{state.scene.headMask.relatedJoints?.[0] === 'collar' ? 'Hybrid' : 'Separate'}</span>
+                    </div>
+                    <select
+                      value={state.scene.headMask.relatedJoints?.[0] === 'collar' ? 'collar' : 'neck_base'}
+                      onPointerDownCapture={(e) => e.stopPropagation()}
+                      onMouseDownCapture={(e) => e.stopPropagation()}
+                      onChange={(e) =>
+                        setStateWithHistory('head_mask_base_joint', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            headMask: { ...prev.scene.headMask, relatedJoints: e.target.value === 'collar' ? ['collar'] : [] },
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    >
+                      <option value="neck_base">Separate (Head only)</option>
+                      <option value="collar">Hybrid (Head+Neck rigid)</option>
+                    </select>
+                  </div>
                   
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px]">

@@ -354,7 +354,49 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
       if (!joint) continue;
 
       const jp = getWorldPositionFromOffsets(jointId, pose.joints, baseJoints);
-      const pp = joint.parent ? getWorldPositionFromOffsets(joint.parent, pose.joints, baseJoints) : { x: jp.x, y: jp.y - 1 };
+      const relatedIds = (mask.relatedJoints || []).filter((id) => id !== jointId && id in baseJoints);
+      const driverId = relatedIds[0] ?? null;
+      const secondaryIds = relatedIds.slice(1);
+      const driverPos = driverId ? getWorldPositionFromOffsets(driverId, pose.joints, baseJoints) : null;
+      const secondaryCentroid = (() => {
+        if (!secondaryIds.length) return null;
+        let sx = 0;
+        let sy = 0;
+        for (const id of secondaryIds) {
+          const p = getWorldPositionFromOffsets(id, pose.joints, baseJoints);
+          sx += p.x;
+          sy += p.y;
+        }
+        return { x: sx / secondaryIds.length, y: sy / secondaryIds.length };
+      })();
+
+      const waistHipMidpoint = (() => {
+        if (jointId !== 'navel') return null;
+        if (relatedIds.length !== 2) return null;
+        const hasL = relatedIds.includes('l_hip');
+        const hasR = relatedIds.includes('r_hip');
+        if (!hasL || !hasR) return null;
+        const l = getWorldPositionFromOffsets('l_hip', pose.joints, baseJoints);
+        const r = getWorldPositionFromOffsets('r_hip', pose.joints, baseJoints);
+        return { x: (l.x + r.x) / 2, y: (l.y + r.y) / 2 };
+      })();
+
+      const anchorUnits = (() => {
+        if (waistHipMidpoint) return waistHipMidpoint;
+        if (secondaryCentroid) return { x: (jp.x + secondaryCentroid.x) / 2, y: (jp.y + secondaryCentroid.y) / 2 };
+        if (driverPos) return { x: (jp.x + driverPos.x) / 2, y: (jp.y + driverPos.y) / 2 };
+        return jp;
+      })();
+
+      const anchorWorldBaseX = anchorUnits.x * unitScale + centerX;
+      const anchorWorldBaseY = anchorUnits.y * unitScale + centerY;
+
+      const pp = (() => {
+        if (waistHipMidpoint) return waistHipMidpoint;
+        if (driverPos) return driverPos;
+        if (joint.parent) return getWorldPositionFromOffsets(joint.parent, pose.joints, baseJoints);
+        return { x: jp.x, y: jp.y - 1 };
+      })();
 
       const dx = jp.x - pp.x;
       const dy = jp.y - pp.y;
@@ -367,8 +409,8 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
       const thicknessPx = headLenPx * Math.max(0.01, mask.scale);
       let widthPx = thicknessPx;
       let heightPx = thicknessPx;
-      let anchorWorldX = jp.x * unitScale + centerX;
-      let anchorWorldY = jp.y * unitScale + centerY;
+      let anchorWorldX = anchorWorldBaseX;
+      let anchorWorldY = anchorWorldBaseY;
 
       if (mode === 'rubberhose') {
         anchorWorldX = ((jp.x + pp.x) / 2) * unitScale + centerX;
@@ -398,8 +440,10 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
     // Head mask
     if (headMaskImg && scene.headMask?.src && scene.headMask.visible) {
       const mask = scene.headMask;
-      const dx = headPos.x - neckBasePos.x;
-      const dy = headPos.y - neckBasePos.y;
+      const baseId = mask.relatedJoints?.[0] && mask.relatedJoints[0] in baseJoints ? mask.relatedJoints[0] : 'neck_base';
+      const basePos = getWorldPositionFromOffsets(baseId, pose.joints, baseJoints);
+      const dx = headPos.x - basePos.x;
+      const dy = headPos.y - basePos.y;
       const boneLenPx = Math.max(1, Math.hypot(dx, dy) * unitScale);
       const baseAngle = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
       const mode = mask.mode || 'cutout';
@@ -410,9 +454,13 @@ export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
       let heightPx = thicknessPx;
       let anchorWorldX = headPos.x * unitScale + centerX;
       let anchorWorldY = headPos.y * unitScale + centerY;
+      if (baseId !== 'neck_base') {
+        anchorWorldX = ((headPos.x + basePos.x) / 2) * unitScale + centerX;
+        anchorWorldY = ((headPos.y + basePos.y) / 2) * unitScale + centerY;
+      }
       if (mode === 'rubberhose') {
-        anchorWorldX = ((headPos.x + neckBasePos.x) / 2) * unitScale + centerX;
-        anchorWorldY = ((headPos.y + neckBasePos.y) / 2) * unitScale + centerY;
+        anchorWorldX = ((headPos.x + basePos.x) / 2) * unitScale + centerX;
+        anchorWorldY = ((headPos.y + basePos.y) / 2) * unitScale + centerY;
         heightPx = Math.max(1, boneLenPx * Math.max(0.05, mask.lengthScale || 1));
         if (mask.volumePreserve) {
           widthPx = clamp((thicknessPx * thicknessPx) / heightPx, thicknessPx * 0.15, thicknessPx * 4);

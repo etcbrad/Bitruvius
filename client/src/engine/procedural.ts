@@ -172,8 +172,9 @@ export const stepProcgenPose = (args: {
   physics: PhysicsControls;
   idle: IdleSettings;
   options: ProcgenOptions;
+  hipWalk?: { enabled: boolean; amount: number };
 }): EnginePoseSnapshot => {
-  const { runtime, mode, neutral, dtSec, strength, gait, gaitEnabled, physics, idle, options, cycleFrames } = args;
+  const { runtime, mode, neutral, dtSec, strength, gait, gaitEnabled, physics, idle, options, cycleFrames, hipWalk } = args;
   const fps = 60;
   const safeCycleFrames = clamp(Math.floor(cycleFrames || 0), 2, 600);
   runtime.tSec += Math.max(0, dtSec);
@@ -183,7 +184,7 @@ export const stepProcgenPose = (args: {
 
   const resolvedGait = resolveProcgenGait(mode, gait, gaitEnabled);
 
-  return generateProceduralBitruviusPose({
+  const out = generateProceduralBitruviusPose({
     neutral,
     frame: runtime.frame,
     fps,
@@ -198,6 +199,20 @@ export const stepProcgenPose = (args: {
     rng: runtime.rng,
     timeMs,
   });
+
+  // "3D" hip walk emulation: oscillate hips around the navel to create pelvis roll / depth hinting.
+  if (hipWalk?.enabled) {
+    const amp = clamp(hipWalk.amount, 0, 10) * clamp(strength, 0, 1.5);
+    const phase = (runtime.frame / safeCycleFrames) * Math.PI * 2;
+    const dy = Math.sin(phase) * amp;
+    const dx = Math.cos(phase) * amp * 0.25;
+    const l = out.joints.l_hip;
+    const r = out.joints.r_hip;
+    if (l) out.joints.l_hip = { ...l, x: l.x + dx, y: l.y + dy };
+    if (r) out.joints.r_hip = { ...r, x: r.x - dx, y: r.y - dy };
+  }
+
+  return out;
 };
 
 export const bakeProcgenLoop = (args: {

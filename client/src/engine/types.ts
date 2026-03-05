@@ -91,6 +91,7 @@ export type Connection = {
 export type MaskMode = 'cutout' | 'rubberhose' | 'roto';
 
 export type BoneStretchMode = 'rigid' | 'elastic' | 'stretch';
+export type ManikinFkMode = 'stretch' | 'bend';
 
 type MaskBase = {
   src: string | null;
@@ -197,6 +198,15 @@ export type HeadMask = {
   stretchY: MaskBase['stretchY'];
   skewX: MaskBase['skewX'];
   skewY: MaskBase['skewY'];
+  /**
+   * Optional relationship joints used to drive placement/orientation/length.
+   * When empty, the head mask uses `neck_base` as its relationship.
+   *
+   * Semantics match `JointMask.relatedJoints`:
+   * - 1st entry (driver) acts like a custom "base" joint for direction/length.
+   * - remaining entries affect anchor placement via centroid.
+   */
+  relatedJoints: string[];
 };
 
 export type ReferenceLayer = {
@@ -344,7 +354,14 @@ export type SkeletonState = {
   bendEnabled: boolean;
   stretchEnabled: boolean;
   leadEnabled: boolean;
+  clavicleConstraintEnabled: boolean;
   hardStop: boolean;
+  shapeshiftingEnabled: boolean;
+  torsoDiamond: {
+    enabled: boolean;
+    dynamic: boolean;
+    restEdges?: Record<string, number>;
+  };
   /**
    * Optional 0..1 macro slider for blending between rigid and fluid presets.
    * Used by `engine/physics-config.ts`.
@@ -381,11 +398,50 @@ export type SkeletonState = {
   views: ViewPreset[];
   activeViewId: string;
   boneStyle: BoneStyle;
+  hipLock: {
+    enabled: boolean;
+    extendCompressEnabled: boolean;
+    restLen?: number;
+    minScale: number; // relative to base hip width
+    maxScale: number; // relative to base hip width
+    fkEnabled: boolean;
+    fkLengthScale: number; // relative to base hip width
+    walkModeEnabled: boolean;
+    walkAmount: number; // joint-space units
+    pelvisBiasEnabled: boolean;
+    pelvisBiasSide: 'above' | 'below';
+    pelvisBiasAmount: number; // joint-space units
+  };
+  collarLock: {
+    enabled: boolean;
+    extendCompressEnabled: boolean;
+    restLen?: number;
+    minScale: number; // relative to base collar width
+    maxScale: number; // relative to base collar width
+  };
   /**
    * Per-bone overrides keyed by canonical connection key `${min(a,b)}:${max(a,b)}`.
    * Used for editor controls and physics behavior; avoids mutating module-level CONNECTIONS.
    */
-  connectionOverrides: Record<string, { stretchMode?: BoneStretchMode; shape?: string }>;
+  connectionOverrides: Record<
+    string,
+    {
+      stretchMode?: BoneStretchMode;
+      shape?: string;
+      shapeScale?: number;
+      fkMode?: ManikinFkMode;
+      fkFollowDeg?: number;
+      /**
+       * Render-only: if set, draw this connection from `from` to `mergeToJointId` instead of `to`.
+       * Does not affect physics or hierarchy.
+       */
+      mergeToJointId?: string;
+      /**
+       * Render-only: hide this connection (useful when another connection is merged over it).
+       */
+      hidden?: boolean;
+    }
+  >;
 };
 export type Pose = {
   root: Vector2D;

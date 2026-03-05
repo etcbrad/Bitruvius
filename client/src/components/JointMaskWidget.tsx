@@ -425,6 +425,32 @@ export function JointMaskWidget({
                   </select>
                 </div>
 
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px]">
+                    <span>Head/Neck</span>
+                    <span className="text-[#666]">{(state.scene.headMask.relatedJoints?.[0] === 'collar' ? 'HYBRID' : 'SEPARATE')}</span>
+                  </div>
+                  <select
+                    value={state.scene.headMask.relatedJoints?.[0] === 'collar' ? 'collar' : 'neck_base'}
+                    onChange={(e) =>
+                      setStateWithHistory('head_mask_base_joint', (prev) => ({
+                        ...prev,
+                        scene: {
+                          ...prev.scene,
+                          headMask: {
+                            ...prev.scene.headMask,
+                            relatedJoints: e.target.value === 'collar' ? ['collar'] : [],
+                          },
+                        },
+                      }))
+                    }
+                    className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                  >
+                    <option value="neck_base">Separate (Head only)</option>
+                    <option value="collar">Hybrid (Head+Neck rigid)</option>
+                  </select>
+                </div>
+
                 {(state.scene.headMask.mode || 'cutout') === 'rubberhose' && (
                   <>
                     <div className="space-y-2">

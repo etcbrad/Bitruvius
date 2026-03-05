@@ -1,0 +1,6 @@
+[
+  {
+    "type": "console.error",
+    "text": "Warning: validateDOMNesting(...): %s cannot appear as a descendant of <%s>.%s <button> button \n    at button\n    at div\n    at button\n    at div\n    at div\n    at ManikinConsole (http://localhost:5002/src/components/ManikinConsole.tsx:52:3)\n    at div\n    at div\n    at div\n    at aside\n    at MotionDOMComponent (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/motion_react.js?v=cbe7fc95:8672:40)\n    at div\n    at Provider (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/chunk-KR5IEQXW.js?v=cbe7fc95:43:15)\n    at TooltipProvider (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=cbe7fc95:84:5)\n    at App (http://localhost:5002/src/App.tsx?t=1772674537004:207:36)\n    at Route (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/wouter.js?v=cbe7fc95:357:16)\n    at Switch (http://localhost:5002/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/wouter.js?v=cbe7fc95:414:17)"
+  }
+]

@@ -4,6 +4,7 @@ import type {
   AxisLimitConstraint,
   AxisSpringConstraint,
   DistanceConstraint,
+  DistanceLimitConstraint,
   HingeLimitConstraint,
   HingeSignMap,
   HingeSoftConstraint,
@@ -114,6 +115,9 @@ type SolveContext = {
 
 const lambdaKey = (c: DistanceConstraint | PinConstraint) =>
   c.kind === 'distance' ? `d:${c.a}:${c.b}` : `p:${c.id}`;
+
+const distanceLimitKey = (c: DistanceLimitConstraint, bound: 'min' | 'max') =>
+  `dl:${bound}:${c.a}:${c.b}`;
 
 const axisSpringKey = (c: AxisSpringConstraint) => `as:${c.id}:${c.axis}`;
 const axisLimitKey = (c: AxisLimitConstraint, bound: 'min' | 'max') => `al:${c.id}:${c.axis}:${bound}`;
@@ -252,6 +256,57 @@ const solveDistance = (ctx: SolveContext, c: DistanceConstraint) => {
   ctx.p[c.b] = add(pb, scale(n, wb * dlambda));
 };
 
+const solveDistanceLimit = (ctx: SolveContext, c: DistanceLimitConstraint) => {
+  const pa = ctx.p[c.a];
+  const pb = ctx.p[c.b];
+  if (!pa || !pb) return;
+
+  const wa = ctx.invMass[c.a] ?? 1;
+  const wb = ctx.invMass[c.b] ?? 1;
+  if (wa + wb <= 0) return;
+
+  const min = Number.isFinite(c.min) ? c.min : -Infinity;
+  const max = Number.isFinite(c.max) ? c.max : Infinity;
+  if (!(min <= max)) return;
+
+  const d = sub(pb, pa);
+  const len = Math.hypot(d.x, d.y);
+  if (len <= EPS) return;
+
+  let bound: 'min' | 'max' | null = null;
+  let rest = len;
+  if (len < min) {
+    bound = 'min';
+    rest = min;
+  } else if (len > max) {
+    bound = 'max';
+    rest = max;
+  } else {
+    return;
+  }
+
+  const n = scale(d, 1 / len);
+  const C = len - rest;
+
+  if (c.compliance <= 0) {
+    const dlambda = -C / (wa + wb);
+    ctx.p[c.a] = sub(pa, scale(n, wa * dlambda));
+    ctx.p[c.b] = add(pb, scale(n, wb * dlambda));
+    return;
+  }
+
+  const alpha = Math.max(0, c.compliance) / (ctx.cfg.dt * ctx.cfg.dt);
+  const key = bound ? distanceLimitKey(c, bound) : `dl:?:${c.a}:${c.b}`;
+  const lambda0 = ctx.lambdas.get(key) ?? 0;
+
+  const dlambda = (-C - alpha * lambda0) / (wa + wb + alpha);
+  const lambda = lambda0 + dlambda;
+  ctx.lambdas.set(key, lambda);
+
+  ctx.p[c.a] = sub(pa, scale(n, wa * dlambda));
+  ctx.p[c.b] = add(pb, scale(n, wb * dlambda));
+};
+
 const angleAt = (a: Point, b: Point, c: Point) => {
   const v1 = normalize(sub(a, b));
   const v2 = normalize(sub(c, b));
@@ -369,6 +424,7 @@ export const solveXpbd = (
       if (c.kind === 'distance') {
         solveDistance(ctx, c);
       }
+      else if (c.kind === 'distanceLimit') solveDistanceLimit(ctx, c);
       else if (c.kind === 'pin') solvePin(ctx, c);
       else if (c.kind === 'axisSpring') solveAxisSpring(ctx, c);
       else if (c.kind === 'axisLimit') solveAxisLimit(ctx, c);
