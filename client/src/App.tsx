@@ -496,6 +496,20 @@ export default function App() {
     mode: MaskDragMode;
   }>(null);
   const maskDraggingLiveRef = useRef(false);
+  const [overlayDragging, setOverlayDragging] = useState<null | {
+    overlayId: string;
+    startMouseBaseX: number;
+    startMouseBaseY: number;
+    startX: number;
+    startY: number;
+  }>(null);
+  const overlayDraggingLiveRef = useRef<null | {
+    overlayId: string;
+    startMouseBaseX: number;
+    startMouseBaseY: number;
+    startX: number;
+    startY: number;
+  }>(null);
   const [groundPlaneDragging, setGroundPlaneDragging] = useState<null | {
     startMouseWorldY: number;
     startPlaneY: number;
@@ -1723,6 +1737,7 @@ export default function App() {
     rootDragKindLiveRef.current = 'none';
     groundRootDraggingLiveRef.current = false;
     maskDraggingLiveRef.current = false;
+    overlayDraggingLiveRef.current = null;
 
     pinWorldRef.current = null;
     dragTargetRef.current = null;
@@ -1743,6 +1758,7 @@ export default function App() {
     setRootRotateDragging(null);
     setMaskDragging(null);
     setMaskEditArmed(false);
+    setOverlayDragging(null);
 
     setIsLongPress(false);
     setRubberbandPose(null);
@@ -3805,6 +3821,34 @@ export default function App() {
     return { x: clientX - rect.left, y: clientY - rect.top };
   };
 
+  const getMouseCanvasBasePx = (clientX: number, clientY: number): Point | null => {
+    const p = getMouseCanvasPx(clientX, clientY);
+    if (!p) return null;
+    const scale = Math.max(1e-6, stateLiveRef.current.viewScale);
+    const off = stateLiveRef.current.viewOffset;
+    return {
+      x: (p.x - off.x) / scale,
+      y: (p.y - off.y) / scale,
+    };
+  };
+
+  const getOverlayDefaultCanvasPx = (o: { kind: 'title' | 'intertitle'; align?: any }): Point => {
+    if (o.kind === 'intertitle') {
+      return { x: canvasSize.width / 2, y: canvasSize.height / 2 };
+    }
+    const align = o.align === 'left' || o.align === 'right' || o.align === 'center' ? o.align : 'center';
+    const x = align === 'left' ? 24 : align === 'right' ? canvasSize.width - 24 : canvasSize.width / 2;
+    return { x, y: 20 };
+  };
+
+  const readFileAsDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsDataURL(file);
+    });
+
   const getMouseWorld = (clientX: number, clientY: number): Point => {
     const p = getMouseCanvasPx(clientX, clientY);
     if (!p) return { x: 0, y: 0 };
@@ -3830,6 +3874,47 @@ export default function App() {
       x: baseX * state.viewScale + state.viewOffset.x,
       y: baseY * state.viewScale + state.viewOffset.y,
     };
+  };
+
+  const beginOverlayDrag = (overlayId: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setTimelinePlaying(false);
+
+    const live = stateLiveRef.current;
+    const overlays = Array.isArray(live.scene.textOverlays) ? live.scene.textOverlays : [];
+    const overlay = overlays.find((o: any) => o.id === overlayId) as any;
+    if (!overlay) return;
+
+    const mouseBase = getMouseCanvasBasePx(e.clientX, e.clientY);
+    if (!mouseBase) return;
+
+    const def = getOverlayDefaultCanvasPx(overlay);
+    const startX = typeof overlay.x === 'number' && Number.isFinite(overlay.x) ? overlay.x : def.x;
+    const startY = typeof overlay.y === 'number' && Number.isFinite(overlay.y) ? overlay.y : def.y;
+
+    historyCtrlRef.current.beginAction(`overlay_drag:${overlayId}`, live);
+    overlayDraggingLiveRef.current = {
+      overlayId,
+      startMouseBaseX: mouseBase.x,
+      startMouseBaseY: mouseBase.y,
+      startX,
+      startY,
+    };
+    setOverlayDragging(overlayDraggingLiveRef.current);
+
+    // Ensure the overlay is explicitly positioned so dragging doesn't "jump" from implicit defaults.
+    setState((prev) => {
+      const prevOverlays = Array.isArray(prev.scene.textOverlays) ? prev.scene.textOverlays : [];
+      const nextOverlays = prevOverlays.map((o: any) => {
+        if (o.id !== overlayId) return o;
+        const next: any = { ...o };
+        if (!(typeof next.x === 'number' && Number.isFinite(next.x))) next.x = startX;
+        if (!(typeof next.y === 'number' && Number.isFinite(next.y))) next.y = startY;
+        return next;
+      });
+      return { ...prev, scene: { ...prev.scene, textOverlays: nextOverlays } };
+    });
   };
 
   const hideCursorHud = () => {
@@ -3977,6 +4062,31 @@ export default function App() {
       (e: React.MouseEvent) => {
         if (!canvasRef.current) return;
         const mouseWorldRaw = getMouseWorld(e.clientX, e.clientY);
+        const overlayDrag = overlayDraggingLiveRef.current;
+        if (overlayDrag) {
+          const mouseBase = getMouseCanvasBasePx(e.clientX, e.clientY);
+          if (!mouseBase) return;
+          const dxRaw = mouseBase.x - overlayDrag.startMouseBaseX;
+          const dyRaw = mouseBase.y - overlayDrag.startMouseBaseY;
+          const dx = e.altKey ? dxRaw * PRECISION_DRAG_SCALE : dxRaw;
+          const dy = e.altKey ? dyRaw * PRECISION_DRAG_SCALE : dyRaw;
+          const nextXRaw = overlayDrag.startX + dx;
+          const nextYRaw = overlayDrag.startY + dy;
+          const nextX = e.shiftKey ? Math.round(nextXRaw) : nextXRaw;
+          const nextY = e.shiftKey ? Math.round(nextYRaw) : nextYRaw;
+
+          setState((prev) => {
+            const overlays = Array.isArray(prev.scene.textOverlays) ? prev.scene.textOverlays : [];
+            const nextOverlays = overlays.map((o: any) =>
+              o.id === overlayDrag.overlayId
+                ? { ...o, x: Number.isFinite(nextX) ? nextX : o.x, y: Number.isFinite(nextY) ? nextY : o.y }
+                : o,
+            );
+            if (nextOverlays === overlays) return prev;
+            return { ...prev, scene: { ...prev.scene, textOverlays: nextOverlays } };
+          });
+          return;
+        }
 
         // Enhanced cursor HUD (kept out of React render loop for performance)
         updateCursorHud({
@@ -4483,6 +4593,13 @@ export default function App() {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
+    }
+
+    if (overlayDraggingLiveRef.current) {
+      setOverlayDragging(null);
+      overlayDraggingLiveRef.current = null;
+      commitHistoryAction();
+      return;
     }
 
     if (manikinRotateDraggingLiveRef.current) {
@@ -7610,6 +7727,197 @@ export default function App() {
                     />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-3 gap-2 items-end">
+                  <div>
+                    <label className="text-[10px] text-[#666]">X</label>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const def = getOverlayDefaultCanvasPx(o);
+                          const enabled = typeof o.x === 'number' && Number.isFinite(o.x);
+                          setStateWithHistory('overlay_pos_x_toggle', (prev) => ({
+                            ...prev,
+                            scene: {
+                              ...prev.scene,
+                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                x.id === o.id ? { ...x, x: enabled ? undefined : def.x } : x,
+                              ),
+                            },
+                          }));
+                        }}
+                        className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-white/10 ${
+                          typeof o.x === 'number' ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                        }`}
+                        title={typeof o.x === 'number' ? 'X: manual' : 'X: auto'}
+                      >
+                        X
+                      </button>
+                      <input
+                        type="number"
+                        value={typeof o.x === 'number' ? o.x : getOverlayDefaultCanvasPx(o).x}
+                        disabled={!(typeof o.x === 'number')}
+                        onChange={(e) =>
+                          setStateWithHistory('overlay_pos_x', (prev) => ({
+                            ...prev,
+                            scene: {
+                              ...prev.scene,
+                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                x.id === o.id ? { ...x, x: parseFloat(e.target.value) || 0 } : x,
+                              ),
+                            },
+                          }))
+                        }
+                        className="flex-1 px-2 py-1 bg-[#222] rounded text-[10px] disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">Y</label>
+                    <div className="flex gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const def = getOverlayDefaultCanvasPx(o);
+                          const enabled = typeof o.y === 'number' && Number.isFinite(o.y);
+                          setStateWithHistory('overlay_pos_y_toggle', (prev) => ({
+                            ...prev,
+                            scene: {
+                              ...prev.scene,
+                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                x.id === o.id ? { ...x, y: enabled ? undefined : def.y } : x,
+                              ),
+                            },
+                          }));
+                        }}
+                        className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-white/10 ${
+                          typeof o.y === 'number' ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                        }`}
+                        title={typeof o.y === 'number' ? 'Y: manual' : 'Y: auto'}
+                      >
+                        Y
+                      </button>
+                      <input
+                        type="number"
+                        value={typeof o.y === 'number' ? o.y : getOverlayDefaultCanvasPx(o).y}
+                        disabled={!(typeof o.y === 'number')}
+                        onChange={(e) =>
+                          setStateWithHistory('overlay_pos_y', (prev) => ({
+                            ...prev,
+                            scene: {
+                              ...prev.scene,
+                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                x.id === o.id ? { ...x, y: parseFloat(e.target.value) || 0 } : x,
+                              ),
+                            },
+                          }))
+                        }
+                        className="flex-1 px-2 py-1 bg-[#222] rounded text-[10px] disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">Rot</label>
+                    <input
+                      type="number"
+                      value={o.rotation ?? 0}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_rot', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                              x.id === o.id ? { ...x, rotation: parseFloat(e.target.value) || 0 } : x,
+                            ),
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                </div>
+
+                {o.kind === 'intertitle' && (
+                  <div className="mt-1 p-2 rounded-md bg-black/20 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Background</div>
+                      <div className="flex gap-2">
+                        <label className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors cursor-pointer">
+                          Upload
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              e.target.value = '';
+                              if (!file) return;
+                              const dataUrl = await readFileAsDataUrl(file);
+                              setStateWithHistory('overlay_intertitle_bg_upload', (prev) => ({
+                                ...prev,
+                                scene: {
+                                  ...prev.scene,
+                                  textOverlays: (prev.scene.textOverlays || []).map((x: any) =>
+                                    x.id === o.id ? { ...x, bgSrc: dataUrl, bgOpacity: typeof x.bgOpacity === 'number' ? x.bgOpacity : 1 } : x,
+                                  ),
+                                },
+                              }));
+                            }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setStateWithHistory('overlay_intertitle_bg_clear', (prev) => ({
+                              ...prev,
+                              scene: {
+                                ...prev.scene,
+                                textOverlays: (prev.scene.textOverlays || []).map((x: any) =>
+                                  x.id === o.id ? { ...x, bgSrc: null } : x,
+                                ),
+                              },
+                            }))
+                          }
+                          className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
+                          disabled={!(typeof (o as any).bgSrc === 'string' && (o as any).bgSrc)}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    {typeof (o as any).bgSrc === 'string' && (o as any).bgSrc ? (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-[#666]">Opacity</span>
+                          <span className="font-mono text-[#777]">{Math.round(clamp((o as any).bgOpacity ?? 1, 0, 1) * 100)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={clamp((o as any).bgOpacity ?? 1, 0, 1)}
+                          onChange={(e) => {
+                            const v = clamp(parseFloat(e.target.value) || 0, 0, 1);
+                            setStateWithHistory('overlay_intertitle_bg_opacity', (prev) => ({
+                              ...prev,
+                              scene: {
+                                ...prev.scene,
+                                textOverlays: (prev.scene.textOverlays || []).map((x: any) =>
+                                  x.id === o.id ? { ...x, bgOpacity: v } : x,
+                                ),
+                              },
+                            }));
+                          }}
+                          className="w-full"
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-[9px] text-[#555]">Default: black plate.</div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -10659,6 +10967,197 @@ export default function App() {
                                     />
                                   </div>
                                 </div>
+
+                                <div className="grid grid-cols-3 gap-2 items-end">
+                                  <div>
+                                    <label className="text-[10px] text-[#666]">X</label>
+                                    <div className="flex gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const def = getOverlayDefaultCanvasPx(o);
+                                          const enabled = typeof o.x === 'number' && Number.isFinite(o.x);
+                                          setStateWithHistory('overlay_pos_x_toggle', (prev) => ({
+                                            ...prev,
+                                            scene: {
+                                              ...prev.scene,
+                                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                                x.id === o.id ? { ...x, x: enabled ? undefined : def.x } : x,
+                                              ),
+                                            },
+                                          }));
+                                        }}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-white/10 ${
+                                          typeof o.x === 'number' ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                                        }`}
+                                        title={typeof o.x === 'number' ? 'X: manual' : 'X: auto'}
+                                      >
+                                        X
+                                      </button>
+                                      <input
+                                        type="number"
+                                        value={typeof o.x === 'number' ? o.x : getOverlayDefaultCanvasPx(o).x}
+                                        disabled={!(typeof o.x === 'number')}
+                                        onChange={(e) =>
+                                          setStateWithHistory('overlay_pos_x', (prev) => ({
+                                            ...prev,
+                                            scene: {
+                                              ...prev.scene,
+                                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                                x.id === o.id ? { ...x, x: parseFloat(e.target.value) || 0 } : x,
+                                              ),
+                                            },
+                                          }))
+                                        }
+                                        className="flex-1 px-2 py-1 bg-[#222] rounded text-[10px] disabled:opacity-60"
+                                      />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="text-[10px] text-[#666]">Y</label>
+                                    <div className="flex gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const def = getOverlayDefaultCanvasPx(o);
+                                          const enabled = typeof o.y === 'number' && Number.isFinite(o.y);
+                                          setStateWithHistory('overlay_pos_y_toggle', (prev) => ({
+                                            ...prev,
+                                            scene: {
+                                              ...prev.scene,
+                                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                                x.id === o.id ? { ...x, y: enabled ? undefined : def.y } : x,
+                                              ),
+                                            },
+                                          }));
+                                        }}
+                                        className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-white/10 ${
+                                          typeof o.y === 'number' ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                                        }`}
+                                        title={typeof o.y === 'number' ? 'Y: manual' : 'Y: auto'}
+                                      >
+                                        Y
+                                      </button>
+                                      <input
+                                        type="number"
+                                        value={typeof o.y === 'number' ? o.y : getOverlayDefaultCanvasPx(o).y}
+                                        disabled={!(typeof o.y === 'number')}
+                                        onChange={(e) =>
+                                          setStateWithHistory('overlay_pos_y', (prev) => ({
+                                            ...prev,
+                                            scene: {
+                                              ...prev.scene,
+                                              textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                                x.id === o.id ? { ...x, y: parseFloat(e.target.value) || 0 } : x,
+                                              ),
+                                            },
+                                          }))
+                                        }
+                                        className="flex-1 px-2 py-1 bg-[#222] rounded text-[10px] disabled:opacity-60"
+                                      />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="text-[10px] text-[#666]">Rot</label>
+                                    <input
+                                      type="number"
+                                      value={o.rotation ?? 0}
+                                      onChange={(e) =>
+                                        setStateWithHistory('overlay_rot', (prev) => ({
+                                          ...prev,
+                                          scene: {
+                                            ...prev.scene,
+                                            textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                                              x.id === o.id ? { ...x, rotation: parseFloat(e.target.value) || 0 } : x,
+                                            ),
+                                          },
+                                        }))
+                                      }
+                                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                                    />
+                                  </div>
+                                </div>
+
+                                {o.kind === 'intertitle' && (
+                                  <div className="mt-1 p-2 rounded-md bg-black/20 border border-white/10 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Background</div>
+                                      <div className="flex gap-2">
+                                        <label className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors cursor-pointer">
+                                          Upload
+                                          <input
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={async (e) => {
+                                              const file = e.target.files?.[0];
+                                              e.target.value = '';
+                                              if (!file) return;
+                                              const dataUrl = await readFileAsDataUrl(file);
+                                              setStateWithHistory('overlay_intertitle_bg_upload', (prev) => ({
+                                                ...prev,
+                                                scene: {
+                                                  ...prev.scene,
+                                                  textOverlays: (prev.scene.textOverlays || []).map((x: any) =>
+                                                    x.id === o.id ? { ...x, bgSrc: dataUrl, bgOpacity: typeof x.bgOpacity === 'number' ? x.bgOpacity : 1 } : x,
+                                                  ),
+                                                },
+                                              }));
+                                            }}
+                                          />
+                                        </label>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setStateWithHistory('overlay_intertitle_bg_clear', (prev) => ({
+                                              ...prev,
+                                              scene: {
+                                                ...prev.scene,
+                                                textOverlays: (prev.scene.textOverlays || []).map((x: any) =>
+                                                  x.id === o.id ? { ...x, bgSrc: null } : x,
+                                                ),
+                                              },
+                                            }))
+                                          }
+                                          className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
+                                          disabled={!(typeof (o as any).bgSrc === 'string' && (o as any).bgSrc)}
+                                        >
+                                          Clear
+                                        </button>
+                                      </div>
+                                    </div>
+                                    {typeof (o as any).bgSrc === 'string' && (o as any).bgSrc ? (
+                                      <div className="space-y-1">
+                                        <div className="flex items-center justify-between text-[10px]">
+                                          <span className="text-[#666]">Opacity</span>
+                                          <span className="font-mono text-[#777]">{Math.round(clamp((o as any).bgOpacity ?? 1, 0, 1) * 100)}%</span>
+                                        </div>
+                                        <input
+                                          type="range"
+                                          min={0}
+                                          max={1}
+                                          step={0.01}
+                                          value={clamp((o as any).bgOpacity ?? 1, 0, 1)}
+                                          onChange={(e) => {
+                                            const v = clamp(parseFloat(e.target.value) || 0, 0, 1);
+                                            setStateWithHistory('overlay_intertitle_bg_opacity', (prev) => ({
+                                              ...prev,
+                                              scene: {
+                                                ...prev.scene,
+                                                textOverlays: (prev.scene.textOverlays || []).map((x: any) =>
+                                                  x.id === o.id ? { ...x, bgOpacity: v } : x,
+                                                ),
+                                              },
+                                            }));
+                                          }}
+                                          className="w-full"
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="text-[9px] text-[#555]">Default: black plate.</div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -11421,17 +11920,48 @@ export default function App() {
                         <g>
                           {active.map((o) => {
                             if (o.kind === 'intertitle') {
+                              const x = typeof o.x === 'number' ? o.x : canvasSize.width / 2;
+                              const y = typeof o.y === 'number' ? o.y : canvasSize.height / 2;
+                              const rot = typeof o.rotation === 'number' && Number.isFinite(o.rotation) ? o.rotation : 0;
+                              const bgSrc = (o as any).bgSrc;
+                              const bgOpacityRaw = (o as any).bgOpacity;
+                              const bgOpacity =
+                                typeof bgOpacityRaw === 'number' && Number.isFinite(bgOpacityRaw) ? clamp(bgOpacityRaw, 0, 1) : 1;
                               return (
                                 <g key={o.id}>
-                                  <rect x={0} y={0} width={canvasSize.width} height={canvasSize.height} fill="#000" opacity={0.85} />
+                                  {typeof bgSrc === 'string' && bgSrc ? (
+                                    <image
+                                      href={bgSrc}
+                                      x={0}
+                                      y={0}
+                                      width={canvasSize.width}
+                                      height={canvasSize.height}
+                                      opacity={bgOpacity}
+                                      preserveAspectRatio="xMidYMid slice"
+                                      style={{ pointerEvents: 'none' }}
+                                    />
+                                  ) : (
+                                    <rect
+                                      x={0}
+                                      y={0}
+                                      width={canvasSize.width}
+                                      height={canvasSize.height}
+                                      fill="#000"
+                                      opacity={0.85}
+                                      style={{ pointerEvents: 'none' }}
+                                    />
+                                  )}
                                   <text
-                                    x={canvasSize.width / 2}
-                                    y={canvasSize.height / 2}
+                                    x={x}
+                                    y={y}
                                     fill={o.color || '#fff'}
                                     fontSize={Math.max(8, o.fontSize || 48)}
                                     fontFamily="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
                                     textAnchor="middle"
                                     dominantBaseline="middle"
+                                    transform={rot ? `rotate(${rot} ${x} ${y})` : undefined}
+                                    className="cursor-move"
+                                    onMouseDown={beginOverlayDrag(o.id)}
                                   >
                                     {o.text}
                                   </text>
@@ -11439,16 +11969,28 @@ export default function App() {
                               );
                             }
                             const anchor = o.align === 'left' ? 'start' : o.align === 'right' ? 'end' : 'middle';
-                            const x = o.align === 'left' ? 24 : o.align === 'right' ? canvasSize.width - 24 : canvasSize.width / 2;
+                            const x =
+                              typeof o.x === 'number'
+                                ? o.x
+                                : o.align === 'left'
+                                  ? 24
+                                  : o.align === 'right'
+                                    ? canvasSize.width - 24
+                                    : canvasSize.width / 2;
+                            const y = typeof o.y === 'number' ? o.y : 20;
+                            const rot = typeof o.rotation === 'number' && Number.isFinite(o.rotation) ? o.rotation : 0;
                             return (
                               <text
                                 key={o.id}
                                 x={x}
-                                y={20}
+                                y={y}
                                 fill={o.color || '#fff'}
                                 fontSize={Math.max(8, o.fontSize || 32)}
                                 fontFamily="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
                                 textAnchor={anchor}
+                                transform={rot ? `rotate(${rot} ${x} ${y})` : undefined}
+                                className="cursor-move"
+                                onMouseDown={beginOverlayDrag(o.id)}
                               >
                                 {o.text}
                               </text>
