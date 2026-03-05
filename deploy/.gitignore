@@ -1,0 +1,14 @@
+# Keep the deploy folder structure but ignore generated files
+# Only commit configuration files
+!.gitignore
+!_redirects
+!netlify.toml
+!package.json
+!README.md
+
+# Ignore generated assets
+assets/
+index.html
+startup.html
+favicon.*
+*.json

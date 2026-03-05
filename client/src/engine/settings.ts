@@ -1,6 +1,6 @@
 import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
-import { clamp } from '../utils';
-import { INITIAL_JOINTS } from './model';
+import { clamp as utilsClamp } from '../utils';
+import { INITIAL_JOINTS, CONNECTIONS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode } from './types';
@@ -10,6 +10,19 @@ import type { TransitionIssue, TransitionResult } from '@/lib/transitionIssues';
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
+
+const isFiniteVector = (value: unknown): value is Point =>
+  !!(value && typeof value === 'object' && 
+  typeof (value as any).x === 'number' && Number.isFinite((value as any).x) &&
+  typeof (value as any).y === 'number' && Number.isFinite((value as any).y));
+
+const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+const ALLOWED_SHAPES = new Set([
+  'bone', 'cylinder', 'diamond', 'muscle', 'tapered', 'wire', 'tendon', 'wireframe'
+]);
+
+const CONTROL_MODE_SET = new Set<ControlMode>(['Cardboard', 'Rubberband', 'IK', 'JointDrag']);
 
 const MASK_BLEND_MODE_SET = new Set([
   'normal',
@@ -98,7 +111,7 @@ const sanitizeJointMask = (raw: unknown, base: JointMask): JointMask => {
     src,
     visible: typeof mask.visible === 'boolean' ? mask.visible : Boolean(src),
     opacity: isFiniteNumber(mask.opacity) ? clamp(mask.opacity, 0, 1) : base.opacity,
-    scale: isFiniteNumber(mask.scale) ? clamp(mask.scale, 0.01, 20) : base.scale,
+    scale: isFiniteNumber(mask.scale) ? clamp(mask.scale, 0.01, 80) : base.scale,
     offsetX: isFiniteNumber(mask.offsetX) ? clamp(mask.offsetX, -5000, 5000) : base.offsetX,
     offsetY: isFiniteNumber(mask.offsetY) ? clamp(mask.offsetY, -5000, 5000) : base.offsetY,
     rotation: isFiniteNumber(mask.rotation) ? clamp(mask.rotation, -360, 360) : base.rotation,
@@ -366,7 +379,7 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
     src,
     visible: typeof mask.visible === 'boolean' ? mask.visible : Boolean(src),
     opacity: isFiniteNumber(mask.opacity) ? clamp(mask.opacity, 0, 1) : base.opacity,
-    scale: isFiniteNumber(mask.scale) ? clamp(mask.scale, 0.01, 20) : base.scale,
+    scale: isFiniteNumber(mask.scale) ? clamp(mask.scale, 0.01, 80) : base.scale,
     offsetX: isFiniteNumber(mask.offsetX) ? clamp(mask.offsetX, -5000, 5000) : base.offsetX,
     offsetY: isFiniteNumber(mask.offsetY) ? clamp(mask.offsetY, -5000, 5000) : base.offsetY,
     rotation: isFiniteNumber(mask.rotation) ? clamp(mask.rotation, -360, 360) : base.rotation,
@@ -392,8 +405,6 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
     relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
-
-const CONTROL_MODE_SET = new Set<ControlMode>(['Cardboard', 'Rubberband', 'IK', 'JointDrag']);
 
 export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
   const raw = rawJoints && typeof rawJoints === 'object' ? (rawJoints as Record<string, Partial<Joint>>) : {};
@@ -459,19 +470,36 @@ export const makeDefaultState = (): SkeletonState => {
     defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), fkFollowDeg };
   };
 
-  // Default FK follow: collar acts as the shoulder socket. Rotating the collar rotates neck/head and both arms.
-  // `fkFollowDeg` is a per-rotation-step clamp in degrees (positive = with-parent, negative = against-parent).
+  // Set all bones to rigid for manikin mode (Cardboard controlMode)
+  const isManikinMode = true; // Default to manikin mode
+  if (isManikinMode) {
+    // Apply rigid stretchMode to all connections for manikin mode
+    CONNECTIONS.forEach(conn => {
+      if (conn.type === 'bone') {
+        const key = canonicalConnKey(conn.from, conn.to);
+        defaultConnectionOverrides[key] = { 
+          ...(defaultConnectionOverrides[key] ?? {}), 
+          stretchMode: 'rigid' as const 
+        };
+      }
+    });
+  }
+
+  // Default FK follow: collar acts as shoulder socket. Rotating collar rotates neck/head and both arms.
+  // Simplified shoulder mechanics - direct connections for accordion compression
   const COLLAR_SOCKET_FOLLOW_DEG = 90;
   setFkFollowDeg('collar', 'neck_base', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('neck_base', 'neck_upper', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('neck_upper', 'head', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_clavicle', 'l_upper_arm', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_upper_arm', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_clavicle', 'l_bicep', COLLAR_SOCKET_FOLLOW_DEG); // Direct: left clavicle -> left bicep
+  setFkFollowDeg('l_bicep', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'r_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_clavicle', 'r_upper_arm', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_upper_arm', 'r_elbow', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_clavicle', 'r_bicep', COLLAR_SOCKET_FOLLOW_DEG); // Direct: right clavicle -> right bicep
+  setFkFollowDeg('r_bicep', 'r_elbow', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_elbow', 'l_wrist', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('r_elbow', 'r_wrist', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_wrist', 'l_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('r_wrist', 'r_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
   
   // Create default views (Front, Side, Back, 3/4)
@@ -508,6 +536,7 @@ export const makeDefaultState = (): SkeletonState => {
 
   return {
     joints,
+    activeModel: 'humanoid',
     mirroring: true,
     bendEnabled: false, // Default: no auto-bend (rigid)
     stretchEnabled: false, // Ensure stretching is disabled by default
@@ -1167,6 +1196,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
 
   const state: SkeletonState = {
 	    joints,
+	    activeModel: (raw as any).activeModel === 'slenderbit' ? 'slenderbit' : 'humanoid',
 	    mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
 	    bendEnabled: finalBendEnabled,
 	    stretchEnabled: finalStretchEnabled,

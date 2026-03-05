@@ -79,6 +79,7 @@ import { HelpTip } from './components/HelpTip';
 import { ProcgenWidget } from './components/ProcgenWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
+import { MaskToggle } from '@/components/MaskToggle';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import { ManikinConsole, ManikinGlobalPanel } from './components/ManikinConsole';
 import { CollapsibleSection } from './components/CollapsibleSection';
@@ -193,6 +194,7 @@ const POSE_PHYSICS_STABILIZE_JOINT_IDS = [
 // Keep sessions stateless by default: no localStorage restore/autosave.
 // Project saving/loading remains available via explicit .json import/export.
 const ENGINE_PERSISTENCE_ENABLED = false;
+const REFERENCE_MAX_SECONDS = 5;
 
 const defaultWireComplianceForRigidity = (rigidity: RigidityPreset): number => {
   if (rigidity === 'cardboard') return 0.00025;
@@ -538,6 +540,8 @@ export default function App() {
   const fgVideoRef = useRef<HTMLVideoElement | null>(null);
   const [bgVideoMeta, setBgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
   const [fgVideoMeta, setFgVideoMeta] = useState<ReferenceVideoMeta | null>(null);
+  const bgLongVideoWarnedSrcRef = useRef<string | null>(null);
+  const fgLongVideoWarnedSrcRef = useRef<string | null>(null);
   const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
@@ -802,16 +806,20 @@ export default function App() {
   }, [poseTracingEnabled]);
 
   const timelineFpsLive = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
+  const timelineSeconds = state.timeline.enabled ? timelineFrame / timelineFpsLive : 0;
+  const timelineSecondsClamped = Math.min(timelineSeconds, REFERENCE_MAX_SECONDS);
   const bgVideoDesiredTime =
     (state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence')
       ? state.scene.background.videoStart +
-        (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.background.videoRate : 0)
+        (state.timeline.enabled ? timelineSecondsClamped * state.scene.background.videoRate : 0)
       : 0;
   const fgVideoDesiredTime =
     (state.scene.foreground.mediaType === 'video' || state.scene.foreground.mediaType === 'sequence')
       ? state.scene.foreground.videoStart +
-        (state.timeline.enabled ? (timelineFrame / timelineFpsLive) * state.scene.foreground.videoRate : 0)
+        (state.timeline.enabled ? timelineSecondsClamped * state.scene.foreground.videoRate : 0)
       : 0;
+  const bgRefPlaying = Boolean(state.timeline.enabled && timelinePlaying && timelineSeconds < REFERENCE_MAX_SECONDS);
+  const fgRefPlaying = Boolean(state.timeline.enabled && timelinePlaying && timelineSeconds < REFERENCE_MAX_SECONDS);
   
   const [titleFont, setTitleFont] = useState('pixel-mono');
   const [titleScreenVisible, setTitleScreenVisible] = useState(true);
@@ -937,10 +945,43 @@ export default function App() {
   );
 
   const loadReferenceSequenceFromFile = useCallback(
-    async (file: File, fps: number): Promise<ReferenceSequenceData> => {
+    async (file: File, fps: number, opts: { maxFrames?: number } = {}): Promise<ReferenceSequenceData> => {
       return loadReferenceSequenceFromFileImpl(file, fps, {
         onWarning: (message) => addConsoleLog('warning', message),
+        maxFrames: opts.maxFrames,
       });
+    },
+    [addConsoleLog],
+  );
+
+  const handleBgVideoMeta = useCallback(
+    (meta: ReferenceVideoMeta) => {
+      setBgVideoMeta(meta);
+      const src = stateLiveRef.current.scene.background.src;
+      if (!src) return;
+      if (!(meta.duration > REFERENCE_MAX_SECONDS)) return;
+      if (bgLongVideoWarnedSrcRef.current === src) return;
+      bgLongVideoWarnedSrcRef.current = src;
+      addConsoleLog(
+        'warning',
+        `Background video is ${meta.duration.toFixed(2)}s; only first ${REFERENCE_MAX_SECONDS}s will be used for reference playback.`,
+      );
+    },
+    [addConsoleLog],
+  );
+
+  const handleFgVideoMeta = useCallback(
+    (meta: ReferenceVideoMeta) => {
+      setFgVideoMeta(meta);
+      const src = stateLiveRef.current.scene.foreground.src;
+      if (!src) return;
+      if (!(meta.duration > REFERENCE_MAX_SECONDS)) return;
+      if (fgLongVideoWarnedSrcRef.current === src) return;
+      fgLongVideoWarnedSrcRef.current = src;
+      addConsoleLog(
+        'warning',
+        `Foreground video is ${meta.duration.toFixed(2)}s; only first ${REFERENCE_MAX_SECONDS}s will be used for reference playback.`,
+      );
     },
     [addConsoleLog],
   );
@@ -6926,7 +6967,7 @@ export default function App() {
                 try {
                   addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for background...`);
                   const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
-                  const seq = await loadReferenceSequenceFromFile(file, fps);
+                  const seq = await loadReferenceSequenceFromFile(file, fps, { maxFrames: fps * REFERENCE_MAX_SECONDS });
                   referenceSequencesRef.current.set(seq.id, seq);
 
                   const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
@@ -6950,7 +6991,13 @@ export default function App() {
                       },
                     },
                   }));
-                  addConsoleLog('success', `Background sequence loaded (${seq.frames.length} frames).`);
+                  const details: string[] = [];
+                  if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
+                  if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
+                  addConsoleLog(
+                    'success',
+                    `Background sequence loaded (${seq.frames.length} frames${details.length ? `, ${details.join(', ')}` : ''}).`,
+                  );
                 } catch (err) {
                   const message = err instanceof Error ? err.message : 'Failed to load sequence';
                   addConsoleLog('error', `Background sequence failed: ${message}`);
@@ -7236,7 +7283,7 @@ export default function App() {
                 try {
                   addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for foreground...`);
                   const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
-                  const seq = await loadReferenceSequenceFromFile(file, fps);
+                  const seq = await loadReferenceSequenceFromFile(file, fps, { maxFrames: fps * REFERENCE_MAX_SECONDS });
                   referenceSequencesRef.current.set(seq.id, seq);
 
                   const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
@@ -7260,7 +7307,13 @@ export default function App() {
                       },
                     },
                   }));
-                  addConsoleLog('success', `Foreground sequence loaded (${seq.frames.length} frames).`);
+                  const details: string[] = [];
+                  if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
+                  if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
+                  addConsoleLog(
+                    'success',
+                    `Foreground sequence loaded (${seq.frames.length} frames${details.length ? `, ${details.join(', ')}` : ''}).`,
+                  );
                 } catch (err) {
                   const message = err instanceof Error ? err.message : 'Failed to load sequence';
                   addConsoleLog('error', `Foreground sequence failed: ${message}`);
@@ -10154,7 +10207,7 @@ export default function App() {
                         try {
                           addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for background...`);
                           const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
-                          const seq = await loadReferenceSequenceFromFile(file, fps);
+                          const seq = await loadReferenceSequenceFromFile(file, fps, { maxFrames: fps * REFERENCE_MAX_SECONDS });
                           referenceSequencesRef.current.set(seq.id, seq);
 
                           const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
@@ -10178,7 +10231,13 @@ export default function App() {
                               },
                             },
                           }));
-                          addConsoleLog('success', `Background sequence loaded (${seq.frames.length} frames).`);
+                          const details: string[] = [];
+                          if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
+                          if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
+                          addConsoleLog(
+                            'success',
+                            `Background sequence loaded (${seq.frames.length} frames${details.length ? `, ${details.join(', ')}` : ''}).`,
+                          );
                         } catch (err) {
                           const message = err instanceof Error ? err.message : 'Failed to load sequence';
                           addConsoleLog('error', `Background sequence failed: ${message}`);
@@ -10466,7 +10525,7 @@ export default function App() {
                                 try {
                                   addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for foreground...`);
                                   const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
-                                  const seq = await loadReferenceSequenceFromFile(file, fps);
+                                  const seq = await loadReferenceSequenceFromFile(file, fps, { maxFrames: fps * REFERENCE_MAX_SECONDS });
                                   referenceSequencesRef.current.set(seq.id, seq);
 
                                   const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
@@ -10490,7 +10549,13 @@ export default function App() {
                                       },
                                     },
                                   }));
-                                  addConsoleLog('success', `Foreground sequence loaded (${seq.frames.length} frames).`);
+                                  const details: string[] = [];
+                                  if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
+                                  if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
+                                  addConsoleLog(
+                                    'success',
+                                    `Foreground sequence loaded (${seq.frames.length} frames${details.length ? `, ${details.join(', ')}` : ''}).`,
+                                  );
                                 } catch (err) {
                                   const message = err instanceof Error ? err.message : 'Failed to load sequence';
                                   addConsoleLog('error', `Foreground sequence failed: ${message}`);
@@ -11599,26 +11664,28 @@ export default function App() {
                             transform: `scale(${1 / state.scene.background.scale})`,
                             transformOrigin: 'top left'
                           }}>
-                            {poseTracingEnabled ? (
-                              <SyncedReferenceSequenceCanvas
-                                sequence={referenceSequencesRef.current.get(state.scene.background.sequence.id) ?? null}
-                                desiredTime={bgVideoDesiredTime}
-                                playing={Boolean(state.timeline.enabled && timelinePlaying)}
-                                fitMode={state.scene.background.fitMode}
-                              />
-                            ) : state.scene.background.sequence.kind === 'gif' && state.scene.background.src ? (
-                              <img
-                                src={state.scene.background.src}
-                                style={{ width: '100%', height: '100%', objectFit: fitModeToObjectFit(state.scene.background.fitMode) }}
-                              />
-                            ) : (
-                              <SyncedReferenceSequenceCanvas
-                                sequence={referenceSequencesRef.current.get(state.scene.background.sequence.id) ?? null}
-                                desiredTime={0}
-                                playing={false}
-                                fitMode={state.scene.background.fitMode}
-                              />
-                            )}
+                            {(() => {
+                              const seq = referenceSequencesRef.current.get(state.scene.background.sequence.id) ?? null;
+                              if (seq) {
+                                return (
+                                  <SyncedReferenceSequenceCanvas
+                                    sequence={seq}
+                                    desiredTime={bgVideoDesiredTime}
+                                    playing={bgRefPlaying}
+                                    fitMode={state.scene.background.fitMode}
+                                  />
+                                );
+                              }
+                              if (state.scene.background.sequence.kind === 'gif' && state.scene.background.src) {
+                                return (
+                                  <img
+                                    src={state.scene.background.src}
+                                    style={{ width: '100%', height: '100%', objectFit: fitModeToObjectFit(state.scene.background.fitMode) }}
+                                  />
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                         </foreignObject>
                       )}
@@ -11637,54 +11704,23 @@ export default function App() {
                             transform: `scale(${1 / state.scene.background.scale})`,
                             transformOrigin: 'top left'
                           }}>
-                            {poseTracingEnabled ? (
-                              <SyncedReferenceVideo
-                                ref={bgVideoRef}
-                                src={state.scene.background.src}
-                                desiredTime={bgVideoDesiredTime}
-                                playing={Boolean(state.timeline.enabled && timelinePlaying)}
-                                playbackRate={state.scene.background.videoRate}
-                                objectFit={
-                                  state.scene.background.fitMode === 'cover'
-                                    ? 'cover'
-                                    : state.scene.background.fitMode === 'fill'
-                                      ? 'fill'
-                                      : state.scene.background.fitMode === 'none'
-                                        ? 'none'
-                                        : 'contain'
-                                }
-                                onMeta={setBgVideoMeta}
-                              />
-                            ) : (
-                              <video
-                                src={state.scene.background.src}
-                                muted
-                                loop
-                                autoPlay
-                                playsInline
-                                preload="auto"
-                                onLoadedMetadata={(e) => {
-                                  const v = e.currentTarget;
-                                  setBgVideoMeta({
-                                    duration: Number.isFinite(v.duration) ? v.duration : 0,
-                                    width: v.videoWidth || 0,
-                                    height: v.videoHeight || 0,
-                                  });
-                                }}
-                                style={{
-                                  width: '100%',
-                                  height: '100%',
-                                  objectFit:
-                                    state.scene.background.fitMode === 'cover'
-                                      ? 'cover'
-                                      : state.scene.background.fitMode === 'fill'
-                                        ? 'fill'
-                                        : state.scene.background.fitMode === 'none'
-                                          ? 'none'
-                                          : 'contain',
-                                }}
-                              />
-                            )}
+                            <SyncedReferenceVideo
+                              ref={bgVideoRef}
+                              src={state.scene.background.src}
+                              desiredTime={bgVideoDesiredTime}
+                              playing={bgRefPlaying}
+                              playbackRate={state.scene.background.videoRate}
+                              objectFit={
+                                state.scene.background.fitMode === 'cover'
+                                  ? 'cover'
+                                  : state.scene.background.fitMode === 'fill'
+                                    ? 'fill'
+                                    : state.scene.background.fitMode === 'none'
+                                      ? 'none'
+                                      : 'contain'
+                              }
+                              onMeta={handleBgVideoMeta}
+                            />
                           </div>
                         </foreignObject>
                       )}
@@ -11824,26 +11860,28 @@ export default function App() {
                                 style={{ pointerEvents: 'none' }}
                               >
                                 <div style={{ width: '100%', height: '100%' }}>
-                                  {poseTracingEnabled ? (
-                                    <SyncedReferenceSequenceCanvas
-                                      sequence={referenceSequencesRef.current.get(state.scene.foreground.sequence.id) ?? null}
-                                      desiredTime={fgVideoDesiredTime}
-                                      playing={Boolean(state.timeline.enabled && timelinePlaying)}
-                                      fitMode={state.scene.foreground.fitMode}
-                                    />
-                                  ) : state.scene.foreground.sequence.kind === 'gif' && state.scene.foreground.src ? (
-                                    <img
-                                      src={state.scene.foreground.src}
-                                      style={{ width: '100%', height: '100%', objectFit: fitModeToObjectFit(state.scene.foreground.fitMode) }}
-                                    />
-                                  ) : (
-                                    <SyncedReferenceSequenceCanvas
-                                      sequence={referenceSequencesRef.current.get(state.scene.foreground.sequence.id) ?? null}
-                                      desiredTime={0}
-                                      playing={false}
-                                      fitMode={state.scene.foreground.fitMode}
-                                    />
-                                  )}
+                                  {(() => {
+                                    const seq = referenceSequencesRef.current.get(state.scene.foreground.sequence.id) ?? null;
+                                    if (seq) {
+                                      return (
+                                        <SyncedReferenceSequenceCanvas
+                                          sequence={seq}
+                                          desiredTime={fgVideoDesiredTime}
+                                          playing={fgRefPlaying}
+                                          fitMode={state.scene.foreground.fitMode}
+                                        />
+                                      );
+                                    }
+                                    if (state.scene.foreground.sequence.kind === 'gif' && state.scene.foreground.src) {
+                                      return (
+                                        <img
+                                          src={state.scene.foreground.src}
+                                          style={{ width: '100%', height: '100%', objectFit: fitModeToObjectFit(state.scene.foreground.fitMode) }}
+                                        />
+                                      );
+                                    }
+                                    return null;
+                                  })()}
                                 </div>
                               </foreignObject>
                             )}
@@ -11857,54 +11895,23 @@ export default function App() {
                                 style={{ pointerEvents: 'none' }}
                               >
                                 <div style={{ width: '100%', height: '100%' }}>
-                                  {poseTracingEnabled ? (
-                                    <SyncedReferenceVideo
-                                      ref={fgVideoRef}
-                                      src={state.scene.foreground.src}
-                                      desiredTime={fgVideoDesiredTime}
-                                      playing={Boolean(state.timeline.enabled && timelinePlaying)}
-                                      playbackRate={state.scene.foreground.videoRate}
-                                      objectFit={
-                                        state.scene.foreground.fitMode === 'cover'
-                                          ? 'cover'
-                                          : state.scene.foreground.fitMode === 'fill'
-                                            ? 'fill'
-                                            : state.scene.foreground.fitMode === 'none'
-                                              ? 'none'
-                                              : 'contain'
-                                      }
-                                      onMeta={setFgVideoMeta}
-                                    />
-                                  ) : (
-                                    <video
-                                      src={state.scene.foreground.src}
-                                      muted
-                                      loop
-                                      autoPlay
-                                      playsInline
-                                      preload="auto"
-                                      onLoadedMetadata={(e) => {
-                                        const v = e.currentTarget;
-                                        setFgVideoMeta({
-                                          duration: Number.isFinite(v.duration) ? v.duration : 0,
-                                          width: v.videoWidth || 0,
-                                          height: v.videoHeight || 0,
-                                        });
-                                      }}
-                                      style={{
-                                        width: '100%',
-                                        height: '100%',
-                                        objectFit:
-                                          state.scene.foreground.fitMode === 'cover'
-                                            ? 'cover'
-                                            : state.scene.foreground.fitMode === 'fill'
-                                              ? 'fill'
-                                              : state.scene.foreground.fitMode === 'none'
-                                                ? 'none'
-                                                : 'contain',
-                                      }}
-                                    />
-                                  )}
+                                  <SyncedReferenceVideo
+                                    ref={fgVideoRef}
+                                    src={state.scene.foreground.src}
+                                    desiredTime={fgVideoDesiredTime}
+                                    playing={fgRefPlaying}
+                                    playbackRate={state.scene.foreground.videoRate}
+                                    objectFit={
+                                      state.scene.foreground.fitMode === 'cover'
+                                        ? 'cover'
+                                        : state.scene.foreground.fitMode === 'fill'
+                                          ? 'fill'
+                                          : state.scene.foreground.fitMode === 'none'
+                                            ? 'none'
+                                            : 'contain'
+                                    }
+                                    onMeta={handleFgVideoMeta}
+                                  />
                                 </div>
                               </foreignObject>
                             )}
@@ -12588,6 +12595,14 @@ export default function App() {
       setTransitionWarningOpen(false);
       setTransitionWarningIssues([]);
     }}
+  />
+  <MaskToggle
+    state={state}
+    selectedJointId={selectedJointId}
+    maskEditArmed={maskEditArmed}
+    setMaskEditArmed={setMaskEditArmed}
+    uploadJointMaskFile={uploadJointMaskFile}
+    setStateWithHistory={setStateWithHistory}
   />
 </div>
 </TooltipProvider>

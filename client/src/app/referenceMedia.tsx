@@ -11,6 +11,12 @@ export type ReferenceSequenceData = {
   width: number;
   height: number;
   fps: number;
+  meta?: {
+    sourceFrameCount: number;
+    maxFrames: number;
+    truncatedCount: number;
+    dedupedCount: number;
+  };
 };
 
 export const fitModeToObjectFit = (fitMode: string): React.CSSProperties['objectFit'] => {
@@ -218,4 +224,3 @@ export const SyncedReferenceSequenceCanvas = ({
 
   return <canvas ref={canvasRef} style={{ width: '100%', height: '100%' }} />;
 };
-

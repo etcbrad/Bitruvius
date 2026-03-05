@@ -417,6 +417,15 @@ export type BoneStyle = {
 
 export type ArmViewMode = '2D' | '3D' | 'hybrid';
 
+export type RigModel = 'slenderbit' | 'humanoid';
+
+export type ModelDefinition = {
+  id: RigModel;
+  name: string;
+  description?: string;
+  joints: Record<string, Joint>;
+};
+
 export type SkeletonState = {
   joints: Record<string, Joint>;
   mirroring: boolean;
@@ -431,30 +440,11 @@ export type SkeletonState = {
     dynamic: boolean;
     restEdges?: Record<string, number>;
   };
-  /**
-   * Optional 0..1 macro slider for blending between rigid and fluid presets.
-   * Used by `engine/physics-config.ts`.
-   */
-  physicsRigidity?: number;
-  /**
-   * "Roots" are hard world pins for joints. They are planted via triple-click
-   * in the editor, and used by the physics solver as zero-compliance pin constraints.
-   */
+  physicsRigidity: number; // 0..1 macro slider (0=rigid)
+  // Default: FK-first with a single planted foot for stability.
   activeRoots: string[];
-  /**
-   * Deactivated joints remain perfectly straight and don't bend.
-   * Used to effectively merge joints into single straight bones.
-   */
   deactivatedJoints: Set<string>;
-  /**
-   * When no joint roots are active, the engine uses a "Ground Root" that anchors
-   * the center of gravity (sternum-heavy) to this world-space target.
-   */
   groundRootTarget: Point;
-  /**
-   * "Foot plunger" grounding: feet can latch to the ground and cleanly detach
-   * with hysteresis (toe + ankle contact points).
-   */
   footPlungerEnabled: boolean;
   showJoints: boolean;
   jointsOverMasks: boolean;
@@ -462,7 +452,7 @@ export type SkeletonState = {
   armViewMode: ArmViewMode;
   controlMode: ControlMode;
   rigidity: RigidityPreset;
-  snappiness: number;
+  snappiness: number; // 0..1
   viewScale: number;
   viewOffset: Point;
   procgen: ProcgenState;
@@ -470,16 +460,18 @@ export type SkeletonState = {
   scene: SceneState;
   assets: Record<string, CutoutAsset>;
   cutoutSlots: Record<string, CutoutSlot>;
-  cutoutRig?: {
+  cutoutRig: {
     /**
-     * When enabled, the waist cutout reuses the torso's base rotation so the
-     * upper/lower body pieces rotate together around the seam.
+     * Whether the waist cutout should be linked to the torso cutout's transform.
+     * When true, moving the torso also moves the waist cutout.
      */
     linkWaistToTorso: boolean;
   };
   views: ViewPreset[];
   activeViewId: string;
   boneStyle: BoneStyle;
+  // Model system
+  activeModel: RigModel;
   hipLock: {
     enabled: boolean;
     extendCompressEnabled: boolean;

@@ -404,7 +404,7 @@ export function JointMaskWidget({
                   ...prev,
                   boneStyle: {
                     ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }),
-                    lightness: clamp(v, -1, 1),
+                    lightness: clamp(v, -0.5, 0.5),
                   },
                 }));
               }}
@@ -597,7 +597,7 @@ export function JointMaskWidget({
               </div>
               <Slider
                 min={0.01}
-                max={50}
+                max={200}
                 step={0.01}
                 value={[getMaskProp('scale', 1)]}
                 onValueChange={([val]) =>
