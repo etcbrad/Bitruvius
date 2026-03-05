@@ -7,6 +7,7 @@ import { AngleDial } from './AngleDial';
 import { INITIAL_JOINTS } from '../engine/model';
 import { applyPoseSnapshotToJoints, capturePoseSnapshot, interpolatePoseSnapshots } from '../engine/timeline';
 import { processMaskImageFileToDataUrl } from '../app/maskImageProcessing';
+import { CollapsibleSection } from './CollapsibleSection';
 
 const MANIKIN_SLOT_ORDER = [
   'head',
@@ -348,10 +349,13 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
         <div className="text-[10px] text-[#444]">FK</div>
       </div>
 
-      <div className="mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Wheel</div>
-          <div className="flex items-center gap-1">
+      <div className="space-y-3">
+        <CollapsibleSection
+          title="Wheel"
+          storageKey="btv:manikin:section:wheel"
+          defaultOpen
+          headerRight={
+            <div className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => selectAdjacentSlot(-1)}
@@ -368,8 +372,9 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
             >
               <ChevronRight size={14} />
             </button>
-          </div>
-        </div>
+            </div>
+          }
+        >
 
         {!selectedSlot ? (
           <div className="mt-2 text-[10px] text-[#444]">Select a piece.</div>
@@ -536,108 +541,115 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
             </div>
           </>
         )}
-      </div>
+        </CollapsibleSection>
 
-      <div className="mb-3 p-2 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
-        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Clavicle Clamp</div>
-        <button
-          type="button"
-          onClick={() =>
-            setStateWithHistory('toggle_clavicle_constraint', (prev) => ({
-              ...prev,
-              clavicleConstraintEnabled: !prev.clavicleConstraintEnabled,
-            }))
-          }
-          className={`px-2 py-1 rounded text-[10px] font-bold ${
-            state.clavicleConstraintEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-white'
-          }`}
-          title="Limit clavicle joint rotation range"
-        >
-          {state.clavicleConstraintEnabled ? 'On' : 'Off'}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-1 max-h-[240px] overflow-y-auto pr-1">
-        {MANIKIN_SLOT_ORDER.map((slotId) => {
-          const slot = slotsById[slotId];
-          const selected = selectedSlotId === slotId;
-          const hasMask = Boolean(slot?.assetId);
-          const waist = slot ? isWaistSlot(slot) : slotId === 'waist';
-          const connKey = slot ? canonicalConnKey(slot.attachment.fromJointId, slot.attachment.toJointId) : null;
-          const followDegRaw = connKey ? state.connectionOverrides[connKey]?.fkFollowDeg : undefined;
-          const legacyFkMode = connKey ? state.connectionOverrides[connKey]?.fkMode : undefined;
-          const followDeg =
-            typeof followDegRaw === 'number' && Number.isFinite(followDegRaw)
-              ? followDegRaw
-              : legacyFkMode === 'stretch'
-                ? 1
-                : legacyFkMode === 'bend'
-                  ? -1
-                  : 0;
-          const fkSign = Math.sign(followDeg);
-
-          return (
-            <div
-              key={slotId}
-              className={`flex items-center justify-between gap-2 p-2 rounded-md border transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-white/50 ${
-                selected ? 'bg-white/10 border-white/10' : 'bg-white/5 border-white/5 hover:bg-white/10'
-              }`}
-              onClick={() => selectSlot(slotId)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  selectSlot(slotId);
-                }
-              }}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <div className={`w-1.5 h-1.5 rounded-full ${hasMask ? 'bg-[#00ff88]' : 'bg-[#444]'}`} />
-                <div className="text-xs font-medium truncate">{slot?.name ?? slotId}</div>
-              </div>
-
-              {!waist && (
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      selectSlot(slotId);
-                      setFkModeForSlot(slotId, 'stretch');
-                    }}
-                    className={`px-2 py-1 rounded text-[10px] font-bold ${
-                      fkSign > 0 ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-white'
-                    }`}
-                    title="Stretch (follow parent +deg)"
-                  >
-                    S
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      selectSlot(slotId);
-                      setFkModeForSlot(slotId, 'bend');
-                    }}
-                    className={`px-2 py-1 rounded text-[10px] font-bold ${
-                      fkSign < 0 ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-white'
-                    }`}
-                    title="Bend (follow parent -deg)"
-                  >
-                    B
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-3 space-y-3">
-        <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+        <CollapsibleSection title="Clavicle Clamp" storageKey="btv:manikin:section:clavicle" defaultOpen>
           <div className="flex items-center justify-between gap-3">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Poses</div>
+            <div className="text-[10px] text-[#bbb]">
+              Limit clavicle joint rotation range to keep shoulders readable.
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setStateWithHistory('toggle_clavicle_constraint', (prev) => ({
+                  ...prev,
+                  clavicleConstraintEnabled: !prev.clavicleConstraintEnabled,
+                }))
+              }
+              className={`px-2 py-1 rounded text-[10px] font-bold ${
+                state.clavicleConstraintEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-white'
+              }`}
+              title="Limit clavicle joint rotation range"
+            >
+              {state.clavicleConstraintEnabled ? 'On' : 'Off'}
+            </button>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Pieces" storageKey="btv:manikin:section:pieces" defaultOpen>
+          <div className="grid grid-cols-1 gap-1 max-h-[240px] overflow-y-auto pr-1">
+            {MANIKIN_SLOT_ORDER.map((slotId) => {
+              const slot = slotsById[slotId];
+              const selected = selectedSlotId === slotId;
+              const hasMask = Boolean(slot?.assetId);
+              const waist = slot ? isWaistSlot(slot) : slotId === 'waist';
+              const connKey = slot ? canonicalConnKey(slot.attachment.fromJointId, slot.attachment.toJointId) : null;
+              const followDegRaw = connKey ? state.connectionOverrides[connKey]?.fkFollowDeg : undefined;
+              const legacyFkMode = connKey ? state.connectionOverrides[connKey]?.fkMode : undefined;
+              const followDeg =
+                typeof followDegRaw === 'number' && Number.isFinite(followDegRaw)
+                  ? followDegRaw
+                  : legacyFkMode === 'stretch'
+                    ? 1
+                    : legacyFkMode === 'bend'
+                      ? -1
+                      : 0;
+              const fkSign = Math.sign(followDeg);
+
+              return (
+                <div
+                  key={slotId}
+                  className={`flex items-center justify-between gap-2 p-2 rounded-md border transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-white/50 ${
+                    selected ? 'bg-white/10 border-white/10' : 'bg-white/5 border-white/5 hover:bg-white/10'
+                  }`}
+                  onClick={() => selectSlot(slotId)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      selectSlot(slotId);
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className={`w-1.5 h-1.5 rounded-full ${hasMask ? 'bg-[#00ff88]' : 'bg-[#444]'}`} />
+                    <div className="text-xs font-medium truncate">{slot?.name ?? slotId}</div>
+                  </div>
+
+                  {!waist && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectSlot(slotId);
+                          setFkModeForSlot(slotId, 'stretch');
+                        }}
+                        className={`px-2 py-1 rounded text-[10px] font-bold ${
+                          fkSign > 0 ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-white'
+                        }`}
+                        title="Stretch (follow parent +deg)"
+                      >
+                        S
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectSlot(slotId);
+                          setFkModeForSlot(slotId, 'bend');
+                        }}
+                        className={`px-2 py-1 rounded text-[10px] font-bold ${
+                          fkSign < 0 ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-white'
+                        }`}
+                        title="Bend (follow parent -deg)"
+                      >
+                        B
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Poses"
+          storageKey="btv:manikin:section:poses"
+          defaultOpen
+          headerRight={
             <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
               <input
                 type="checkbox"
@@ -654,8 +666,8 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
               />
               Pose-to-Pose
             </label>
-          </div>
-
+          }
+        >
           <div className="mt-2 grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -786,11 +798,13 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
               </button>
             </div>
           )}
-        </div>
+        </CollapsibleSection>
 
-        <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Selector</div>
+        <CollapsibleSection
+          title="Details"
+          storageKey="btv:manikin:section:details"
+          defaultOpen
+          headerRight={
             <div className="flex bg-[#222] rounded-md p-0.5">
               {(['mask', 'bone'] as const).map((t) => (
                 <button
@@ -805,7 +819,8 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
                 </button>
               ))}
             </div>
-          </div>
+          }
+        >
 
           <div className="mt-3">
             <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] mb-1">Piece</div>
@@ -1040,7 +1055,7 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
               </label>
             </div>
           )}
-        </div>
+        </CollapsibleSection>
       </div>
     </div>
   );

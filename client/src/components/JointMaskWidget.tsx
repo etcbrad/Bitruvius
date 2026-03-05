@@ -169,6 +169,15 @@ export function JointMaskWidget({
   const headInputRef = useRef<HTMLInputElement>(null);
   const jointInputRef = useRef<HTMLInputElement>(null);
 
+  // Universal mask selection - works for both joint and head masks
+  const currentMaskTarget = activeTab === 'head' ? 'head' : maskJointId;
+  const currentMask = activeTab === 'head' ? state.scene.headMask : state.scene.jointMasks[maskJointId];
+  const currentJoint = activeTab === 'head' ? null : state.joints[maskJointId];
+
+  // Universal helper to safely access mask properties for both head and joint masks
+  const getMaskProp = <K extends keyof JointMask>(key: K, defaultValue: JointMask[K]) => 
+    currentMask?.[key] ?? defaultValue;
+
   const jointIds = useMemo(() => Object.keys(state.joints), [state.joints]);
   const selectedJoint = state.joints[maskJointId];
   
@@ -220,6 +229,77 @@ export function JointMaskWidget({
         ))}
       </div>
 
+      {/* Universal joint/piece selection - works for both tabs */}
+      {activeTab === 'joint' && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Piece</div>
+            <Popover open={jointPickerOpen} onOpenChange={setJointPickerOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="flex-1 flex items-center justify-between gap-2 px-2 py-1.5 bg-[#0a0a0a] border border-white/10 rounded-lg hover:bg-white/5 transition-colors"
+                  title="Select joint"
+                >
+                  <CompactThumb
+                    label={currentJoint?.label || maskJointId}
+                    src={currentMask?.src}
+                    visible={currentMask?.visible}
+                  />
+                  <div className="text-[10px] text-[#666] shrink-0">▼</div>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-[300px] p-2 bg-[#121212] border border-[#222]">
+                <div className="max-h-[320px] overflow-auto space-y-1 pr-1">
+                  {jointIds.map((id) => {
+                    const m = state.scene.jointMasks[id];
+                    const label = state.joints[id]?.label || id;
+                    const active = id === maskJointId;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => {
+                          setMaskJointId(id);
+                          setJointPickerOpen(false);
+                        }}
+                        className={`w-full text-left p-2 rounded-md border transition-colors ${
+                          active ? 'bg-white/5 border-white/20' : 'bg-transparent border-transparent hover:bg-white/5'
+                        }`}
+                      >
+                        <CompactThumb label={label} src={m?.src} visible={m?.visible} />
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (currentJoint) {
+                        jointInputRef.current?.click();
+                        setJointPickerOpen(false);
+                      }
+                    }}
+                    disabled={!currentJoint}
+                    className="flex-1 py-1.5 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333] disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Upload to Selected
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJointPickerOpen(false)}
+                    className="px-2 py-1.5 bg-[#333] hover:bg-[#444] rounded text-[10px] font-bold uppercase tracking-widest transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </PopoverContent>
+            </Popover>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'head' && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
@@ -257,7 +337,7 @@ export function JointMaskWidget({
                   }))
                 }
                 className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
-                disabled={!state.scene.headMask.src}
+                disabled={!getHeadMaskProp('src', null)}
               >
                 Clear
               </button>
@@ -276,6 +356,141 @@ export function JointMaskWidget({
               await uploadMaskFile(file);
             }}
           />
+
+          {/* Mask controls for continuity */}
+          {getMaskProp('src', null) && (
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Opacity</span>
+                <span>{Math.round(clamp(getMaskProp('opacity', 1), 0, 1) * 100)}%</span>
+              </div>
+              <Slider
+                min={0}
+                max={1}
+                step={0.01}
+                value={[getMaskProp('opacity', 1)]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('head_mask_opacity', (prev) => ({
+                    ...prev,
+                    scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), opacity: val } },
+                  }))
+                }
+              />
+
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Scale</span>
+                <span>{getMaskProp('scale', 1).toFixed(2)}×</span>
+              </div>
+              <Slider
+                min={0.01}
+                max={20}
+                step={0.01}
+                value={[getMaskProp('scale', 1)]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('head_mask_scale', (prev) => ({
+                    ...prev,
+                    scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), scale: val } },
+                  }))
+                }
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[9px] text-[#666]">
+                    <span>Stretch X</span>
+                    <span>{(getMaskProp('stretchX', 1) ?? 1).toFixed(2)}×</span>
+                  </div>
+                  <Slider
+                    min={0.1}
+                    max={3}
+                    step={0.01}
+                    value={[getMaskProp('stretchX', 1) ?? 1]}
+                    onValueChange={([val]) =>
+                      setStateWithHistory('head_mask_stretch_x', (prev) => ({
+                        ...prev,
+                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), stretchX: val } },
+                      }))
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[9px] text-[#666]">
+                    <span>Stretch Y</span>
+                    <span>{(getMaskProp('stretchY', 1) ?? 1).toFixed(2)}×</span>
+                  </div>
+                  <Slider
+                    min={0.1}
+                    max={3}
+                    step={0.01}
+                    value={[getMaskProp('stretchY', 1) ?? 1]}
+                    onValueChange={([val]) =>
+                      setStateWithHistory('head_mask_stretch_y', (prev) => ({
+                        ...prev,
+                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), stretchY: val } },
+                      }))
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-[10px]">
+                  <span>Rotation</span>
+                  <span>{(getMaskProp('rotation', 0) ?? 0).toFixed(0)}°</span>
+                </div>
+                <RotationWheelControl
+                  value={getMaskProp('rotation', 0) ?? 0}
+                  min={-360}
+                  max={360}
+                  step={1}
+                  onChange={(val) =>
+                    setStateWithHistory('head_mask_rotation', (prev) => ({
+                      ...prev,
+                      scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), rotation: val } },
+                    }))
+                  }
+                  isDisabled={!getMaskProp('src', null)}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-[#666]">Offset X</label>
+                  <input
+                    type="number"
+                    value={getMaskProp('offsetX', 0) ?? 0}
+                    onChange={(e) =>
+                      setStateWithHistory('head_mask_offset_x', (prev) => ({
+                        ...prev,
+                        scene: {
+                          ...prev.scene,
+                          headMask: { ...(prev.scene.headMask || {}), offsetX: parseFloat(e.target.value) || 0 },
+                        },
+                      }))
+                    }
+                    className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-[#666]">Offset Y</label>
+                  <input
+                    type="number"
+                    value={getMaskProp('offsetY', 0) ?? 0}
+                    onChange={(e) =>
+                      setStateWithHistory('head_mask_offset_y', (prev) => ({
+                        ...prev,
+                        scene: {
+                          ...prev.scene,
+                          headMask: { ...(prev.scene.headMask || {}), offsetY: parseFloat(e.target.value) || 0 },
+                        },
+                      }))
+                    }
+                    className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-[96px_1fr] gap-3 items-start">
             <div className="space-y-2">
@@ -997,83 +1212,22 @@ export function JointMaskWidget({
             }}
           />
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Piece</div>
-              <Popover open={jointPickerOpen} onOpenChange={setJointPickerOpen}>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className="flex-1 flex items-center justify-between gap-2 px-2 py-1.5 bg-[#0a0a0a] border border-white/10 rounded-lg hover:bg-white/5 transition-colors"
-                    title="Select joint"
-                  >
-                    <CompactThumb
-                      label={selectedJoint?.label || maskJointId}
-                      src={jointMask?.src}
-                      visible={jointMask?.visible}
-                    />
-                    <div className="text-[10px] text-[#666] shrink-0">▼</div>
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="w-[300px] p-2 bg-[#121212] border border-[#222]">
-                  <div className="max-h-[320px] overflow-auto space-y-1 pr-1">
-                    {jointIds.map((id) => {
-                      const m = state.scene.jointMasks[id];
-                      const label = state.joints[id]?.label || id;
-                      const active = id === maskJointId;
-                      return (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => {
-                            setMaskJointId(id);
-                            setJointPickerOpen(false);
-                          }}
-                          className={`w-full text-left p-2 rounded-md border transition-colors ${
-                            active ? 'bg-white/5 border-white/20' : 'bg-transparent border-transparent hover:bg-white/5'
-                          }`}
-                        >
-                          <CompactThumb label={label} src={m?.src} visible={m?.visible} />
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (selectedJoint) {
-                          jointInputRef.current?.click();
-                          setJointPickerOpen(false);
-                        }
-                      }}
-                      disabled={!selectedJoint}
-                      className="flex-1 py-1.5 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333] disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Upload to Selected
-                    </button>
-                  </div>
-                </PopoverContent>
-              </Popover>
-            </div>
-          </div>
-
-          {!selectedJoint || !jointMask ? (
+          {!currentJoint || !currentMask ? (
             <div className="text-[10px] text-[#444]">Select a joint to edit its mask.</div>
           ) : (
             <div className="space-y-3 pt-1">
               <div className="flex items-center justify-between">
                 <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">
-                  {selectedJoint.label || maskJointId}
+                  {currentJoint?.label || maskJointId}
                 </div>
                 <div className="flex gap-2 items-center">
                   <label className="flex items-center gap-2 text-[10px] select-none">
                     <input
                       type="checkbox"
-                      checked={jointMask.visible}
+                      checked={currentMask?.visible}
                       onChange={(e) => setJointMask({ visible: e.target.checked })}
                       className="rounded"
-                      disabled={!jointMask.src}
+                      disabled={!currentMask?.src}
                     />
                     Visible
                   </label>

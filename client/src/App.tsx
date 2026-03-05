@@ -80,6 +80,7 @@ import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import { ManikinConsole } from './components/ManikinConsole';
+import { CollapsibleSection } from './components/CollapsibleSection';
 import type { TransitionIssue } from '@/lib/transitionIssues';
 import {
   BACKGROUND_COLOR_KEY,
@@ -113,6 +114,7 @@ import {
 } from './app/referenceMedia';
 import {
   isWidgetId,
+  WIDGET_GLOBAL_ORDER,
   WIDGETS,
   WIDGET_TAB_ORDER,
   type FloatingWidget,
@@ -514,6 +516,22 @@ export default function App() {
   const referenceSequencesRef = useRef<Map<string, ReferenceSequenceData>>(new Map());
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
+  const [manikinSidebarTab, setManikinSidebarTab] = useState<'manikin' | 'global'>(() => {
+    if (!ENGINE_PERSISTENCE_ENABLED) return 'manikin';
+    try {
+      return localStorage.getItem('btv:manikin:sidebarTab') === 'global' ? 'global' : 'manikin';
+    } catch {
+      return 'manikin';
+    }
+  });
+  useEffect(() => {
+    if (!ENGINE_PERSISTENCE_ENABLED) return;
+    try {
+      localStorage.setItem('btv:manikin:sidebarTab', manikinSidebarTab);
+    } catch {
+      // no-op
+    }
+  }, [manikinSidebarTab]);
   const sidebarWidgetDockRef = useRef<HTMLDivElement | null>(null);
   const [widgetDockMinimized, setWidgetDockMinimized] = useState(false);
   const [widgetDockHeightPx, setWidgetDockHeightPx] = useState(220);
@@ -6340,6 +6358,31 @@ export default function App() {
 	              )}
             </div>
 
+            {manikinMode && (
+              <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
+                {(
+                  [
+                    { id: 'manikin' as const, label: 'Manikin' },
+                    { id: 'global' as const, label: 'Global' },
+                  ] as const
+                ).map((tab) => {
+                  const active = manikinSidebarTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setManikinSidebarTab(tab.id)}
+                      className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                        active ? 'bg-white text-black' : 'text-[#666] hover:text-white hover:bg-white/5'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {!manikinMode && (
               <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
                 {(
@@ -6371,23 +6414,27 @@ export default function App() {
           {manikinMode ? (
             <div className="flex-1 min-h-0 flex flex-col px-6 pb-6">
               <div className="flex-1 min-h-0 overflow-y-auto mt-4">
-                <ManikinConsole
-                  state={state}
-                  setStateNoHistory={setStateNoHistory}
-                  setStateWithHistory={setStateWithHistory}
-                  beginHistoryAction={beginHistoryAction}
-                  commitHistoryAction={commitHistoryAction}
-                  setSelectedJointId={setSelectedJointId}
-                  setSelectedConnectionKey={setSelectedConnectionKey}
-                  setMaskJointId={setMaskJointId}
-                  setManikinJointAngleDeg={setManikinJointAngleDeg}
-                  poseSnapshots={poseSnapshots}
-                  selectedPoseIndex={manikinPoseSelectedIndex}
-                  setSelectedPoseIndex={setManikinPoseSelectedIndex}
-                  onAddPose={addPoseSnapshot}
-                  onUpdatePose={updatePoseSnapshotAtIndex}
-                  onApplyPose={applyPoseSnapshotAtIndex}
-                />
+                {manikinSidebarTab === 'manikin' ? (
+                  <ManikinConsole
+                    state={state}
+                    setStateNoHistory={setStateNoHistory}
+                    setStateWithHistory={setStateWithHistory}
+                    beginHistoryAction={beginHistoryAction}
+                    commitHistoryAction={commitHistoryAction}
+                    setSelectedJointId={setSelectedJointId}
+                    setSelectedConnectionKey={setSelectedConnectionKey}
+                    setMaskJointId={setMaskJointId}
+                    setManikinJointAngleDeg={setManikinJointAngleDeg}
+                    poseSnapshots={poseSnapshots}
+                    selectedPoseIndex={manikinPoseSelectedIndex}
+                    setSelectedPoseIndex={setManikinPoseSelectedIndex}
+                    onAddPose={addPoseSnapshot}
+                    onUpdatePose={updatePoseSnapshotAtIndex}
+                    onApplyPose={applyPoseSnapshotAtIndex}
+                  />
+                ) : (
+                  <ManikinGlobalPanel />
+                )}
               </div>
             </div>
           ) : (
