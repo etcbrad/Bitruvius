@@ -196,7 +196,7 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 - Build/test: `npm run check` + `npm test` pass. Playwright still fails to launch Chromium with `bootstrap_check_in ... Permission denied (1100)` in this environment.
 
 2026-03-04
-- IK↔FK (Manikin) handshake: toggling Manikin now restores the prior digital mode (controlMode/roots/feel) and remembers Manikin’s Rigidity selection as the Paper/3D proxy (`client/src/App.tsx`).
-- Added a ~1.6s “pose relief” transition after drops/mode switches: blends wire rest lengths toward the current pose and (for non-root drags) pins the dropped joint so it lands exactly with no post-drop swimming (`client/src/App.tsx`, `client/src/engine/physics/posePhysics.ts`).
+- IK↔FK (Manikin) handshake: toggling Manikin now restores the prior digital mode (controlMode/roots/feel) and remembers Manikin's Rigidity selection as the Paper/3D proxy (`client/src/App.tsx`).
+- Added a ~1.6s "pose relief" transition after drops/mode switches: blends wire rest lengths toward the current pose and (for non-root drags) pins the dropped joint so it lands exactly with no post-drop swimming (`client/src/App.tsx`, `client/src/engine/physics/posePhysics.ts`).
 - Checks: `npm run check` + `npm test` pass.
 - Playwright smoke: `output/web-game/ik-fk-relief-2026-03-05/shot-0.png`, `output/web-game/ik-fk-relief-2026-03-05/state-0.json` (dev server needed escalated run; sandbox `npm run dev` hit `tsx` IPC pipe EPERM).

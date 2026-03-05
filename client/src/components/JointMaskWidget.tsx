@@ -152,6 +152,10 @@ export function JointMaskWidget({
 
   const jointIds = useMemo(() => Object.keys(state.joints), [state.joints]);
   const selectedJoint = state.joints[maskJointId];
+  
+  // Helper to safely access headMask properties
+  const getHeadMaskProp = <K extends keyof JointMask>(key: K, defaultValue: JointMask[K]) => 
+    state.scene.headMask?.[key] ?? defaultValue;
   const jointMask: JointMask | undefined = state.scene.jointMasks[maskJointId];
   const canPlace = Boolean(jointMask?.src && jointMask.visible);
   const jointMaskOpacity = Number.isFinite(jointMask?.opacity) ? (jointMask!.opacity as number) : 1;
@@ -272,7 +276,7 @@ export function JointMaskWidget({
               <label className="flex items-center gap-2 text-[10px] select-none">
                 <input
                   type="checkbox"
-                  checked={state.scene.headMask.visible}
+                  checked={getHeadMaskProp('visible', false)}
                   onChange={(e) =>
                     setStateWithHistory('head_mask_visible', (prev) => ({
                       ...prev,
@@ -280,28 +284,28 @@ export function JointMaskWidget({
                     }))
                   }
                   className="rounded"
-                  disabled={!state.scene.headMask.src}
+                  disabled={!getHeadMaskProp('src', null)}
                 />
                 Visible
               </label>
             </div>
 
-            {state.scene.headMask.src ? (
+            {getHeadMaskProp('src', null) ? (
               <div className="space-y-3">
                 <div className="space-y-2">
                   <div className="flex justify-between text-[10px]">
                     <span className="text-[#666]">Opacity</span>
-                    <span>{Math.round(clamp(state.scene.headMask.opacity, 0, 1) * 100)}%</span>
+                    <span>{Math.round(clamp(getHeadMaskProp('opacity', 1), 0, 1) * 100)}%</span>
                   </div>
                   <Slider
                     min={0}
                     max={1}
                     step={0.01}
-                    value={[state.scene.headMask.opacity]}
+                    value={[getHeadMaskProp('opacity', 1)]}
                     onValueChange={([val]) =>
                       setStateWithHistory('head_mask_opacity', (prev) => ({
                         ...prev,
-                        scene: { ...prev.scene, headMask: { ...prev.scene.headMask, opacity: val } },
+                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), opacity: val } },
                       }))
                     }
                   />
@@ -310,17 +314,17 @@ export function JointMaskWidget({
                 <div className="space-y-2">
                   <div className="flex justify-between text-[10px]">
                     <span className="text-[#666]">Scale</span>
-                    <span>{state.scene.headMask.scale.toFixed(2)}×</span>
+                    <span>{getHeadMaskProp('scale', 1).toFixed(2)}×</span>
                   </div>
                   <Slider
                     min={0.01}
                     max={20}
                     step={0.01}
-                    value={[state.scene.headMask.scale]}
+                    value={[getHeadMaskProp('scale', 1)]}
                     onValueChange={([val]) =>
                       setStateWithHistory('head_mask_scale', (prev) => ({
                         ...prev,
-                        scene: { ...prev.scene, headMask: { ...prev.scene.headMask, scale: val } },
+                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), scale: val } },
                       }))
                     }
                   />
@@ -330,17 +334,17 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-[#666]">
                       <span>Stretch X</span>
-                      <span>{(state.scene.headMask.stretchX ?? 1).toFixed(2)}×</span>
+                      <span>{(getHeadMaskProp('stretchX', 1) ?? 1).toFixed(2)}×</span>
                     </div>
                     <Slider
                       min={0.1}
                       max={3}
                       step={0.01}
-                      value={[state.scene.headMask.stretchX ?? 1]}
+                      value={[getHeadMaskProp('stretchX', 1) ?? 1]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_stretch_x', (prev) => ({
                           ...prev,
-                          scene: { ...prev.scene, headMask: { ...prev.scene.headMask, stretchX: val } },
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), stretchX: val } },
                         }))
                       }
                     />
@@ -348,17 +352,17 @@ export function JointMaskWidget({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[9px] text-[#666]">
                       <span>Stretch Y</span>
-                      <span>{(state.scene.headMask.stretchY ?? 1).toFixed(2)}×</span>
+                      <span>{(getHeadMaskProp('stretchY', 1) ?? 1).toFixed(2)}×</span>
                     </div>
                     <Slider
                       min={0.1}
                       max={3}
                       step={0.01}
-                      value={[state.scene.headMask.stretchY ?? 1]}
+                      value={[getHeadMaskProp('stretchY', 1) ?? 1]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_stretch_y', (prev) => ({
                           ...prev,
-                          scene: { ...prev.scene, headMask: { ...prev.scene.headMask, stretchY: val } },
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), stretchY: val } },
                         }))
                       }
                     />
