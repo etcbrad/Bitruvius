@@ -633,8 +633,9 @@ export default function App() {
     | 'leadEnabled'
     | 'hardStop'
     | 'snappiness'
-  >>(null);
-  const nonManikinPinTargetsRef = useRef<Record<string, Point> | null>(null);
+  > & { _engineGeneration?: number }>(null);
+  const nonManikinPinTargetsRef = useRef<Record<string, Point> & { _engineGeneration?: number } | null>(null);
+  const engineGenerationRef = useRef(0);
 
 		  useEffect(() => {
 		    if (manikinMode) return;
@@ -1728,7 +1729,9 @@ export default function App() {
         setManikinRotateDragging(null);
         manikinRotateDraggingLiveRef.current = null;
         armPoseReliefTransition({ reason: 'manikin:off', durationMs: 1600 });
-        if (nonManikinResumeRef.current && nonManikinPinTargetsRef.current) {
+        if (nonManikinResumeRef.current && nonManikinPinTargetsRef.current &&
+          nonManikinResumeRef.current._engineGeneration === engineGenerationRef.current &&
+          nonManikinPinTargetsRef.current._engineGeneration === engineGenerationRef.current) {
           pinTargetsRef.current = nonManikinPinTargetsRef.current;
         }
         setStateWithHistory('manikin_mode:off', (prev) => {
@@ -1738,7 +1741,7 @@ export default function App() {
           const resume = nonManikinResumeRef.current;
           const upgraded: SkeletonState = applyFluidHandshake(
             prev,
-            resume
+            (resume && resume._engineGeneration === engineGenerationRef.current)
               ? { ...prev, ...resume }
               : {
                   ...prev,
@@ -1758,7 +1761,7 @@ export default function App() {
       clearTransientInteractionState();
       setManikinRotateDragging(null);
       manikinRotateDraggingLiveRef.current = null;
-      nonManikinPinTargetsRef.current = { ...pinTargetsRef.current };
+      nonManikinPinTargetsRef.current = { ...pinTargetsRef.current, _engineGeneration: engineGenerationRef.current };
       pinTargetsRef.current = {};
       armPoseReliefTransition({ reason: 'manikin:on', durationMs: 1600 });
       setStateWithHistory('manikin_mode:on', (prev) => {
@@ -1773,6 +1776,7 @@ export default function App() {
           leadEnabled: prev.leadEnabled,
           hardStop: prev.hardStop,
           snappiness: prev.snappiness,
+          _engineGeneration: engineGenerationRef.current,
         };
 
         const next: SkeletonState = applyFluidHandshake(prev, {
@@ -1815,6 +1819,11 @@ export default function App() {
     pinTargetsRef.current = {};
     timelinePinTargetsRef.current = null;
     timelinePinTargetsKeyRef.current = '';
+    
+    // Clear manikin mode cache to prevent stale state restoration
+    nonManikinResumeRef.current = null;
+    nonManikinPinTargetsRef.current = null;
+    engineGenerationRef.current += 1;
 
     timelineFrameRef.current = 0;
     setTimelineFrame(0);
@@ -9980,24 +9989,48 @@ export default function App() {
                         </g>
                       );
                     })()}
-          <div className="absolute top-8 right-8 flex gap-2">
-             <button
-               onClick={() => setBacklightEnabled(!backlightEnabled)}
-               className={`bg-[#121212]/80 backdrop-blur-md border border-[#222] px-4 py-2 rounded-full flex items-center gap-3 transition-all duration-200 ${
-                 backlightEnabled ? 'bg-yellow-500/20 border-yellow-500/50' : 'hover:bg-[#1a1a1a]'
-               }`}
-             >
-                <Power 
-                  className={`w-4 h-4 transition-colors duration-200 ${
-                    backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
-                  }`} 
-                />
-                <span className={`text-[10px] font-bold tracking-widest uppercase transition-colors duration-200 ${
-                  backlightEnabled ? 'text-yellow-400' : 'text-gray-400'
-                }`}>
-                  {backlightEnabled ? 'Backlight ON' : 'Backlight OFF'}
-                </span>
-             </button>
+          {/* Coordinates moved to top-right */}
+          <div className="absolute top-8 right-8 bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl">
+            <div className="flex items-center gap-3 font-mono text-[11px]">
+              <span className="text-[#777]">COORD</span>
+              <span
+                ref={coordHudRef}
+                className="text-white tabular-nums opacity-0 cursor-pointer select-none"
+                title="Double-click to copy the current pose code"
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  void copyCurrentPoseCode();
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+              >
+                —
+              </span>
+              <span className="text-[#555]">ROOTS</span>
+              <span className="text-white tabular-nums">{state.activeRoots.length}</span>
+              {debugOverlayEnabled && (
+                <>
+                  <span className="text-[#555]">Z</span>
+                  <span className="text-white tabular-nums">{debugGridStats.viewScale.toFixed(2)}</span>
+                  <span className="text-[#555]">DX</span>
+                  <span className="text-white tabular-nums">
+                    {debugGridStats.driftX == null ? '—' : debugGridStats.driftX.toFixed(1)}
+                  </span>
+                  <span className="text-[#555]">DY</span>
+                  <span className="text-white tabular-nums">
+                    {debugGridStats.driftY == null ? '—' : debugGridStats.driftY.toFixed(1)}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
           {state.timeline.enabled && (() => {
             const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
@@ -10384,48 +10417,7 @@ export default function App() {
             onMouseDown={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
           >
-            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl">
-              <div className="flex items-center gap-3 font-mono text-[11px]">
-                <span className="text-[#777]">COORD</span>
-                <span
-                  ref={coordHudRef}
-                  className="text-white tabular-nums opacity-0 cursor-pointer select-none"
-                  title="Double-click to copy the current pose code"
-                  onDoubleClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    void copyCurrentPoseCode();
-                  }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                  }}
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                  }}
-                >
-                  —
-                </span>
-                <span className="text-[#555]">ROOTS</span>
-                <span className="text-white tabular-nums">{state.activeRoots.length}</span>
-                {debugOverlayEnabled && (
-                  <>
-                    <span className="text-[#555]">Z</span>
-                    <span className="text-white tabular-nums">{debugGridStats.viewScale.toFixed(2)}</span>
-                    <span className="text-[#555]">DX</span>
-                    <span className="text-white tabular-nums">
-                      {debugGridStats.driftX == null ? '—' : debugGridStats.driftX.toFixed(1)}
-                    </span>
-                    <span className="text-[#555]">DY</span>
-                    <span className="text-white tabular-nums">
-                      {debugGridStats.driftY == null ? '—' : debugGridStats.driftY.toFixed(1)}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
+            {/* Coordinates moved to top - removed from bottom */}
 
 	            {!manikinMode && (
 	              <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-3">

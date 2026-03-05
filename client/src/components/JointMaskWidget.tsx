@@ -430,7 +430,7 @@ export function JointMaskWidget({
                     <span>Head/Neck</span>
                     <span className="text-[#666]">
                       {(() => {
-                        const base = state.scene.headMask.relatedJoints?.[0];
+                        const base = state.scene.headMask?.relatedJoints?.[0];
                         if (base === 'sternum') return 'STERNUM';
                         if (base === 'collar') return 'COLLAR';
                         if (base === 'neck_upper') return 'UPPER NECK';
@@ -439,14 +439,14 @@ export function JointMaskWidget({
                     </span>
                   </div>
                   <select
-                    value={state.scene.headMask.relatedJoints?.[0] || 'neck_base'}
+                    value={state.scene.headMask?.relatedJoints?.[0] || 'neck_base'}
                     onChange={(e) =>
                       setStateWithHistory('head_mask_base_joint', (prev) => ({
                         ...prev,
                         scene: {
                           ...prev.scene,
                           headMask: {
-                            ...prev.scene.headMask,
+                            ...(prev.scene.headMask || {}),
                             relatedJoints: e.target.value === 'neck_base' ? [] : [e.target.value],
                           },
                         },

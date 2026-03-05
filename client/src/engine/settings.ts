@@ -857,12 +857,17 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     const hasCollar = Boolean((slots as any).collar);
 
     let next: Record<string, CutoutSlot> = slots;
-    let migratedAny = false;
+    let migratedUpper = false;
+    let migratedNeck = false;
 
-    const maybeAdoptIntoCollar = (source: CutoutSlot | undefined) => {
+    const maybeAdoptIntoCollar = (source: CutoutSlot | undefined, isUpper: boolean) => {
       if (!source) return;
       if (hasCollar) return;
-      migratedAny = true;
+      if (isUpper) {
+        migratedUpper = true;
+      } else {
+        migratedNeck = true;
+      }
       next = {
         ...next,
         collar: {
@@ -877,16 +882,16 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
       };
     };
 
-    maybeAdoptIntoCollar(sourceUpper);
-    if (!migratedAny) maybeAdoptIntoCollar(sourceNeck);
+    maybeAdoptIntoCollar(sourceUpper, true);
+    if (!migratedUpper) maybeAdoptIntoCollar(sourceNeck, false);
 
     // Remove legacy slots only when empty or explicitly migrated (to avoid data loss).
-    if ((sourceUpper && migratedAny) || (sourceUpper && !sourceUpper.assetId && !sourceUpper.visible)) {
+    if ((sourceUpper && migratedUpper) || (sourceUpper && !sourceUpper.assetId && !sourceUpper.visible)) {
       const copy = { ...next } as any;
       delete copy.spine_upper;
       next = copy;
     }
-    if ((sourceNeck && migratedAny) || (sourceNeck && !sourceNeck.assetId && !sourceNeck.visible)) {
+    if ((sourceNeck && migratedNeck) || (sourceNeck && !sourceNeck.assetId && !sourceNeck.visible)) {
       const copy = { ...next } as any;
       delete copy.spine_neck;
       next = copy;

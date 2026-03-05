@@ -644,7 +644,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       <span>Head/Neck</span>
                       <span className="text-[#999]">
                         {(() => {
-                          const base = state.scene.headMask.relatedJoints?.[0];
+                          const base = state.scene.headMask?.relatedJoints?.[0];
                           if (base === 'sternum') return 'Sternum';
                           if (base === 'collar') return 'Collar';
                           if (base === 'neck_upper') return 'Upper Neck';
@@ -653,7 +653,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       </span>
                     </div>
                     <select
-                      value={state.scene.headMask.relatedJoints?.[0] || 'neck_base'}
+                      value={state.scene.headMask?.relatedJoints?.[0] || 'neck_base'}
                       onPointerDownCapture={(e) => e.stopPropagation()}
                       onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
@@ -661,7 +661,10 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                           ...prev,
                           scene: {
                             ...prev.scene,
-                            headMask: { ...prev.scene.headMask, relatedJoints: e.target.value === 'neck_base' ? [] : [e.target.value] },
+                            headMask: {
+                              ...(prev.scene.headMask || {}),
+                              relatedJoints: e.target.value === 'neck_base' ? [] : [e.target.value],
+                            },
                           },
                         }))
                       }
