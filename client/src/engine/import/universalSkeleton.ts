@@ -28,6 +28,10 @@ export interface UniversalBone {
   rotationY: number;
   rotationZ: number;
   
+  // Skew/shear
+  skewX: number;
+  skewY: number;
+  
   // Scale
   scaleX: number;
   scaleY: number;
@@ -52,7 +56,7 @@ export interface UniversalSkeleton {
   source: string; // Source application (e.g., 'graphite.art', 'spine', 'dragonbones')
   
   bones: Record<string, UniversalBone>;
-  rootBoneId: string;
+  rootBoneIds: string[]; // Multiple root bones possible
   
   // Optional animation data
   animations?: Array<{
@@ -187,11 +191,22 @@ export class UniversalSkeletonConverter {
       const allMappings = { ...this.DEFAULT_MAPPING, ...customMappings };
       
       // Convert each universal bone to Bitruvius joint
+      const resolvedMapping: Record<string, string> = {};
+      
+      // First pass: resolve all parent mappings
+      Object.entries(universalSkeleton.bones).forEach(([boneId, bone]) => {
+        const targetJointId = this.findBestMatch(boneId, bone, allMappings);
+        if (targetJointId) {
+          resolvedMapping[targetJointId] = targetJointId;
+        }
+      });
+      
+      // Second pass: create joints using resolved mappings
       Object.entries(universalSkeleton.bones).forEach(([boneId, bone]) => {
         result.metadata.bonesImported++;
         
-        // Find target joint ID
-        let targetJointId = this.findBestMatch(boneId, bone, allMappings);
+        // Find target joint ID using resolved mapping
+        const targetJointId = resolvedMapping[boneId] || this.findBestMatch(boneId, bone, allMappings);
         
         if (targetJointId) {
           result.metadata.bonesMapped++;
@@ -200,7 +215,7 @@ export class UniversalSkeletonConverter {
           const joint: Joint = {
             id: targetJointId,
             label: bone.name || targetJointId,
-            parent: this.mapParentId(bone.parentId, allMappings),
+            parent: this.mapParentId(bone.parentId, resolvedMapping),
             baseOffset: {
               x: bone.localX,
               y: bone.localY,
@@ -213,13 +228,7 @@ export class UniversalSkeletonConverter {
               x: bone.localX,
               y: bone.localY,
             },
-            previewOffset: {
-              x: bone.localX,
-              y: bone.localY,
-            },
             rotation: bone.rotationZ || 0,
-            isEndEffector: this.isEndEffector(bone),
-            mirrorId: this.findMirrorId(targetJointId),
           };
           
           result.joints[targetJointId] = joint;
@@ -277,8 +286,8 @@ export class UniversalSkeletonConverter {
       }
     }
     
-    // Region-based matching
-    if (bone.metadata?.region) {
+    // Region-based matching - only used when no side info or explicitly center
+    if (bone.metadata?.region && (!bone.metadata?.side || bone.metadata?.side === 'center')) {
       const region = bone.metadata.region;
       for (const [key, value] of Object.entries(mappings)) {
         if (key.toLowerCase().includes(region.toLowerCase())) {
@@ -292,10 +301,25 @@ export class UniversalSkeletonConverter {
   
   private static mapParentId(
     parentId: string | null,
-    mappings: Record<string, string>
+    mappings: Record<string, string>,
+    resolvedMapping: Record<string, string> = {}
   ): string | null {
     if (!parentId) return null;
-    return mappings[parentId] || null;
+    
+    // First try direct mappings
+    if (mappings[parentId]) {
+      resolvedMapping[parentId] = mappings[parentId];
+      return mappings[parentId];
+    }
+    
+    // Then try resolved mappings (from findBestMatch)
+    for (const [key, value] of Object.entries(mappings)) {
+      if (resolvedMapping[value]) {
+        resolvedMapping[key] = value;
+      }
+    }
+    
+    return resolvedMapping[parentId] || null;
   }
   
   private static isEndEffector(bone: UniversalBone): boolean {
@@ -380,54 +404,96 @@ export class UniversalSkeletonFactory {
   }
   
   static fromJSON(jsonData: any): UniversalSkeleton {
-    // Try to parse as universal skeleton format
-    if (jsonData.bones && jsonData.name) {
-      return jsonData as UniversalSkeleton;
+    // Validate required fields
+    if (!jsonData || typeof jsonData !== 'object') {
+      throw new Error('Invalid JSON data');
     }
     
-    // Try to convert from common formats
-    if (jsonData.armature || jsonData.bones) {
-      return this.fromDragonBones(jsonData);
+    const data = jsonData as any;
+    
+    // Check for required UniversalSkeleton fields
+    const requiredFields = ['version', 'source', 'rootBoneIds', 'name', 'bones'];
+    for (const field of requiredFields) {
+      if (!(field in data)) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+    
+    // Validate field types
+    if (typeof data.version !== 'string') {
+      throw new Error('Invalid version field type');
+    }
+    if (typeof data.source !== 'string') {
+      throw new Error('Invalid source field type');
+    }
+    if (!Array.isArray(data.rootBoneIds)) {
+      throw new Error('Invalid rootBoneIds field type');
+    }
+    if (typeof data.name !== 'string') {
+      throw new Error('Invalid name field type');
+    }
+    if (typeof data.bones !== 'object' || data.bones === null) {
+      throw new Error('Invalid bones field type');
+    }
+    
+    // Try to parse as universal skeleton format
+    if (data.bones && data.name) {
+      return data as UniversalSkeleton;
+    }
+    
+    // Try to convert from DragonBones format
+    if (data.armature) {
+      return this.fromDragonBones(data);
     }
     
     throw new Error('Unsupported JSON format');
   }
   
   private static fromDragonBones(data: any): UniversalSkeleton {
-    const skeleton = this.createEmpty('DragonBones Import');
-    skeleton.source = 'dragonbones';
+    const skeleton: UniversalSkeleton = {
+      name: data.name || 'Imported DragonBones Skeleton',
+      version: '1.0',
+      source: 'dragonbones',
+      bones: {},
+      rootBoneIds: [], // Multiple root bones possible
+      metadata: {
+        unit: 'pixels',
+        coordinateSystem: 'y-down',
+        created: new Date().toISOString(),
+      },
+    };
     
-    if (data.armature && data.armature[0]) {
-      const armature = data.armature[0];
-      const bones = armature.bone || [];
+    const armature = data.armature[0];
+    const bones = armature.bone || [];
       
-      bones.forEach((bone: any) => {
-        const universalBone: UniversalBone = {
-          id: bone.name,
-          name: bone.name,
-          parentId: bone.parent || null,
-          worldX: bone.transform?.x || 0,
-          worldY: -(bone.transform?.y || 0), // DragonBones uses Y-up
-          worldZ: 0,
-          localX: bone.transform?.x || 0,
-          localY: -(bone.transform?.y || 0),
-          localZ: 0,
-          rotationX: bone.transform?.skX || 0,
-          rotationY: 0,
-          rotationZ: bone.transform?.skY || 0,
-          scaleX: bone.transform?.scX || 1,
-          scaleY: bone.transform?.scY || 1,
-          scaleZ: 1,
-          length: bone.length || 0,
-        };
+    bones.forEach((bone: any) => {
+      const universalBone: UniversalBone = {
+        id: bone.name,
+        name: bone.name,
+        parentId: bone.parent || null,
+        worldX: bone.transform?.x || 0,
+        worldY: -(bone.transform?.y || 0), // DragonBones uses Y-up
+        worldZ: 0,
+        localX: bone.transform?.x || 0,
+        localY: -(bone.transform?.y || 0),
+        localZ: 0,
+        rotationX: bone.transform?.rotation || 0,
+        rotationY: 0,
+        rotationZ: 0,
+        skewX: bone.transform?.skX || 0,
+        skewY: bone.transform?.skY || 0,
+        scaleX: bone.transform?.scX || 1,
+        scaleY: bone.transform?.scY || 1,
+        scaleZ: 1,
+        length: bone.length || 0,
+      };
         
-        skeleton.bones[bone.name] = universalBone;
+      skeleton.bones[bone.name] = universalBone;
         
-        if (!bone.parent) {
-          skeleton.rootBoneId = bone.name;
-        }
-      });
-    }
+      if (!bone.parent) {
+        skeleton.rootBoneIds.push(bone.name);
+      }
+    });
     
     return skeleton;
   }

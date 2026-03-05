@@ -1,6 +1,6 @@
 # Lightweight Deployment Build
 
-This folder contains a optimized build configuration for deploying Bitruvius to static hosting platforms like Netlify, GitHub Pages, Replit, and others.
+This folder contains an optimized build configuration for deploying Bitruvius to static hosting platforms like Netlify, GitHub Pages, Replit, and others.
 
 ## Usage
 

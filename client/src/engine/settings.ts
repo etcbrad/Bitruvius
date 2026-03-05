@@ -1,11 +1,9 @@
 import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
-import { clamp as utilsClamp } from '../utils';
 import { INITIAL_JOINTS, CONNECTIONS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode } from './types';
 import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
-import { DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, DEFAULT_PROCEDURAL_BITRUVIAN_IDLE } from './bitruvian/types';
 import type { TransitionIssue, TransitionResult } from '@/lib/transitionIssues';
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -243,46 +241,52 @@ const sanitizeTextOverlays = (raw: unknown, frameCount: number): TextOverlay[] =
 };
 
 const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connectionOverrides'] => {
-  const ALLOWED_SHAPES = new Set([
-    'standard',
-    'bone',
-    'muscle',
-    'tapered',
-    'cylinder',
-    'wire',
-    'wireframe',
-    'capsule',
-    'diamond',
-    'ribbon',
-  ]);
   const out: SkeletonState['connectionOverrides'] = {};
   if (!rawValue || typeof rawValue !== 'object') return out;
   const raw = rawValue as Record<string, unknown>;
   for (const [key, value] of Object.entries(raw)) {
-    const parts = key.split(':');
-    if (parts.length !== 2) continue;
-    const [a, b] = parts;
-    if (!a || !b) continue;
-    if (!(a in INITIAL_JOINTS) || !(b in INITIAL_JOINTS)) continue;
+    if (!(key in INITIAL_JOINTS)) continue;
+    
     const v = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
     if (!v) continue;
-    const next: SkeletonState['connectionOverrides'][string] = {};
-    const stretchMode = v.stretchMode;
-    if (stretchMode === 'rigid' || stretchMode === 'elastic' || stretchMode === 'stretch') next.stretchMode = stretchMode;
-    const shape = v.shape;
-    if (typeof shape === 'string' && ALLOWED_SHAPES.has(shape)) next.shape = shape;
-    const shapeScale = v.shapeScale;
-    if (isFiniteNumber(shapeScale)) next.shapeScale = clamp(shapeScale, 0.25, 4);
-    const fkMode = v.fkMode;
-    if (fkMode === 'stretch' || fkMode === 'bend') next.fkMode = fkMode;
-    const fkFollowDeg = v.fkFollowDeg;
-    if (isFiniteNumber(fkFollowDeg)) next.fkFollowDeg = clamp(fkFollowDeg, -360, 360);
-
-    const mergeToJointId = v.mergeToJointId;
-    if (typeof mergeToJointId === 'string' && mergeToJointId in INITIAL_JOINTS) next.mergeToJointId = mergeToJointId;
-    const hidden = v.hidden;
-    if (typeof hidden === 'boolean') next.hidden = hidden;
-    if (Object.keys(next).length > 0) out[key] = next;
+    
+    const next: SkeletonState['connectionOverrides'][string] = {
+      stretchMode: undefined,
+      shape: undefined,
+      shapeScale: undefined,
+      fkMode: undefined,
+      fkFollowDeg: undefined,
+      mergeToJointId: undefined,
+      hidden: undefined,
+    };
+    
+    if (ALLOWED_SHAPES.has(v.shape)) {
+      next.shape = v.shape;
+    }
+    
+    if (typeof v.stretchMode === 'string' && 
+        (v.stretchMode === 'rigid' || v.stretchMode === 'elastic' || v.stretchMode === 'stretch')) {
+      next.stretchMode = v.stretchMode;
+    }
+    
+    if (typeof v.fkMode === 'string' && 
+        (v.fkMode === 'stretch' || v.fkMode === 'bend')) {
+      next.fkMode = v.fkMode;
+    }
+    
+    if (typeof v.fkFollowDeg === 'number') {
+      next.fkFollowDeg = v.fkFollowDeg;
+    }
+    
+    if (typeof v.mergeToJointId === 'string') {
+      next.mergeToJointId = v.mergeToJointId;
+    }
+    
+    if (typeof v.hidden === 'boolean') {
+      next.hidden = v.hidden;
+    }
+    
+    out[key] = { ...next, ...(out[key] || {}) };
   }
   return out;
 };
@@ -482,6 +486,20 @@ export const makeDefaultState = (): SkeletonState => {
           stretchMode: 'rigid' as const 
         };
       }
+    });
+    
+    // Override trapezius connections to be rigid
+    const trapeziusConnections = [
+      { from: 'l_clavicle', to: 'r_bicep' },
+      { from: 'r_clavicle', to: 'l_bicep' }
+    ];
+    
+    trapeziusConnections.forEach(conn => {
+      const key = canonicalConnKey(conn.from, conn.to);
+      defaultConnectionOverrides[key] = { 
+        ...(defaultConnectionOverrides[key] ?? {}), 
+        stretchMode: 'rigid' as const 
+      };
     });
   }
 

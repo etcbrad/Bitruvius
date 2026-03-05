@@ -2,16 +2,38 @@ import type { SkeletonState } from '../types';
 import { UniversalSkeleton } from './universalSkeleton';
 
 export class UniversalSkeletonExporter {
+  private static findRootJoint(state: SkeletonState): string {
+    // Find the joint with no parent (root joint)
+    for (const [jointId, joint] of Object.entries(state.joints)) {
+      if (!joint.parent) {
+        return jointId;
+      }
+    }
+    // Fallback to 'root' if no parentless joint found
+    return 'root';
+  }
+
+  private static escapeCsv(value: string): string {
+    // Escape CSV fields according to RFC 4180
+    if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+      return `"${value.replace(/"/g, '""')}"`;
+    }
+    return value;
+  }
+
   static exportToUniversal(
     state: SkeletonState,
     name: string = 'Bitruvius Skeleton'
   ): UniversalSkeleton {
+    // Find the root joint (joint with no parent)
+    const rootJointId = this.findRootJoint(state);
+    
     const skeleton: UniversalSkeleton = {
       name,
       version: '1.0',
       source: 'bitruvius',
       bones: {},
-      rootBoneId: 'root',
+      rootBoneId: rootJointId,
       metadata: {
         unit: 'pixels',
         coordinateSystem: 'y-down',
@@ -62,13 +84,12 @@ export class UniversalSkeletonExporter {
 
     Object.entries(state.joints).forEach(([jointId, joint]) => {
       const row = [
-        jointId,
-        joint.label || jointId,
-        joint.parent || '',
-        joint.currentOffset.x.toString(),
-        joint.currentOffset.y.toString(),
-        (joint.rotation || 0).toString(),
-        '0', // length - would need to be calculated
+        this.escapeCsv(jointId),
+        this.escapeCsv(joint.label || jointId),
+        this.escapeCsv(joint.parent || ''),
+        this.escapeCsv(joint.currentOffset.x.toString()),
+        this.escapeCsv(joint.currentOffset.y.toString()),
+        this.escapeCsv((joint.rotation || 0).toString()),
       ];
       rows.push(row.join(','));
     });
@@ -80,7 +101,7 @@ export class UniversalSkeletonExporter {
     const id = jointId.toLowerCase();
     if (id.startsWith('l_') || id.includes('left')) return 'left';
     if (id.startsWith('r_') || id.includes('right')) return 'right';
-    if (['root', 'navel', 'sternum', 'collar', 'neck_base', 'neck_upper', 'head'].includes(jointId)) return 'center';
+    if (['root', 'navel', 'sternum', 'collar', 'neck_base', 'neck_upper', 'head'].includes(id)) return 'center';
     return undefined;
   }
 

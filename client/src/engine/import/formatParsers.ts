@@ -41,21 +41,48 @@ export class FormatParsers {
     const skeleton = UniversalSkeletonFactory.createEmpty('CSV Import');
     skeleton.source = 'csv';
     
-    const lines = csvData.trim().split('\n');
+    const lines = csvData.trim().split('\n').filter(line => line.trim());
+    if (lines.length === 0) {
+      throw new Error('CSV data is empty');
+    }
+    
     const headers = lines[0].toLowerCase().split(',').map(h => h.trim());
     
     for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim());
+      const line = lines[i].trim();
+      if (!line) continue; // Skip empty lines
+      
+      // Simple CSV parser that handles quoted fields
+      const values: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      
+      for (let char of line) {
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          values.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      values.push(current.trim());
+      
       const bone: any = {};
       
       headers.forEach((header, index) => {
-        const value = values[index];
+        const value = values[index] || '';
         if (header === 'x' || header === 'y' || header === 'angle' || header === 'length') {
           bone[header] = parseFloat(value) || 0;
         } else {
           bone[header] = value;
         }
       });
+      
+      if (!bone.bone_id && !bone.id) {
+        throw new Error(`Row ${i} missing required bone_id or id field`);
+      }
       
       skeleton.bones[bone.bone_id || bone.id] = {
         id: bone.bone_id || bone.id,
@@ -68,15 +95,13 @@ export class FormatParsers {
         rotationX: 0,
         rotationY: 0,
         rotationZ: bone.angle || 0,
-        scaleX: 1,
-        scaleY: 1,
+        scaleX: bone.scaleX ?? 1,
+        scaleY: bone.scaleY ?? 1,
         scaleZ: 1,
         length: bone.length,
       };
-      
-      if (!bone.parent_id && !bone.parent) {
-        skeleton.rootBoneId = bone.bone_id || bone.id;
-      }
+        
+      if (!bone.parent) skeleton.rootBoneId = bone.id;
     }
     
     return skeleton;

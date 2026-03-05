@@ -87,6 +87,10 @@ export const loadGifReferenceSequence = async (
     frames.push(image);
   }
 
+  if (frames.length === 0) {
+    throw new Error('No valid frames found after decoding. All frames may have been skipped due to deduplication.');
+  }
+
   const first = frames[0];
   const width = Number(first?.displayWidth || first?.codedWidth || first?.width || 0) || 0;
   const height = Number(first?.displayHeight || first?.codedHeight || first?.height || 0) || 0;

@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import { fileURLToPath } from 'url';
 
 export default defineConfig({
   plugins: [
@@ -8,14 +9,14 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@": path.resolve(import.meta.dirname, "client", "src"),
-      "@shared": path.resolve(import.meta.dirname, "shared"),
-      "@assets": path.resolve(import.meta.dirname, "attached_assets"),
+      "@": path.resolve(path.dirname(fileURLToPath(import.meta.url)), "client", "src"),
+      "@shared": path.resolve(path.dirname(fileURLToPath(import.meta.url)), "shared"),
+      "@assets": path.resolve(path.dirname(fileURLToPath(import.meta.url)), "attached_assets"),
     },
   },
-  root: path.resolve(import.meta.dirname, "client"),
+  root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "client"),
   build: {
-    outDir: path.resolve(import.meta.dirname, "deploy"),
+    outDir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "deploy"),
     emptyOutDir: true,
     rollupOptions: {
       output: {

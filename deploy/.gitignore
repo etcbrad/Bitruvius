@@ -11,4 +11,6 @@ assets/
 index.html
 startup.html
 favicon.*
-*.json
+
+# Ignore all other files
+*

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { SkeletonImporter } from '../engine/import/skeletonImporter';
 import type { ImportResult } from '../engine/import/universalSkeleton';
 
@@ -14,18 +14,35 @@ export const SkeletonImportDialog: React.FC<SkeletonImportDialogProps> = ({
   onImport,
 }) => {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Reset state when dialog opens
+  useEffect(() => {
+    if (isOpen) {
+      setImportResult(null);
+      setImportError(null);
+      setIsLoading(false);
+    }
+  }, [isOpen]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Clear the file input so the same file can be selected again
+    if (e.target) {
+      e.target.value = '';
+    }
+
     setIsLoading(true);
+    setImportError(null);
     try {
       const result = await SkeletonImporter.importFromFile(file);
       setImportResult(result);
     } catch (error) {
       console.error('Import failed:', error);
+      setImportError(error instanceof Error ? error.message : 'Unknown error occurred');
     } finally {
       setIsLoading(false);
     }
@@ -33,11 +50,13 @@ export const SkeletonImportDialog: React.FC<SkeletonImportDialogProps> = ({
 
   const handleClipboardImport = async () => {
     setIsLoading(true);
+    setImportError(null);
     try {
       const result = await SkeletonImporter.importFromClipboard();
       setImportResult(result);
     } catch (error) {
       console.error('Clipboard import failed:', error);
+      setImportError(error instanceof Error ? error.message : 'Unknown error occurred');
     } finally {
       setIsLoading(false);
     }
@@ -73,7 +92,16 @@ export const SkeletonImportDialog: React.FC<SkeletonImportDialogProps> = ({
 
           {isLoading && <p className="text-blue-600">Importing...</p>}
 
-          {importResult && (
+          {importError && (
+            <div className="mt-4">
+              <h3 className="font-semibold mb-2 text-red-600">Import Error</h3>
+              <div className="text-sm text-red-600">
+                {importError}
+              </div>
+            </div>
+          )}
+
+          {importResult && !importError && (
             <div className="mt-4">
               <h3 className="font-semibold mb-2">Import Results</h3>
               <div className="text-sm space-y-1">

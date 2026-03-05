@@ -37,7 +37,7 @@ export const SLENDERBIT_JOINTS: Record<string, Joint> = {
 };
 
 // New default humanoid model with inverted shoulder mechanics
-// NOTE: Hip X offsets are intentionally inverted compared to SLENDERBIT_JOINTS
+// NOTE: Arm (shoulder/bicep) X offsets are intentionally inverted compared to SLENDERBIT_JOINTS
 // to maintain compatibility with existing animations and constraints
 export const INITIAL_JOINTS: Record<string, Joint> = {
   root: { id: 'root', label: 'Root', parent: null, baseOffset: { x: 0, y: 0 }, currentOffset: { x: 0, y: 0 }, targetOffset: { x: 0, y: 0 }, previewOffset: { x: 0, y: 0 }, rotation: 0 },
@@ -77,10 +77,10 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
 export const CONNECTIONS: Connection[] = [
   // Inverted shoulder mechanics - left clavicle holds right shoulder, right clavicle holds left shoulder
   { from: "collar", to: "l_clavicle", type: "bone", label: "L_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "l_clavicle", to: "r_bicep", type: "rigid", label: "Trapezius_L_to_R", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "l_clavicle", to: "r_bicep", type: "rigid", label: "Trapezius_L_to_R", shape: 'muscle', stretchMode: 'stretch' },
   { from: "r_bicep", to: "r_elbow", type: "bone", label: "R_Humerus", shape: 'muscle', stretchMode: 'rigid' },
   { from: "collar", to: "r_clavicle", type: "bone", label: "R_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "r_clavicle", to: "l_bicep", type: "rigid", label: "Trapezius_R_to_L", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "r_clavicle", to: "l_bicep", type: "rigid", label: "Trapezius_R_to_L", shape: 'muscle', stretchMode: 'stretch' },
   { from: "l_bicep", to: "l_elbow", type: "bone", label: "L_Humerus", shape: 'muscle', stretchMode: 'rigid' },
   { from: "l_elbow", to: "l_wrist", type: "bone", label: "L_Radius_Ulna", shape: 'tapered', stretchMode: 'rigid' },
   { from: "r_elbow", to: "r_wrist", type: "bone", label: "R_Radius_Ulna", shape: 'tapered', stretchMode: 'rigid' },

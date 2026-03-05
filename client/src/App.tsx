@@ -237,7 +237,10 @@ const computeMaxWireStrain = (joints: Record<string, Joint>): number => {
   for (const w of WIRE_REST_DEFS) {
     const a = world[w.a];
     const b = world[w.b];
-    if (!a || !b) continue;
+    if (!a || !b) {
+      console.warn(`Missing joints for wire strain calculation: ${w.a} -> ${w.b}`, { w, joints: Object.keys(joints) });
+      continue;
+    }
     const d = Math.hypot(a.x - b.x, a.y - b.y);
     if (!Number.isFinite(d) || d <= 1e-9) continue;
     const strain = Math.max(0, d / w.rest - 1);
@@ -955,13 +958,12 @@ export default function App() {
   );
 
   const handleBgVideoMeta = useCallback(
-    (meta: ReferenceVideoMeta) => {
+    (meta: ReferenceVideoMeta, expectedSrc: string) => {
       setBgVideoMeta(meta);
-      const src = stateLiveRef.current.scene.background.src;
-      if (!src) return;
+      if (!expectedSrc) return;
       if (!(meta.duration > REFERENCE_MAX_SECONDS)) return;
-      if (bgLongVideoWarnedSrcRef.current === src) return;
-      bgLongVideoWarnedSrcRef.current = src;
+      if (bgLongVideoWarnedSrcRef.current === expectedSrc) return;
+      bgLongVideoWarnedSrcRef.current = expectedSrc;
       addConsoleLog(
         'warning',
         `Background video is ${meta.duration.toFixed(2)}s; only first ${REFERENCE_MAX_SECONDS}s will be used for reference playback.`,
@@ -971,13 +973,12 @@ export default function App() {
   );
 
   const handleFgVideoMeta = useCallback(
-    (meta: ReferenceVideoMeta) => {
+    (meta: ReferenceVideoMeta, expectedSrc: string) => {
       setFgVideoMeta(meta);
-      const src = stateLiveRef.current.scene.foreground.src;
-      if (!src) return;
+      if (!expectedSrc) return;
       if (!(meta.duration > REFERENCE_MAX_SECONDS)) return;
-      if (fgLongVideoWarnedSrcRef.current === src) return;
-      fgLongVideoWarnedSrcRef.current = src;
+      if (fgLongVideoWarnedSrcRef.current === expectedSrc) return;
+      fgLongVideoWarnedSrcRef.current = expectedSrc;
       addConsoleLog(
         'warning',
         `Foreground video is ${meta.duration.toFixed(2)}s; only first ${REFERENCE_MAX_SECONDS}s will be used for reference playback.`,
@@ -3212,7 +3213,14 @@ export default function App() {
               return constraints.length ? constraints : undefined;
             })();
 
-            const maxWireStrain = computeMaxWireStrain(jointsForFrame);
+            const maxWireStrain = (() => {
+              try {
+                return computeMaxWireStrain(jointsForFrame);
+              } catch (error) {
+                console.error('Error computing max wire strain:', error);
+                return 0; // Fallback to prevent crashes
+              }
+            })();
             // Smooth the strain signal so wire-compliance toggles don't chatter near the threshold
             // (which can show up as end-of-drag "tension flicker").
             const strainAlpha = 1 - Math.pow(1 - 0.22, dt * 60);
@@ -11719,7 +11727,7 @@ export default function App() {
                                       ? 'none'
                                       : 'contain'
                               }
-                              onMeta={handleBgVideoMeta}
+                              onMeta={(meta) => handleBgVideoMeta(meta, state.scene.background.src)}
                             />
                           </div>
                         </foreignObject>
@@ -11910,7 +11918,7 @@ export default function App() {
                                             ? 'none'
                                             : 'contain'
                                     }
-                                    onMeta={handleFgVideoMeta}
+                                    onMeta={(meta) => handleFgVideoMeta(meta, state.scene.foreground.src)}
                                   />
                                 </div>
                               </foreignObject>

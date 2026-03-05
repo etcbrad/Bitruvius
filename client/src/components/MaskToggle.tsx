@@ -115,6 +115,7 @@ export function MaskToggle({
           }`}
           whileHover={{ scale: 1.1 }}
           whileTap={{ scale: 0.95 }}
+          aria-label="Toggle mask panel"
         >
           {maskEditArmed ? (
             <Move size={20} />
@@ -156,6 +157,7 @@ export function MaskToggle({
               <button
                 onClick={() => setIsOpen(false)}
                 className="p-1 rounded hover:bg-gray-800 transition-colors"
+                aria-label="Close panel"
               >
                 <X size={16} className="text-gray-400" />
               </button>
@@ -197,6 +199,8 @@ export function MaskToggle({
                           ? 'bg-blue-600 text-white' 
                           : 'bg-gray-700 text-gray-400'
                       }`}
+                      aria-label={jointMask?.visible ? "Hide mask" : "Show mask"}
+                      aria-pressed={jointMask?.visible ?? false}
                     >
                       {jointMask?.visible ? <Eye size={16} /> : <EyeOff size={16} />}
                     </button>

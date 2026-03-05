@@ -82,8 +82,7 @@ export class SkeletonValidator {
   }
 
   private static detectCycles(
-    bones: Record<string, any>,
-    startBone: string
+    bones: Record<string, any>
   ): string[] {
     const cycles: string[] = [];
     const visited = new Set<string>();
@@ -92,9 +91,8 @@ export class SkeletonValidator {
     const dfs = (boneId: string, path: string[]): boolean => {
       if (recursionStack.has(boneId)) {
         cycles.push(path.slice(path.indexOf(boneId)).join(' -> '));
-        return true;
       }
-
+      
       if (visited.has(boneId)) {
         return false;
       }
@@ -104,16 +102,20 @@ export class SkeletonValidator {
 
       const bone = bones[boneId];
       if (bone && bone.parentId) {
-        if (dfs(bone.parentId, [...path, boneId])) {
-          return true;
-        }
+        dfs(bone.parentId, [...path, boneId]);
       }
 
       recursionStack.delete(boneId);
       return false;
     };
 
-    dfs(startBone, []);
+    // Check all bones for cycles, not just from startBone
+    Object.keys(bones).forEach(boneId => {
+      if (!visited.has(boneId)) {
+        dfs(boneId, []);
+      }
+    });
+
     return cycles;
   }
 }

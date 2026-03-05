@@ -33,10 +33,20 @@ export class SkeletonImporter {
   }
   
   static async importFromClipboard(): Promise<ImportResult> {
-    const content = await navigator.clipboard.readText();
-    const jsonData = JSON.parse(content);
-    const universalSkeleton = UniversalSkeletonFactory.fromJSON(jsonData);
-    return UniversalSkeletonConverter.convert(universalSkeleton);
+    try {
+      const content = await navigator.clipboard.readText();
+      const jsonData = JSON.parse(content);
+      const universalSkeleton = UniversalSkeletonFactory.fromJSON(jsonData);
+      return UniversalSkeletonConverter.convert(universalSkeleton);
+    } catch (error) {
+      return {
+        success: false,
+        sourceFormat: 'clipboard',
+        metadata: { bonesImported: 0, bonesMapped: 0, bonesUnmapped: 0 },
+        warnings: [],
+        errors: [error instanceof Error ? error.message : 'Unknown error occurred'],
+      };
+    }
   }
   
   static applyToState(result: ImportResult, currentState: SkeletonState): SkeletonState {

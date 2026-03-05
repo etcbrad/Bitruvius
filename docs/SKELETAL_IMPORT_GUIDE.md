@@ -122,7 +122,10 @@ The system automatically maps external bone names to Bitruvius joints using thes
 
 | External Name | Bitruvius Joint |
 |---------------|-----------------|
-| root, pelvis, hips, waist | root, navel |
+| root | root |
+| pelvis | navel |
+| hips | navel |
+| waist | navel |
 | spine, chest, torso | sternum |
 | neck | neck_base |
 | head | head |
@@ -146,6 +149,8 @@ The system automatically maps external bone names to Bitruvius joints using thes
 | right_foot, r_foot | r_toe |
 
 ## Custom Mapping
+
+Multiple external names are accepted as aliases for the listed Bitruvius joint. When multiple Bitruvius joints are listed, the importer will try them in order of left-to-right priority.
 
 If automatic mapping doesn't work for your skeleton, you can provide custom mappings:
 
