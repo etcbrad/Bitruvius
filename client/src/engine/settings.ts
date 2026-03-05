@@ -486,7 +486,7 @@ export const makeDefaultState = (): SkeletonState => {
       idle: { ...DEFAULT_PROCEDURAL_BITRUVIAN_IDLE },
     },
     timeline: {
-      enabled: false,
+      enabled: true,
       clip: {
         frameCount: 120,
         fps: 24,

@@ -843,7 +843,7 @@ export function JointMaskWidget({
                         skewX: 0,
                         skewY: 0,
                         relatedJoints: [],
-                        mode: 'replace',
+                        mode: 'cutout',
                         lengthScale: 1,
                         volumePreserve: true,
                       } as any)

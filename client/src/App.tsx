@@ -10397,6 +10397,14 @@ export default function App() {
                     void copyCurrentPoseCode();
                   }}
                   onMouseDown={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                  }}
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                  }}
                 >
                   —
                 </span>

@@ -579,7 +579,7 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
           return (
             <div
               key={slotId}
-              className={`flex items-center justify-between gap-2 p-2 rounded-md border transition-colors cursor-pointer ${
+              className={`flex items-center justify-between gap-2 p-2 rounded-md border transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-white/50 ${
                 selected ? 'bg-white/10 border-white/10' : 'bg-white/5 border-white/5 hover:bg-white/10'
               }`}
               onClick={() => selectSlot(slotId)}

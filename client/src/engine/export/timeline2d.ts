@@ -25,6 +25,7 @@ export type Timeline2dRenderer = {
   fps: number;
   frameCount: number;
   renderFrame: (frame: number) => Promise<void>;
+  dispose: () => void;
 };
 
 const clampInt = (value: number, min: number, max: number) => Math.max(min, Math.min(max, Math.floor(value)));
@@ -57,9 +58,41 @@ const loadVideo = async (src: string): Promise<HTMLVideoElement> => {
 const seekVideo = async (video: HTMLVideoElement, t: number): Promise<void> => {
   const duration = Number.isFinite(video.duration) ? video.duration : 0;
   const safeTime = duration > 0 ? clamp(t, 0, Math.max(0, duration - 0.001)) : Math.max(0, t);
-  return await new Promise((resolve) => {
-    const done = () => resolve();
-    video.addEventListener('seeked', done, { once: true });
+  const SEEK_TIMEOUT_MS = 5000; // 5 second timeout
+  
+  return await new Promise((resolve, reject) => {
+    let timeoutId: number | null = null;
+    
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+    };
+    
+    const onSeeked = () => {
+      cleanup();
+      resolve();
+    };
+    
+    const onError = () => {
+      cleanup();
+      reject(new Error('Video seek failed'));
+    };
+    
+    // Set timeout
+    timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Video seek timeout'));
+    }, SEEK_TIMEOUT_MS);
+    
+    // Add event listeners
+    video.addEventListener('seeked', onSeeked, { once: true });
+    video.addEventListener('error', onError, { once: true });
+    
+    // Start seeking
     video.currentTime = safeTime;
   });
 };
@@ -128,7 +161,10 @@ const drawReferenceLayerMedia = (
     ctx.translate(-centerX, -centerY);
   }
 
-  ctx.globalAlpha = layer.opacity;
+  const safeOpacity = typeof layer.opacity === 'number' && Number.isFinite(layer.opacity) 
+    ? clamp(layer.opacity, 0, 1) 
+    : 1;
+  ctx.globalAlpha = safeOpacity;
   ctx.drawImage(media, drawX, drawY, drawW, drawH);
   ctx.globalAlpha = 1;
 
@@ -506,6 +542,47 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
     await drawFrame(pose, frame);
   };
 
-  return { canvas, fps, frameCount, renderFrame };
+  const dispose = () => {
+    // Pause and stop any video elements
+    if (backgroundMedia?.kind === 'video') {
+      backgroundMedia.video.pause();
+      backgroundMedia.video.src = '';
+      backgroundMedia.video.load();
+    }
+    if (foregroundMedia?.kind === 'video') {
+      foregroundMedia.video.pause();
+      foregroundMedia.video.src = '';
+      foregroundMedia.video.load();
+    }
+
+    // Clear image/video references
+    if (backgroundMedia?.kind === 'image') {
+      backgroundMedia.img.src = '';
+    }
+    if (foregroundMedia?.kind === 'image') {
+      foregroundMedia.img.src = '';
+    }
+    if (headMaskImg) {
+      headMaskImg.src = '';
+    }
+
+    // Clear joint mask images
+    jointMaskImgs.forEach((img) => {
+      img.src = '';
+    });
+    jointMaskImgs.clear();
+
+    // Remove canvas from DOM if it was appended
+    if (canvas.parentNode) {
+      canvas.parentNode.removeChild(canvas);
+    }
+
+    // Null out references (only non-const variables)
+    (backgroundMedia as any) = null;
+    (foregroundMedia as any) = null;
+    (headMaskImg as any) = null;
+  };
+
+  return { canvas, fps, frameCount, renderFrame, dispose };
 };
 
