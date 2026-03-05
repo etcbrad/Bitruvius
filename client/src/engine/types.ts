@@ -311,6 +311,12 @@ export type TextOverlay = {
   x?: number;
   y?: number;
   rotation?: number;
+  /**
+   * Intertitles can optionally draw a full-canvas background image.
+   * Stored as a data URL (or remote URL) for portability.
+   */
+  bgSrc?: string | null;
+  bgOpacity?: number;
 };
 
 // Point is an alias for Vector2D for compatibility

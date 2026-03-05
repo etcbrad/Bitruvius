@@ -274,6 +274,7 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
   const headMaskImg = scene.headMask?.src && scene.headMask.visible ? await loadImage(scene.headMask.src) : null;
 
   const jointMaskImgs = new Map<string, HTMLImageElement>();
+  const overlayBgImgs = new Map<string, HTMLImageElement>();
   const loadMaskImg = async (src: string): Promise<HTMLImageElement | null> => {
     if (!src) return null;
     const cached = jointMaskImgs.get(src);
@@ -289,6 +290,18 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
   for (const mask of Object.values(scene.jointMasks ?? {})) {
     if (!mask?.src || !mask.visible) continue;
     await loadMaskImg(mask.src);
+  }
+  for (const o of Array.isArray(scene.textOverlays) ? scene.textOverlays : []) {
+    if (o?.kind !== 'intertitle') continue;
+    const src = (o as any).bgSrc;
+    if (typeof src !== 'string' || !src) continue;
+    if (overlayBgImgs.has(src)) continue;
+    try {
+      const img = await loadImage(src);
+      overlayBgImgs.set(src, img);
+    } catch {
+      // ignore (fallback to solid fill during render)
+    }
   }
 
   const lines: Array<{ from: string; to: string; type: Connection['type'] }> = [];
@@ -317,15 +330,55 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
 
       if (o.kind === 'intertitle') {
         ctx.save();
-        ctx.globalAlpha = 0.85;
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.globalAlpha = 1;
+        const bgSrc = (o as any).bgSrc;
+        const bgOpacityRaw = (o as any).bgOpacity;
+        const bgOpacity =
+          typeof bgOpacityRaw === 'number' && Number.isFinite(bgOpacityRaw) ? Math.max(0, Math.min(1, bgOpacityRaw)) : 1;
+
+        const drawCover = (img: HTMLImageElement) => {
+          const iw = img.naturalWidth || img.width;
+          const ih = img.naturalHeight || img.height;
+          if (!iw || !ih) return;
+          const s = Math.max(canvas.width / iw, canvas.height / ih);
+          const dw = iw * s;
+          const dh = ih * s;
+          const dx = (canvas.width - dw) / 2;
+          const dy = (canvas.height - dh) / 2;
+          ctx.drawImage(img, dx, dy, dw, dh);
+        };
+
+        if (typeof bgSrc === 'string' && bgSrc) {
+          const img = overlayBgImgs.get(bgSrc) ?? null;
+          if (img) {
+            ctx.globalAlpha = bgOpacity;
+            drawCover(img);
+            ctx.globalAlpha = 1;
+          } else {
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.globalAlpha = 1;
+          }
+        } else {
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.globalAlpha = 1;
+        }
+
         ctx.fillStyle = o.color || '#ffffff';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.font = `${Math.max(8, (o.fontSize || 48) * scale)}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
-        ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+        const x = typeof o.x === 'number' ? o.x * scale : canvas.width / 2;
+        const y = typeof o.y === 'number' ? o.y * scale : canvas.height / 2;
+        if (o.rotation && o.rotation !== 0) {
+          ctx.translate(x, y);
+          ctx.rotate((o.rotation * Math.PI) / 180);
+          ctx.fillText(text, 0, 0);
+        } else {
+          ctx.fillText(text, x, y);
+        }
         ctx.restore();
         continue;
       }

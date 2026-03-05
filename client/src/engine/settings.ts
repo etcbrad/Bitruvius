@@ -222,6 +222,8 @@ const sanitizeTextOverlays = (raw: unknown, frameCount: number): TextOverlay[] =
       x: isFiniteNumber(o.x) ? o.x : undefined,
       y: isFiniteNumber(o.y) ? o.y : undefined,
       rotation: isFiniteNumber(o.rotation) ? o.rotation : 0,
+      bgSrc: typeof (o as any).bgSrc === 'string' ? ((o as any).bgSrc as string) : null,
+      bgOpacity: isFiniteNumber((o as any).bgOpacity) ? clamp((o as any).bgOpacity as number, 0, 1) : 1,
     });
   }
   return out;

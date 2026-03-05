@@ -6175,83 +6175,6 @@ export default function App() {
       <div className="mt-2 text-[#666] text-[9px]">
         {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
       </div>
-
-      <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
-          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">{getBoneHex(state.boneStyle)}</div>
-        </div>
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
-              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
-            </div>
-            <Slider
-              min={0}
-              max={1}
-              step={0.01}
-              value={[state.boneStyle?.hueT ?? 0]}
-              onValueChange={(values) => {
-                const v = values[0] ?? 0;
-                setStateWithHistory('bone_style:hue', (prev) => ({
-                  ...prev,
-                  boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
-                }));
-              }}
-              className="w-full"
-              trackClassName="bg-transparent h-2"
-              rangeClassName="bg-transparent"
-              thumbClassName="border-white/20"
-              trackStyle={{
-                background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
-              }}
-              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
-              thumbStyle={{
-                backgroundColor: getBoneHex(state.boneStyle),
-                boxShadow: '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
-              }}
-            />
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
-              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
-            </div>
-            <Slider
-              min={-0.5}
-              max={0.5}
-              step={0.01}
-              value={[state.boneStyle?.lightness ?? 0]}
-              onValueChange={(values) => {
-                const v = values[0] ?? 0;
-                setStateWithHistory('bone_style:lightness', (prev) => ({
-                  ...prev,
-                  boneStyle: {
-                    ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }),
-                    lightness: clamp(v, -1, 1),
-                  },
-                }));
-              }}
-              className="w-full"
-              trackClassName="bg-transparent h-2"
-              rangeClassName="bg-transparent"
-              thumbClassName="border-white/20"
-              trackStyle={{
-                background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(
-                  getBoneHex(state.boneStyle),
-                  0.45,
-                )})`,
-              }}
-              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
-              thumbStyle={{
-                backgroundColor: getBoneHex(state.boneStyle),
-                boxShadow: '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
-              }}
-            />
-          </div>
-        </div>
-      </div>
     </section>
   );
 
@@ -7833,11 +7756,17 @@ export default function App() {
             <div
               className={`flex items-center gap-3 ${sidebarTab === 'global' && !manikinMode ? 'opacity-0 pointer-events-none select-none' : ''}`}
             >
-              <div className="p-2 bg-white rounded-lg">
+              <button
+                id="mode-toggle-btn"
+                type="button"
+                onClick={() => setManikinModeEnabled(!manikinMode)}
+                className="p-2 bg-white rounded-lg hover:opacity-90 active:opacity-80 transition-opacity"
+                title={manikinMode ? 'Switch to IK mode' : 'Switch to Build mode'}
+              >
                 <div className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest text-black/80">
                   {manikinMode ? 'Build' : 'IK'}
                 </div>
-              </div>
+              </button>
               <div>
                 <h1 className={`text-lg font-bold tracking-tight ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>BITRUVIUS</h1>
                 <p className="text-[11px] text-white/70">

@@ -6,6 +6,8 @@ import { Slider } from '@/components/ui/slider';
 import { RotationWheelControl, type MaskInfo, type PieceInfo } from '@/components/RotationWheelControl';
 import { AngleDial } from '@/components/AngleDial';
 import type { ControlMode } from '@/engine/types';
+import { BONE_PALETTE } from '@/app/constants';
+import { applyLightness, getBoneHex, rgbCss } from '@/app/color';
 
 export type MaskDragMode =
   | 'move'
@@ -349,6 +351,83 @@ export function JointMaskWidget({
 
   return (
     <div className="space-y-4">
+      <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">{getBoneHex(state.boneStyle)}</div>
+        </div>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
+              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
+            </div>
+            <Slider
+              min={0}
+              max={1}
+              step={0.01}
+              value={[state.boneStyle?.hueT ?? 0]}
+              onValueChange={(values) => {
+                const v = values[0] ?? 0;
+                setStateWithHistory('bone_style:hue', (prev) => ({
+                  ...prev,
+                  boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
+                }));
+              }}
+              className="w-full"
+              trackClassName="bg-transparent h-2"
+              rangeClassName="bg-transparent"
+              thumbClassName="border-white/20"
+              trackStyle={{
+                background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
+              }}
+              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
+              thumbStyle={{
+                backgroundColor: getBoneHex(state.boneStyle),
+                boxShadow: '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+              }}
+            />
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
+              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
+            </div>
+            <Slider
+              min={-0.5}
+              max={0.5}
+              step={0.01}
+              value={[state.boneStyle?.lightness ?? 0]}
+              onValueChange={(values) => {
+                const v = values[0] ?? 0;
+                setStateWithHistory('bone_style:lightness', (prev) => ({
+                  ...prev,
+                  boneStyle: {
+                    ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }),
+                    lightness: clamp(v, -1, 1),
+                  },
+                }));
+              }}
+              className="w-full"
+              trackClassName="bg-transparent h-2"
+              rangeClassName="bg-transparent"
+              thumbClassName="border-white/20"
+              trackStyle={{
+                background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(
+                  getBoneHex(state.boneStyle),
+                  0.45,
+                )})`,
+              }}
+              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
+              thumbStyle={{
+                backgroundColor: getBoneHex(state.boneStyle),
+                boxShadow: '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="flex bg-[#222] rounded-lg p-1">
         {(['joint', 'head'] as const).map((t) => (
           <button

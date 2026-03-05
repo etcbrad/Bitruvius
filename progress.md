@@ -177,6 +177,8 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 
 2026-03-05
 - Placement stability: on joint drop, capture current wire rest lengths and briefly hard-pin the dropped joint so poses don’t continue to “swim” after release (`client/src/App.tsx`).
+- UI: made the Build/IK pill in the sidebar header clickable (`#mode-toggle-btn`) to toggle modes via the existing mode transition logic (`client/src/App.tsx`).
+- UI: moved Bone Color controls out of `Look` and into the `Masks` widget (`client/src/App.tsx`, `client/src/components/JointMaskWidget.tsx`).
 
 2026-03-04
 - Pose-physics anti-flicker: detect A↔B 2-cycle jitter at rest and snap to the midpoint (“median of two states”), then re-apply hard root pins and convert back to offsets (`client/src/App.tsx`).
