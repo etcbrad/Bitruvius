@@ -47,12 +47,12 @@ export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
   };
 
   // Left arm slots
-  slots['l_upper_arm'] = createSlot('l_upper_arm', 'L Upper Arm', 'l_shoulder', 'l_elbow', 40);
+  slots['l_upper_arm'] = createSlot('l_upper_arm', 'L Upper Arm', 'l_clavicle', 'l_elbow', 40);
   slots['l_forearm'] = createSlot('l_forearm', 'L Forearm', 'l_elbow', 'l_wrist', 35);
   slots['l_hand'] = createSlot('l_hand', 'L Hand', 'l_wrist', 'l_fingertip', 30);
 
   // Right arm slots
-  slots['r_upper_arm'] = createSlot('r_upper_arm', 'R Upper Arm', 'r_shoulder', 'r_elbow', 40);
+  slots['r_upper_arm'] = createSlot('r_upper_arm', 'R Upper Arm', 'r_clavicle', 'r_elbow', 40);
   slots['r_forearm'] = createSlot('r_forearm', 'R Forearm', 'r_elbow', 'r_wrist', 35);
   slots['r_hand'] = createSlot('r_hand', 'R Hand', 'r_wrist', 'r_fingertip', 30);
 

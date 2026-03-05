@@ -20,8 +20,8 @@ export const computeCogWorld = (
     { id: 'head', w: 1 },
     { id: 'l_hip', w: 1 },
     { id: 'r_hip', w: 1 },
-    { id: 'l_shoulder', w: 1 },
-    { id: 'r_shoulder', w: 1 },
+    { id: 'l_upper_arm', w: 1 },
+    { id: 'r_upper_arm', w: 1 },
   ];
 
   let sumW = 0;

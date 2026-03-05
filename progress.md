@@ -175,6 +175,9 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
   - Project export/import: bumped engine state schema to `state@2` and migrated `state@1` mask offsets on import so existing projects preserve placement (`client/src/engine/serialization.ts`).
   - Build/test: `npm run check` + `npm test` pass; Playwright smoke artifacts: `output/web-game/mask-placement-snap-2026-03-04b/shot-0.png`, `output/web-game/mask-placement-snap-2026-03-04b/state-0.json`.
 
+2026-03-05
+- Placement stability: on joint drop, capture current wire rest lengths and briefly hard-pin the dropped joint so poses don’t continue to “swim” after release (`client/src/App.tsx`).
+
 2026-03-04
 - Pose-physics anti-flicker: detect A↔B 2-cycle jitter at rest and snap to the midpoint (“median of two states”), then re-apply hard root pins and convert back to offsets (`client/src/App.tsx`).
   - Resets stabilizer history on engine reset, physics handshake changes, and when pose-physics is inactive.

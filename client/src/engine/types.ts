@@ -139,6 +139,11 @@ type MaskBase = {
   grayscale: number;
   sepia: number;
   invert: number;
+  /**
+   * Pixelation block size in px-like units (0 = off).
+   * Live SVG uses pixelated sampling; exports may apply true pixelation.
+   */
+  pixelate: number;
 };
 
 export type CutoutAsset = {
@@ -219,6 +224,7 @@ export type JointMask = {
   grayscale: MaskBase['grayscale'];
   sepia: MaskBase['sepia'];
   invert: MaskBase['invert'];
+  pixelate: MaskBase['pixelate'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
    * When empty, the mask uses the joint's parent (if any) as its relationship.
@@ -252,6 +258,7 @@ export type HeadMask = {
   grayscale: MaskBase['grayscale'];
   sepia: MaskBase['sepia'];
   invert: MaskBase['invert'];
+  pixelate: MaskBase['pixelate'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
    * When empty, the head mask uses `neck_upper` as its relationship.
@@ -402,6 +409,8 @@ export type BoneStyle = {
   lightness: number;
 };
 
+export type ArmViewMode = '2D' | '3D' | 'hybrid';
+
 export type SkeletonState = {
   joints: Record<string, Joint>;
   mirroring: boolean;
@@ -427,6 +436,11 @@ export type SkeletonState = {
    */
   activeRoots: string[];
   /**
+   * Deactivated joints remain perfectly straight and don't bend.
+   * Used to effectively merge joints into single straight bones.
+   */
+  deactivatedJoints: Set<string>;
+  /**
    * When no joint roots are active, the engine uses a "Ground Root" that anchors
    * the center of gravity (sternum-heavy) to this world-space target.
    */
@@ -439,6 +453,7 @@ export type SkeletonState = {
   showJoints: boolean;
   jointsOverMasks: boolean;
   lookMode: LookModeId;
+  armViewMode: ArmViewMode;
   controlMode: ControlMode;
   rigidity: RigidityPreset;
   snappiness: number;

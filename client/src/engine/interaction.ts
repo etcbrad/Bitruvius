@@ -43,8 +43,8 @@ const getIkRootForEffector = (effectorId: string): string | null => {
   // Heuristic anchors (avoid pulling the whole spine around for limb IK).
   // These match the current rig in `src/engine/model.ts`.
   if (effectorId === 'head') return 'neck_upper';
-  if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_shoulder';
-  if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_shoulder';
+  if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_upper_arm';
+  if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_upper_arm';
   if (effectorId === 'l_ankle') return 'l_hip';
   if (effectorId === 'r_ankle') return 'r_hip';
   if (effectorId === 'l_toe') return 'l_hip';
@@ -186,9 +186,9 @@ export const applyDragToState = (
     
     // Rotate all joints in the nested kinematic chain above sacrum
     // This respects the hierarchy: Sacrum → Navel → Sternum → Collar (Branch Point)
-    const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 'neck_upper', 'head', 
+    const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 'head', 
                           'l_nipple', 'r_nipple', 'l_rib', 'r_rib',
-                          'l_clavicle', 'r_clavicle', 'l_shoulder', 'r_shoulder', 'l_elbow', 'r_elbow', 
+                          'l_clavicle', 'r_clavicle', 'l_upper_arm', 'r_upper_arm', 'l_elbow', 'r_elbow', 
                           'l_wrist', 'r_wrist', 'l_fingertip', 'r_fingertip'];
     
     for (const jointId of jointsToRotate) {
@@ -491,7 +491,7 @@ export const applyBalanceDragToState = (
   // This avoids "teleporty" balance shifts and produces a more rigid cutout presence.
   const extraPins = Math.max(0, pinnedCount - pinnedAnkles.length);
   // Default state should feel rigid: reduce lag/sway, especially for top handles.
-  const baseFollow = draggingId === 'head' || draggingId === 'neck_base' || draggingId === 'neck_upper' ? 0.985 : 1.0;
+  const baseFollow = draggingId === 'head' || draggingId === 'neck_base' ? 0.985 : 1.0;
   const follow = clamp(baseFollow / (1 + extraPins * 0.14), 0.72, 1.0);
 
   const delta = scalePoint(desiredDelta, t * follow);

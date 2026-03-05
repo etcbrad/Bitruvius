@@ -38,8 +38,8 @@ export const applyAtomicScaling = (state: SkeletonState, segment: ScalingSegment
     case 'shoulderSpan': {
       scaleJoint('l_clavicle', factor, 1);
       scaleJoint('r_clavicle', factor, 1);
-      scaleJoint('l_shoulder', factor, 1);
-      scaleJoint('r_shoulder', factor, 1);
+      scaleJoint('l_upper_arm', factor, 1);
+      scaleJoint('r_upper_arm', factor, 1);
       break;
     }
     case 'brachialIndex': {

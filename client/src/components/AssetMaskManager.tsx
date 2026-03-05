@@ -642,43 +642,14 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
 
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px]">
-                      <span>Head/Neck</span>
-                      <span className="text-[#999]">
-                        {(() => {
-                          const base = state.scene.headMask?.relatedJoints?.[0];
-                          if (base === 'sternum') return 'Sternum';
-                          if (base === 'collar') return 'Collar';
-                          if (base === 'neck_upper') return 'Upper Neck';
-                          return 'Separate';
-                        })()}
-                      </span>
+                      <span>Head Rotation Point</span>
+                      <span className="text-[#666]">NECK BASE</span>
                     </div>
-                    <select
-                      multiple={false}
-                      value={state.scene.headMask?.relatedJoints?.[0] || 'neck_base'}
-                      onPointerDownCapture={(e) => e.stopPropagation()}
-                      onMouseDownCapture={(e) => e.stopPropagation()}
-                      onChange={(e) =>
-                        setStateWithHistory('head_mask_base_joint', (prev) => ({
-                          ...prev,
-                          scene: {
-                            ...prev.scene,
-                            headMask: {
-                              ...(prev.scene.headMask || {}),
-                              relatedJoints: e.target.value === 'neck_base' ? [] : [e.target.value],
-                            },
-                          },
-                        }))
-                      }
-                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                    >
-                      <option value="neck_base">Separate (Head only)</option>
-                      <option value="neck_upper">Upper Neck</option>
-                      <option value="collar">Collar Joint</option>
-                      <option value="sternum">Sternum</option>
-                    </select>
+                    <div className="text-[9px] text-[#555] text-center py-2">
+                      Head masks always rotate at the neck base joint
+                    </div>
                   </div>
-                  
+
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px]">
                       <span>Opacity</span>

@@ -5,8 +5,8 @@ import { getWorldPosition } from './kinematics';
 export const applyArmLengthAdjustment = (state: SkeletonState, scaleFactor: number = 0.75): SkeletonState => {
   const nextJoints = { ...state.joints };
   const armChains = {
-    left: ['collar', 'l_clavicle', 'l_shoulder', 'l_elbow', 'l_wrist', 'l_fingertip'],
-    right: ['collar', 'r_clavicle', 'r_shoulder', 'r_elbow', 'r_wrist', 'r_fingertip'],
+    left: ['collar', 'l_clavicle', 'l_bicep', 'l_elbow', 'l_wrist', 'l_fingertip'],
+    right: ['collar', 'r_clavicle', 'r_bicep', 'r_elbow', 'r_wrist', 'r_fingertip'],
   };
 
   for (const chain of Object.values(armChains)) {
@@ -41,7 +41,7 @@ export const validateArmSymmetry = (
 
   const mirrorPairs: Array<[string, string]> = [
     ['l_clavicle', 'r_clavicle'],
-    ['l_shoulder', 'r_shoulder'],
+    ['l_bicep', 'r_bicep'],
     ['l_elbow', 'r_elbow'],
     ['l_wrist', 'r_wrist'],
     ['l_fingertip', 'r_fingertip'],
@@ -75,14 +75,16 @@ export const getArmSegmentLengths = (state: SkeletonState): Record<string, numbe
   const lengths: Record<string, number> = {};
 
   const segments = [
+    // Left arm segments
     { name: 'l_clavicle_inner', from: 'collar', to: 'l_clavicle' },
-    { name: 'l_clavicle_outer', from: 'l_clavicle', to: 'l_shoulder' },
-    { name: 'l_humerus', from: 'l_shoulder', to: 'l_elbow' },
+    { name: 'l_clavicle_outer', from: 'l_clavicle', to: 'l_bicep' },
+    { name: 'l_humerus', from: 'l_bicep', to: 'l_elbow' },
     { name: 'l_radius', from: 'l_elbow', to: 'l_wrist' },
     { name: 'l_hand', from: 'l_wrist', to: 'l_fingertip' },
+    // Right arm segments
     { name: 'r_clavicle_inner', from: 'collar', to: 'r_clavicle' },
-    { name: 'r_clavicle_outer', from: 'r_clavicle', to: 'r_shoulder' },
-    { name: 'r_humerus', from: 'r_shoulder', to: 'r_elbow' },
+    { name: 'r_clavicle_outer', from: 'r_clavicle', to: 'r_bicep' },
+    { name: 'r_humerus', from: 'r_bicep', to: 'r_elbow' },
     { name: 'r_radius', from: 'r_elbow', to: 'r_wrist' },
     { name: 'r_hand', from: 'r_wrist', to: 'r_fingertip' },
   ];
@@ -105,8 +107,8 @@ export const toggleMirroringWithSymmetry = (state: SkeletonState): SkeletonState
   if (!newMirroring) return { ...state, mirroring: false };
 
   const nextJoints = { ...state.joints };
-  const leftArmJoints = ['l_clavicle', 'l_shoulder', 'l_elbow', 'l_wrist', 'l_fingertip'];
-  const rightArmJoints = ['r_clavicle', 'r_shoulder', 'r_elbow', 'r_wrist', 'r_fingertip'];
+  const leftArmJoints = ['l_clavicle', 'l_bicep', 'l_elbow', 'l_wrist', 'l_fingertip'];
+  const rightArmJoints = ['r_clavicle', 'r_bicep', 'r_elbow', 'r_wrist', 'r_fingertip'];
 
   for (let i = 0; i < leftArmJoints.length; i++) {
     const leftId = leftArmJoints[i];

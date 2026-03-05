@@ -1060,3 +1060,12 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
     </div>
   );
 };
+
+export const ManikinGlobalPanel: React.FC = () => {
+  return (
+    <div className="p-4 text-center text-white/60">
+      <div className="text-lg font-semibold mb-2">Global Settings</div>
+      <div className="text-sm">Global panel functionality coming soon...</div>
+    </div>
+  );
+};

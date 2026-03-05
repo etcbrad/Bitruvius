@@ -62,6 +62,7 @@ import { applyGroundRootCorrectionToJoints, computeGroundPivotWorld, computeTouc
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
 import { buildWorldPoseFromJoints, worldPoseToOffsets } from './engine/physics/xpbd';
 import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
+import { applyDeactivationConstraints, toggleJointDeactivation } from './engine/jointDeactivation';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
 import { reconcileSkeletonState } from './engine/reconcileSkeletonState';
 import { syncLegacyMasksToCutouts } from './engine/legacyMaskSync';
@@ -79,7 +80,7 @@ import { ProcgenWidget } from './components/ProcgenWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
 import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
-import { ManikinConsole } from './components/ManikinConsole';
+import { ManikinConsole, ManikinGlobalPanel } from './components/ManikinConsole';
 import { CollapsibleSection } from './components/CollapsibleSection';
 import type { TransitionIssue } from '@/lib/transitionIssues';
 import {
@@ -311,6 +312,14 @@ export default function App() {
 
   const [state, setState] = useState<SkeletonState>(() => initRef.current!.state);
 
+  // Control mode UI configuration
+  const controlModeUi: Record<ControlMode, { title: string; label: string }> = {
+    Cardboard: { title: 'Rigid rotation mode', label: 'Rigid' },
+    Rubberband: { title: 'Elastic deformation mode', label: 'Elastic' },
+    IK: { title: 'Inverse kinematics mode', label: 'Root' },
+    JointDrag: { title: 'Direct joint manipulation', label: 'Direct' },
+  };
+
   // Keep FK/IK-ish settings separate: Cardboard uses the FK group, everything else uses the IK group.
   // This allows quick switching between rigid rotation and IK without constantly re-toggling options.
   const controlSettingsCacheRef = useRef<ControlSettingsCache>(initRef.current!.controlSettingsCache);
@@ -447,6 +456,8 @@ export default function App() {
     wireRestLengths: Record<string, number>;
     pin?: { id: string; target: Point };
   }>(null);
+  const wireRestHoldRef = useRef<null | { token: string; wireRestLengths: Record<string, number> }>(null);
+  const postDropPinRef = useRef<null | { id: string; target: Point; expiresMs: number }>(null);
   const headDragMomentumRef = useRef<{ dx: number; dy: number } | null>(null);
   const posePhysicsWorldHistoryRef = useRef<{
     prev: Record<string, Point> | null;
@@ -532,6 +543,21 @@ export default function App() {
       // no-op
     }
   }, [manikinSidebarTab]);
+
+  const setMaskJointIdAndSelect = useCallback(
+    (id: string) => {
+      setMaskJointId(id);
+      setSelectedJointId(id);
+    },
+    [setMaskJointId, setSelectedJointId],
+  );
+
+  // Always reflect the currently selected joint in the side panel (and mask tools).
+  useEffect(() => {
+    if (!selectedJointId) return;
+    if (!(selectedJointId in state.joints)) return;
+    setMaskJointId(selectedJointId);
+  }, [selectedJointId, setMaskJointId, state.joints]);
   const sidebarWidgetDockRef = useRef<HTMLDivElement | null>(null);
   const [widgetDockMinimized, setWidgetDockMinimized] = useState(false);
   const [widgetDockHeightPx, setWidgetDockHeightPx] = useState(220);
@@ -639,6 +665,7 @@ export default function App() {
   const [manikinMode, setManikinMode] = useState(true);
   const manikinModeLiveRef = useRef(manikinMode);
   manikinModeLiveRef.current = manikinMode;
+  
   const nonManikinResumeRef = useRef<null | Pick<
     SkeletonState,
     | 'controlMode'
@@ -1354,7 +1381,9 @@ export default function App() {
           historyCtrlRef.current.pushUndo(actionId, prev);
         }
         if (ENGINE_PERSISTENCE_ENABLED) queueMicrotask(() => queueAutosave(next));
-        return next;
+        
+        // Apply deactivation constraints to keep deactivated joints straight
+        return applyDeactivationConstraints(next);
       });
     },
     [],
@@ -1615,7 +1644,10 @@ export default function App() {
     // Freeze the current visible pose as the new baseline so the next movement uses the new
     // settings without snapping the rig immediately.
     const currentPose = capturePoseSnapshot(prev.joints, 'current');
-    return { ...next, joints: applyPoseSnapshotToJoints(next.joints, currentPose) };
+    const nextState = { ...next, joints: applyPoseSnapshotToJoints(next.joints, currentPose) };
+    
+    // Apply deactivation constraints to keep deactivated joints straight
+    return applyDeactivationConstraints(nextState);
   }, []);
 
   const setStateNoHistory = useCallback((update: (prev: SkeletonState) => SkeletonState) => {
@@ -2106,6 +2138,7 @@ export default function App() {
               grayscale: 0,
               sepia: 0,
               invert: 0,
+              pixelate: 0,
               relatedJoints: [],
             } as any);
 
@@ -3140,18 +3173,40 @@ export default function App() {
 	            if (strainSmoothed <= strainOff) tensionReliefArmedRef.current = true;
 
 	            const baseWireCompliance = defaultWireComplianceForRigidity(prev.rigidity);
+              const wireRestHold = wireRestHoldRef.current;
+              const wireRestHoldActive = Boolean(wireRestHold) && !reliefActive && !isDirectManipulation && !drag;
+              const wireRestLengthsEffective = reliefActive
+                ? reliefWireRestLengths
+                : wireRestHoldActive
+                  ? wireRestHold!.wireRestLengths
+                  : undefined;
+              const wireRestBlendEffective = reliefActive ? reliefEase : wireRestHoldActive ? 1 : 0;
               const wireComplianceEffective = reliefActive
                 ? lerp(baseWireCompliance * 6, baseWireCompliance, reliefEase)
                 : baseWireCompliance;
               const extraConstraintsEffective = (() => {
-                if (!reliefPin) return extraConstraints;
-                const pin: any = { kind: 'pin', id: reliefPin.id, target: reliefPin.target, compliance: 0 };
-                return extraConstraints?.length ? [...extraConstraints, pin] : [pin];
+                const out: any[] = [];
+                if (extraConstraints?.length) out.push(...extraConstraints);
+                if (reliefPin) out.push({ kind: 'pin', id: reliefPin.id, target: reliefPin.target, compliance: 0 });
+
+                const postDropPin = postDropPinRef.current;
+                const postDropPinActive =
+                  Boolean(postDropPin) && !isDirectManipulation && !drag && nowMs <= postDropPin!.expiresMs;
+                if (postDropPinActive) {
+                  out.push({ kind: 'pin', id: postDropPin!.id, target: postDropPin!.target, compliance: 0 });
+                } else if (postDropPin && nowMs > postDropPin.expiresMs + 150) {
+                  postDropPinRef.current = null;
+                }
+
+                return out.length ? out : undefined;
               })();
 	            const iterationsBase = isRigidDragMode ? 28 : 16;
 	            const dampingBase = isRigidDragMode ? 0.18 : 0.12;
 	            const physicsDt = isRigidDragMode ? Math.min(dt, 1 / 60) : dt;
-	            const autoBend = prev.bendEnabled && !(isRigidDragMode && isDirectManipulation);
+	            const autoBend =
+                prev.bendEnabled &&
+                !(isRigidDragMode && isDirectManipulation) &&
+                (Boolean(drag) || isDirectManipulation);
 
 	            // Tension relief is a *one-shot preconditioner*: when the starting pose is highly strained,
 	            // project it once into a more solvable configuration, then run the normal solver settings.
@@ -3161,7 +3216,8 @@ export default function App() {
 	              tensionReliefArmedRef.current &&
 	              strainSmoothed >= strainOn &&
 	              !isDirectManipulation &&
-	              !drag
+	              !drag &&
+                !wireRestHoldActive
 	            ) {
 	              tensionReliefArmedRef.current = false;
 	              tensionReliefLastAppliedMsRef.current = nowMs;
@@ -3178,8 +3234,8 @@ export default function App() {
 	                  iterations: iterationsBase + (isRigidDragMode ? 10 : 8),
 	                  damping: dampingBase + 0.08,
 	                  wireCompliance: wireComplianceEffective,
-                    wireRestLengths: reliefWireRestLengths,
-                    wireRestBlend: reliefEase,
+                    wireRestLengths: wireRestLengthsEffective,
+                    wireRestBlend: wireRestBlendEffective,
 	                  rigidity: prev.rigidity,
 	                  hardStop: prev.hardStop,
 	                  autoBend,
@@ -3203,8 +3259,8 @@ export default function App() {
 		              iterations: iterationsBase,
 		              damping: dampingBase,
 		              wireCompliance: wireComplianceEffective,
-                  wireRestLengths: reliefWireRestLengths,
-                  wireRestBlend: reliefEase,
+                  wireRestLengths: wireRestLengthsEffective,
+                  wireRestBlend: wireRestBlendEffective,
 		              rigidity: prev.rigidity,
 		              hardStop: prev.hardStop,
 		              autoBend,
@@ -3359,8 +3415,8 @@ export default function App() {
     if (dragId === 'r_wrist' || dragId === 'r_fingertip') return 'r_shoulder';
     if (dragId === 'l_ankle') return 'l_hip';
     if (dragId === 'r_ankle') return 'r_hip';
-    return state.joints[dragId]?.parent ?? null;
-  }, [state.joints]);
+    return null;
+  }, []);
 
   useEffect(() => {
     if (state.procgen.enabled) return;
@@ -4478,8 +4534,9 @@ export default function App() {
       pinTargetsRef.current = { ...pinTargetsRef.current, [effectiveId]: nextTarget };
     }
 
-    // Post-drop transition: relieve wire tension over ~1–2s while keeping the dropped piece anchored.
-    // This prevents the common "swim" after releasing an IK drag.
+    // Post-drop: keep placement final (avoid residual settle/swim).
+    // - Capture wire-rest lengths so brace constraints stop pulling at rest.
+    // - Briefly hard-pin the dropped joint so the solver can't re-center under it.
     if (!manikinModeLiveRef.current && effectiveId && !maskDragging && !groundRootDragging && !rootLeverDraggingId && !rootRotateDragging) {
       const live = stateLiveRef.current;
       if (shouldRunPosePhysics(live)) {
@@ -4487,11 +4544,12 @@ export default function App() {
         const shouldPin = !live.activeRoots.includes(pinId);
         const pinTarget =
           pinTargetsRef.current[pinId] ?? getWorldPosition(pinId, live.joints, INITIAL_JOINTS, 'preview');
-        armPoseReliefTransition({
-          reason: 'drop',
-          durationMs: 1600,
-          pin: shouldPin ? { id: pinId, target: pinTarget } : null,
-        });
+        wireRestHoldRef.current = { token: `drop:${Math.round(performance.now())}`, wireRestLengths: captureWireRestLengths(live.joints) };
+        postDropPinRef.current = shouldPin
+          ? { id: pinId, target: pinTarget, expiresMs: performance.now() + 600 }
+          : null;
+        physicsHandshakeRef.current.blend = 1;
+        posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
       }
     }
     
@@ -5094,6 +5152,16 @@ export default function App() {
       strokeWidth = 1;
       opacity = 0.3;
       strokeColor = rgbCss(boneHex, 0.55);
+    }
+
+    // Styling for deactivated joints (locked straight)
+    const deactivatedJoints = state.deactivatedJoints || new Set<string>();
+    const isDeactivatedJoint = deactivatedJoints.has(conn.to) || deactivatedJoints.has(conn.from);
+    if (isDeactivatedJoint && !isSelectedConn) {
+      strokeColor = '#ff6b6b';
+      strokeWidth = 3;
+      opacity = 0.8;
+      dashArray = '';
     }
 
     if (isSelectedConn) {
@@ -5788,20 +5856,8 @@ export default function App() {
       if (item.kind === 'head') {
         const mask = item.mask;
 
-        const baseId = (mask.relatedJoints?.[0] && mask.relatedJoints[0] in state.joints ? mask.relatedJoints[0] : null) ?? 'neck_base';
-        const secondaryIds = (mask.relatedJoints || []).slice(1).filter((id) => id in state.joints);
-        const basePos = getWorldPosition(baseId, state.joints, INITIAL_JOINTS);
-        const secondaryCentroid = (() => {
-          if (!secondaryIds.length) return null;
-          let sx = 0;
-          let sy = 0;
-          for (const id of secondaryIds) {
-            const p = getWorldPosition(id, state.joints, INITIAL_JOINTS);
-            sx += p.x;
-            sy += p.y;
-          }
-          return { x: sx / secondaryIds.length, y: sy / secondaryIds.length };
-        })();
+        const basePos = getWorldPosition('neck_base', state.joints, INITIAL_JOINTS);
+        const secondaryCentroid = null;
 
         const headX = headPos.x * pxPerUnit + centerX;
         const headY = headPos.y * pxPerUnit + centerY;
@@ -5816,12 +5872,7 @@ export default function App() {
         const thicknessPx = headLenPx * Math.max(0.01, mask.scale);
         let width = thicknessPx;
         let height = thicknessPx;
-        const anchorUnits = (() => {
-          if (secondaryCentroid) return { x: (headPos.x + secondaryCentroid.x) / 2, y: (headPos.y + secondaryCentroid.y) / 2 };
-          // When using a custom base joint (e.g. collar), default to a midpoint anchor to keep the head/neck piece balanced.
-          if (baseId !== 'neck_base') return { x: (headPos.x + basePos.x) / 2, y: (headPos.y + basePos.y) / 2 };
-          return headPos;
-        })();
+        const anchorUnits = headPos;
         let anchorWorldX = anchorUnits.x * pxPerUnit + centerX;
         let anchorWorldY = anchorUnits.y * pxPerUnit + centerY;
 
@@ -5854,6 +5905,7 @@ export default function App() {
               transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
               filter: buildMaskCssFilter(mask),
               mixBlendMode: buildMaskMixBlendMode(mask) as any,
+              imageRendering: (mask.pixelate ?? 0) > 0 ? ('pixelated' as any) : undefined,
               pointerEvents: 'none',
             }}
           />
@@ -5968,6 +6020,7 @@ export default function App() {
             transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
             filter: buildMaskCssFilter(mask),
             mixBlendMode: buildMaskMixBlendMode(mask) as any,
+            imageRendering: (mask.pixelate ?? 0) > 0 ? ('pixelated' as any) : undefined,
             pointerEvents: maskEditArmed ? 'auto' : 'none',
             cursor: maskEditArmed ? 'grab' : 'default',
           }}
@@ -6064,13 +6117,6 @@ export default function App() {
       })()
     : null;
 
-  const controlModeUi: Record<ControlMode, { label: string; title: string }> = {
-    Cardboard: { label: 'Rigid', title: 'Rigid drag (Cardboard): crisp, stiff posing.' },
-    Rubberband: { label: 'Elastic', title: 'Elastic drag (Rubberband): stretchy, hose-like posing.' },
-    IK: { label: 'Root', title: 'Rooted posing (IK): drag rooted joints to pose limbs.' },
-    JointDrag: { label: 'Direct', title: 'Direct joint drag: move joints without extra posing modes.' },
-  };
-
   const WidgetPortal = ({ id, children }: { id: WidgetId; children: React.ReactNode }) => {
     if (activeWidgetId !== id) return null;
     return <>{children}</>;
@@ -6094,6 +6140,1670 @@ export default function App() {
       }
     });
   }, [activeWidgetId, floatingWidgetIds, focusFloatingWidget]);
+
+  type GlobalWidgetRenderOpts = { showHeader?: boolean };
+
+  const renderGlobalWidgetLook = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Maximize2 size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Look
+          </h2>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        {LOOK_MODES.map((mode) => (
+          <button
+            key={mode.id}
+            onClick={() =>
+              applyEngineTransition('set_look_mode', (prev) =>
+                prev.lookMode === mode.id ? prev : { ...prev, lookMode: mode.id as LookModeId },
+              )
+            }
+            className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all ${
+              state.lookMode === mode.id
+                ? 'bg-white text-black border-white'
+                : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'
+            }`}
+          >
+            {mode.label}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 text-[#666] text-[9px]">
+        {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
+      </div>
+
+      <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">{getBoneHex(state.boneStyle)}</div>
+        </div>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
+              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
+            </div>
+            <Slider
+              min={0}
+              max={1}
+              step={0.01}
+              value={[state.boneStyle?.hueT ?? 0]}
+              onValueChange={(values) => {
+                const v = values[0] ?? 0;
+                setStateWithHistory('bone_style:hue', (prev) => ({
+                  ...prev,
+                  boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
+                }));
+              }}
+              className="w-full"
+              trackClassName="bg-transparent h-2"
+              rangeClassName="bg-transparent"
+              thumbClassName="border-white/20"
+              trackStyle={{
+                background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
+              }}
+              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
+              thumbStyle={{
+                backgroundColor: getBoneHex(state.boneStyle),
+                boxShadow: '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+              }}
+            />
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
+              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
+            </div>
+            <Slider
+              min={-0.5}
+              max={0.5}
+              step={0.01}
+              value={[state.boneStyle?.lightness ?? 0]}
+              onValueChange={(values) => {
+                const v = values[0] ?? 0;
+                setStateWithHistory('bone_style:lightness', (prev) => ({
+                  ...prev,
+                  boneStyle: {
+                    ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }),
+                    lightness: clamp(v, -1, 1),
+                  },
+                }));
+              }}
+              className="w-full"
+              trackClassName="bg-transparent h-2"
+              rangeClassName="bg-transparent"
+              thumbClassName="border-white/20"
+              trackStyle={{
+                background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(
+                  getBoneHex(state.boneStyle),
+                  0.45,
+                )})`,
+              }}
+              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
+              thumbStyle={{
+                backgroundColor: getBoneHex(state.boneStyle),
+                boxShadow: '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderGlobalWidgetViews = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Layers size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Views
+          </h2>
+        </div>
+      )}
+      <div className="space-y-2">
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            type="button"
+            onClick={() =>
+              applyEngineTransition('create_view', (prev) => {
+                const nextName = `View ${prev.views.length + 1}`;
+                const newView = createViewPreset(nextName, prev);
+                return {
+                  ...prev,
+                  views: [...prev.views, newView],
+                  activeViewId: newView.id,
+                };
+              })
+            }
+            className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
+          >
+            New
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              applyEngineTransition('update_view_from_current', (prev) => updateViewFromCurrentState(prev, prev.activeViewId))
+            }
+            disabled={!state.activeViewId}
+            className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+              state.activeViewId ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+            }`}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => applyEngineTransition('delete_view', (prev) => deleteView(prev, prev.activeViewId))}
+            disabled={!state.activeViewId || state.views.length <= 1}
+            className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+              state.activeViewId && state.views.length > 1 ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+            }`}
+          >
+            Delete
+          </button>
+        </div>
+
+        <div className="space-y-1">
+          {state.views.map((view) => {
+            const active = view.id === state.activeViewId;
+            return (
+              <button
+                key={`view:${view.id}`}
+                type="button"
+                onClick={() => (active ? null : requestViewSwitch(view.id))}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all ${
+                  active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'
+                }`}
+                title={view.name}
+              >
+                <span className="truncate">{view.name}</span>
+                <span className={`text-[9px] ${active ? 'text-black/70' : 'text-[#444]'}`}>{active ? 'Active' : 'Switch'}</span>
+              </button>
+            );
+          })}
+          {state.views.length === 0 && <div className="text-[10px] text-[#444]">No views.</div>}
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderGlobalWidgetPixelFonts = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Terminal size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Pixel Fonts
+          </h2>
+        </div>
+      )}
+      <div className="space-y-2">
+        <select
+          multiple={false}
+          value={titleFont}
+          onChange={(e) => setTitleFont(e.target.value)}
+          className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
+        >
+          <option value="pixel-mono">Classic Pixel (Press Start)</option>
+          <option value="pixel-retro">Retro Terminal (VT323)</option>
+          <option value="pixel-terminal">Modern Terminal (IBM Plex)</option>
+          <option value="pixel-tech">Tech Mono (Share Tech)</option>
+          <option value="pixel-clean">Clean Mono (Roboto)</option>
+          <option value="pixel-display">Display Mono (Major)</option>
+          <option value="pixel-calligraphy">Pixel Calligraphy (ZCOOL)</option>
+          <option value="pixel-brush">Brush Script (Zhi Mang)</option>
+          <option value="pixel-elegant">Elegant Script (Ma Shan)</option>
+        </select>
+        <div className="text-[#666] text-[9px]">Font style for all titles and intertitles</div>
+      </div>
+    </section>
+  );
+
+  const renderGlobalWidgetBackground = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Settings2 size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Background
+          </h2>
+        </div>
+      )}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="color"
+            value={backgroundColor}
+            onChange={(e) => setBackgroundColor(e.target.value)}
+            className="w-8 h-8 rounded border border-[#333] bg-transparent cursor-pointer"
+          />
+          <input
+            type="text"
+            value={backgroundColor}
+            onChange={(e) => setBackgroundColor(e.target.value)}
+            className="flex-1 px-2 py-1 bg-[#222] rounded text-[10px] border border-white/5 font-mono"
+            placeholder="#404040"
+          />
+        </div>
+        <button
+          onClick={() => setBackgroundColor('#404040')}
+          className="w-full py-1 px-2 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase transition-all"
+        >
+          Reset to Default
+        </button>
+      </div>
+    </section>
+  );
+
+  const renderGlobalWidgetProject = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Download size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Project
+          </h2>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={downloadStateJson}
+          className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+          title="Save a project file (.json)"
+        >
+          Save Project
+        </button>
+        <button
+          type="button"
+          onClick={() => importStateInputRef.current?.click()}
+          className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+          title="Open a project file (.json)"
+        >
+          Open Project
+        </button>
+      </div>
+      <div className="grid grid-cols-2 gap-2 mt-2">
+        <button
+          type="button"
+          onClick={resetPoseToTPose}
+          className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+          title="Reset pose to T Pose (keeps masks/settings)"
+        >
+          Reset Pose
+        </button>
+        <button
+          type="button"
+          onClick={resetEngine}
+          className="py-2 bg-[#3a0f0f] hover:bg-[#4a1414] rounded-lg text-[10px] font-bold uppercase transition-all"
+          title="Reset engine: clears masks, physics, motion, and returns to FK T Pose"
+        >
+          Reset Engine
+        </button>
+      </div>
+      <input
+        ref={importStateInputRef}
+        type="file"
+        accept="application/json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          void importStateFile(file);
+          e.target.value = '';
+        }}
+      />
+    </section>
+  );
+
+  const renderGlobalWidgetExport = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Upload size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Export
+          </h2>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={exportSvg}
+          disabled={!canvasSize.width || !canvasSize.height}
+          className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+            canvasSize.width && canvasSize.height ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+          }`}
+        >
+          Export SVG
+        </button>
+        <button
+          type="button"
+          onClick={() => void exportPng()}
+          disabled={!canvasSize.width || !canvasSize.height}
+          className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+            canvasSize.width && canvasSize.height ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+          }`}
+        >
+          Export PNG
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => void exportVideo()}
+        disabled={!canvasSize.width || !canvasSize.height || !state.timeline.enabled}
+        className={`w-full mt-2 py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
+          canvasSize.width && canvasSize.height && state.timeline.enabled ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+        }`}
+        title="Export timeline as WebM"
+      >
+        Export WebM
+      </button>
+    </section>
+  );
+
+  const renderGlobalWidgetPoseCapture = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <RotateCcw size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Pose Capture
+          </h2>
+        </div>
+      )}
+      <div className="space-y-2">
+        <button onClick={addPoseSnapshot} className="w-full py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all">
+          Save Pose
+        </button>
+
+        <div className="p-2 bg-white/5 rounded-lg space-y-2">
+          <label className="flex items-center justify-between gap-3 text-[10px] select-none">
+            <span className="font-bold uppercase tracking-widest text-[#666]">Auto-capture While Dragging</span>
+            <input
+              type="checkbox"
+              checked={autoPoseCaptureEnabled}
+              onChange={(e) => setAutoPoseCaptureEnabled(e.target.checked)}
+              className="rounded accent-white"
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Capture Rate (fps)</div>
+              <input
+                type="number"
+                min={1}
+                max={60}
+                value={autoPoseCaptureFps}
+                disabled={!autoPoseCaptureEnabled}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value || '24', 10);
+                  if (!Number.isFinite(v)) return;
+                  setAutoPoseCaptureFps(clamp(v, 1, 60));
+                }}
+                className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Max Frames</div>
+              <input
+                type="number"
+                min={2}
+                max={600}
+                value={autoPoseCaptureMaxFrames}
+                disabled={!autoPoseCaptureEnabled}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value || '120', 10);
+                  if (!Number.isFinite(v)) return;
+                  setAutoPoseCaptureMaxFrames(clamp(v, 2, 600));
+                }}
+                className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">
+              <span>Overlay Weight</span>
+              <span className="font-mono text-[10px] text-[#888] normal-case">{autoPoseCaptureOverlayWeight.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={autoPoseCaptureOverlayWeight}
+              disabled={!autoPoseCaptureEnabled}
+              onChange={(e) => setAutoPoseCaptureOverlayWeight(clamp(parseFloat(e.target.value), 0, 1))}
+              className="w-full accent-white disabled:opacity-50"
+            />
+            <div className="text-[#666] text-[9px] mt-1">0 = keep base • 1 = overwrite moved joints</div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Min Movement</div>
+              <input
+                type="number"
+                step={0.001}
+                min={0}
+                max={0.1}
+                value={autoPoseCaptureMovedThreshold}
+                disabled={!autoPoseCaptureEnabled}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value || '0');
+                  if (!Number.isFinite(v)) return;
+                  setAutoPoseCaptureMovedThreshold(clamp(v, 0, 0.1));
+                }}
+                className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+              />
+            </div>
+            <div className="flex items-end">
+              <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
+                <input
+                  type="checkbox"
+                  checked={autoPoseCaptureSimplifyEnabled}
+                  disabled={!autoPoseCaptureEnabled}
+                  onChange={(e) => setAutoPoseCaptureSimplifyEnabled(e.target.checked)}
+                  className="accent-white"
+                />
+                Simplify (Fewer Poses)
+              </label>
+            </div>
+          </div>
+
+          {autoPoseCaptureSimplifyEnabled && (
+            <div>
+              <div className="text-[9px] font-bold uppercase tracking-widest text-[#666] mb-1">Simplify Amount</div>
+              <input
+                type="number"
+                step={0.001}
+                min={0}
+                max={0.1}
+                value={autoPoseCaptureSimplifyEpsilon}
+                disabled={!autoPoseCaptureEnabled}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value || '0');
+                  if (!Number.isFinite(v)) return;
+                  setAutoPoseCaptureSimplifyEpsilon(clamp(v, 0, 0.1));
+                }}
+                className="w-full px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs disabled:opacity-50"
+              />
+            </div>
+          )}
+        </div>
+
+        {selectedPoseIndices.length >= 2 && (
+          <button onClick={interpolateSelectedPoses} className="w-full py-2 bg-[#3366cc] hover:bg-[#4477dd] rounded-lg text-[10px] font-bold uppercase transition-all">
+            Interpolate Selected ({selectedPoseIndices.length} poses)
+          </button>
+        )}
+
+        <div className="space-y-1">
+          {poseSnapshots.map((h, i) => {
+            const isSelected = selectedPoseIndices.includes(i);
+            const snapshotIndex = poseSnapshots.length - i;
+
+            return (
+              <button
+                key={i}
+                onClick={(e) => {
+                  if (e.shiftKey) {
+                    togglePoseSelection(i);
+                    return;
+                  }
+                  setStateWithHistory('apply_pose_snapshot', (prev) => ({ ...prev, ...h }));
+                }}
+                onDoubleClick={() => sendPoseToTimeline(h)}
+                onContextMenu={
+                  appShellRuntime
+                    ? (e) => {
+                        e.preventDefault();
+                        togglePoseSelection(i);
+                      }
+                    : undefined
+                }
+                className={`w-full flex items-center justify-between p-2 rounded-md text-[10px] transition-colors select-none ${
+                  isSelected ? 'bg-[#3366cc]/30 border border-[#3366cc]/50' : 'bg-white/5 hover:bg-white/10'
+                }`}
+                title={
+                  appShellRuntime
+                    ? `Click to apply • Double-click to send to timeline • Right-click (or Ctrl-click) to ${isSelected ? 'deselect' : 'select'} for interpolation`
+                    : `Click to apply • Double-click to send to timeline • Shift-click to ${isSelected ? 'deselect' : 'select'} for interpolation`
+                }
+              >
+                <div className="flex items-center gap-2">
+                  {isSelected && <div className="w-2 h-2 bg-[#3366cc] rounded-full" />}
+                  <span>Pose {snapshotIndex}</span>
+                </div>
+                <span className="text-white/50">
+                  {h.timestamp ? new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {poseSnapshots.length > 0 && (
+          <div className="text-[#666] text-[9px] mt-2">
+            {selectedPoseIndices.length === 0
+              ? 'Right-click (or Ctrl-click) poses to select for interpolation'
+              : `Selected ${selectedPoseIndices.length} pose${selectedPoseIndices.length === 1 ? '' : 's'} • Right-click (or Ctrl-click) to deselect`}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
+  const renderGlobalWidgetConsole = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Terminal size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Console
+          </h2>
+        </div>
+      )}
+      <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {(['info', 'warning', 'error', 'success'] as const).map((lvl) => {
+              const active = activeLogLevels.has(lvl);
+              const color =
+                lvl === 'error'
+                  ? 'text-lime-400'
+                  : lvl === 'warning'
+                    ? 'text-yellow-300'
+                    : lvl === 'success'
+                      ? 'text-green-400'
+                      : 'text-blue-300';
+              return (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() =>
+                    setActiveLogLevels((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(lvl)) next.delete(lvl);
+                      else next.add(lvl);
+                      return next;
+                    })
+                  }
+                  className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest border ${
+                    active ? 'bg-[#222] border-[#333]' : 'bg-transparent border-[#222] opacity-60'
+                  } ${color}`}
+                >
+                  {lvl}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => setConsoleLogs([])}
+            className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
+          >
+            Clear
+          </button>
+        </div>
+
+        <div className="space-y-1 font-mono text-[11px]">
+          {filteredConsoleLogs.slice(-120).map((log) => (
+            <div key={log.id} className="flex gap-2 items-start">
+              <span className="text-[#555] shrink-0">
+                {new Date(log.ts).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                })}
+              </span>
+              <span className="text-[#666] shrink-0">{log.level.toUpperCase()}</span>
+              <span className="text-white break-words">{log.message}</span>
+            </div>
+          ))}
+          {filteredConsoleLogs.length === 0 && <div className="text-[#444]">No logs (filters may be hiding everything).</div>}
+        </div>
+      </div>
+    </section>
+  );
+
+  const renderGlobalWidgetScene = ({ showHeader = true }: GlobalWidgetRenderOpts = {}) => (
+    <section>
+      {showHeader && (
+        <div className="flex items-center gap-2 mb-4 text-[#666]">
+          <Layers size={14} />
+          <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>
+            Scene
+          </h2>
+        </div>
+      )}
+
+      {/* Vitruvian Guides */}
+      <div className="space-y-4 mb-4">
+        <div className="flex flex-col gap-2">
+          <label className="flex items-center justify-between gap-3 text-[10px]">
+            <span className="font-bold uppercase tracking-widest text-[#666]">Rings Overlay</span>
+            <input
+              type="checkbox"
+              checked={gridRingsEnabled}
+              onChange={(e) => setGridRingsEnabled(e.target.checked)}
+              className="rounded accent-white"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3 text-[10px]">
+            <span className="font-bold uppercase tracking-widest text-[#666]">Grid Overlay</span>
+            <input
+              type="checkbox"
+              checked={gridOverlayEnabled}
+              onChange={(e) => setGridOverlayEnabled(e.target.checked)}
+              className="rounded accent-white"
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="space-y-2 mb-4">
+        <Toggle
+          label="Joints"
+          active={state.showJoints}
+          onClick={() =>
+            applyEngineTransition('toggle_show_joints', (prev) => ({
+              ...prev,
+              showJoints: !prev.showJoints,
+            }))
+          }
+        />
+        <Toggle
+          label="Joints Above Masks"
+          active={state.jointsOverMasks}
+          onClick={() =>
+            applyEngineTransition('toggle_joints_over_masks', (prev) => ({
+              ...prev,
+              jointsOverMasks: !prev.jointsOverMasks,
+            }))
+          }
+        />
+      </div>
+
+      {/* Background Layer */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Background</span>
+          <button
+            onClick={() => document.getElementById('bg-upload')?.click()}
+            className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+          >
+            Upload
+          </button>
+          <input
+            id="bg-upload"
+            type="file"
+            accept="image/*,video/*,.zip,application/zip,application/x-zip-compressed"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              e.target.value = '';
+
+              const isVideo = file.type.startsWith('video/');
+              const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+              const isZip =
+                file.type === 'application/zip' ||
+                file.type === 'application/x-zip-compressed' ||
+                file.name.toLowerCase().endsWith('.zip');
+
+              const prevSeqId = state.scene.background.sequence?.id;
+              if (prevSeqId) dropReferenceSequence(prevSeqId);
+
+              if (isVideo) {
+                const url = URL.createObjectURL(file);
+                setStateWithHistory('upload_background_video', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    background: {
+                      ...prev.scene.background,
+                      src: url,
+                      visible: true,
+                      mediaType: 'video',
+                      videoStart: 0,
+                      videoRate: 1,
+                      sequence: null,
+                    },
+                  },
+                }));
+                return;
+              }
+
+              if (isGif || isZip) {
+                try {
+                  addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for background...`);
+                  const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
+                  const seq = await loadReferenceSequenceFromFile(file, fps);
+                  referenceSequencesRef.current.set(seq.id, seq);
+
+                  const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
+                  setStateWithHistory('upload_background_sequence', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      background: {
+                        ...prev.scene.background,
+                        src,
+                        visible: true,
+                        mediaType: 'sequence',
+                        videoStart: 0,
+                        videoRate: 1,
+                        sequence: {
+                          id: seq.id,
+                          kind: seq.kind,
+                          frameCount: seq.frames.length,
+                          fps: seq.fps,
+                        },
+                      },
+                    },
+                  }));
+                  addConsoleLog('success', `Background sequence loaded (${seq.frames.length} frames).`);
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : 'Failed to load sequence';
+                  addConsoleLog('error', `Background sequence failed: ${message}`);
+                  alert(`Background sequence failed: ${message}`);
+                }
+                return;
+              }
+
+              const url = URL.createObjectURL(file);
+              setStateWithHistory('upload_background_image', (prev) => ({
+                ...prev,
+                scene: {
+                  ...prev.scene,
+                  background: {
+                    ...prev.scene.background,
+                    src: url,
+                    visible: true,
+                    mediaType: 'image',
+                    videoStart: 0,
+                    videoRate: 1,
+                    sequence: null,
+                  },
+                },
+              }));
+
+              if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, 'background');
+            }}
+          />
+        </div>
+
+        {state.scene.background.src && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={state.scene.background.visible}
+                onChange={(e) =>
+                  setStateWithHistory('toggle_background', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      background: { ...prev.scene.background, visible: e.target.checked },
+                    },
+                  }))
+                }
+                className="rounded"
+              />
+              <span className="text-[10px]">Visible</span>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span>Opacity</span>
+                <span>{(state.scene.background.opacity * 100).toFixed(0)}%</span>
+              </div>
+              <Slider
+                min={0}
+                max={1}
+                step={0.01}
+                value={[state.scene.background.opacity]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('background_opacity', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      background: { ...prev.scene.background, opacity: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Position X</span>
+                <span>{state.scene.background.x.toFixed(0)}px</span>
+              </div>
+              <Slider
+                min={-2000}
+                max={2000}
+                step={1}
+                value={[state.scene.background.x]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('background_x', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      background: { ...prev.scene.background, x: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Position Y</span>
+                <span>{state.scene.background.y.toFixed(0)}px</span>
+              </div>
+              <Slider
+                min={-2000}
+                max={2000}
+                step={1}
+                value={[state.scene.background.y]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('background_y', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      background: { ...prev.scene.background, y: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Scale</span>
+                <span>{state.scene.background.scale.toFixed(2)}x</span>
+              </div>
+              <Slider
+                min={0.01}
+                max={5}
+                step={0.01}
+                value={[state.scene.background.scale]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('background_scale', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      background: { ...prev.scene.background, scale: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <select
+              multiple={false}
+              value={state.scene.background.fitMode}
+              onChange={(e) =>
+                setStateWithHistory('background_fit', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    background: {
+                      ...prev.scene.background,
+                      fitMode: e.target.value as 'contain' | 'cover' | 'fill' | 'none',
+                    },
+                  },
+                }))
+              }
+              className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+            >
+              <option value="contain">Contain</option>
+              <option value="cover">Cover</option>
+              <option value="fill">Fill</option>
+              <option value="none">None</option>
+            </select>
+
+            {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && (
+              <div className="space-y-2 p-2 rounded-md bg-white/5 border border-white/10">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-[#777]">Timing</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-[#666]">Start (s)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={state.scene.background.videoStart}
+                      onChange={(e) =>
+                        setStateWithHistory('background_video_start', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            background: { ...prev.scene.background, videoStart: parseFloat(e.target.value) || 0 },
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">Rate</label>
+                    <input
+                      type="number"
+                      min={0.05}
+                      max={4}
+                      step={0.05}
+                      value={state.scene.background.videoRate}
+                      onChange={(e) =>
+                        setStateWithHistory('background_video_rate', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            background: { ...prev.scene.background, videoRate: parseFloat(e.target.value) || 1 },
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                </div>
+                {state.scene.background.mediaType === 'video' && (
+                  <div className="text-[9px] text-[#666]">PNG/SVG exports don&apos;t embed videos yet (use WebM export).</div>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={() => {
+                const seqId = state.scene.background.sequence?.id;
+                if (seqId) dropReferenceSequence(seqId);
+                setStateWithHistory('clear_background', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    background: { ...prev.scene.background, src: null, visible: false, mediaType: 'image', sequence: null },
+                  },
+                }));
+              }}
+              className="w-full py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Foreground Layer */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Foreground</span>
+          <button
+            onClick={() => document.getElementById('fg-upload')?.click()}
+            className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+          >
+            Upload
+          </button>
+          <input
+            id="fg-upload"
+            type="file"
+            accept="image/*,video/*,.zip,application/zip,application/x-zip-compressed"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              e.target.value = '';
+
+              const isVideo = file.type.startsWith('video/');
+              const isGif = file.type === 'image/gif' || file.name.toLowerCase().endsWith('.gif');
+              const isZip =
+                file.type === 'application/zip' ||
+                file.type === 'application/x-zip-compressed' ||
+                file.name.toLowerCase().endsWith('.zip');
+
+              const prevSeqId = state.scene.foreground.sequence?.id;
+              if (prevSeqId) dropReferenceSequence(prevSeqId);
+
+              if (isVideo) {
+                const url = URL.createObjectURL(file);
+                setStateWithHistory('upload_foreground_video', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    foreground: {
+                      ...prev.scene.foreground,
+                      src: url,
+                      visible: true,
+                      mediaType: 'video',
+                      videoStart: 0,
+                      videoRate: 1,
+                      sequence: null,
+                    },
+                  },
+                }));
+                return;
+              }
+
+              if (isGif || isZip) {
+                try {
+                  addConsoleLog('info', `Loading ${isGif ? 'GIF' : 'ZIP'} sequence for foreground...`);
+                  const fps = Math.max(1, Math.floor(state.timeline.clip?.fps || 24));
+                  const seq = await loadReferenceSequenceFromFile(file, fps);
+                  referenceSequencesRef.current.set(seq.id, seq);
+
+                  const src = isGif ? URL.createObjectURL(file) : `zip:${seq.id}`;
+                  setStateWithHistory('upload_foreground_sequence', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      foreground: {
+                        ...prev.scene.foreground,
+                        src,
+                        visible: true,
+                        mediaType: 'sequence',
+                        videoStart: 0,
+                        videoRate: 1,
+                        sequence: {
+                          id: seq.id,
+                          kind: seq.kind,
+                          frameCount: seq.frames.length,
+                          fps: seq.fps,
+                        },
+                      },
+                    },
+                  }));
+                  addConsoleLog('success', `Foreground sequence loaded (${seq.frames.length} frames).`);
+                } catch (err) {
+                  const message = err instanceof Error ? err.message : 'Failed to load sequence';
+                  addConsoleLog('error', `Foreground sequence failed: ${message}`);
+                  alert(`Foreground sequence failed: ${message}`);
+                }
+                return;
+              }
+
+              const url = URL.createObjectURL(file);
+              setStateWithHistory('upload_foreground_image', (prev) => ({
+                ...prev,
+                scene: {
+                  ...prev.scene,
+                  foreground: {
+                    ...prev.scene.foreground,
+                    src: url,
+                    visible: true,
+                    mediaType: 'image',
+                    videoStart: 0,
+                    videoRate: 1,
+                    sequence: null,
+                  },
+                },
+              }));
+
+              if (ENGINE_PERSISTENCE_ENABLED) await cacheImageFromUrl(url, 'foreground');
+            }}
+          />
+        </div>
+
+        {state.scene.foreground.src && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={state.scene.foreground.visible}
+                onChange={(e) =>
+                  setStateWithHistory('toggle_foreground', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      foreground: { ...prev.scene.foreground, visible: e.target.checked },
+                    },
+                  }))
+                }
+                className="rounded"
+              />
+              <span className="text-[10px]">Visible</span>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span>Opacity</span>
+                <span>{(state.scene.foreground.opacity * 100).toFixed(0)}%</span>
+              </div>
+              <Slider
+                min={0}
+                max={1}
+                step={0.01}
+                value={[state.scene.foreground.opacity]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('foreground_opacity', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      foreground: { ...prev.scene.foreground, opacity: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Position X</span>
+                <span>{state.scene.foreground.x.toFixed(0)}px</span>
+              </div>
+              <Slider
+                min={-2000}
+                max={2000}
+                step={1}
+                value={[state.scene.foreground.x]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('foreground_x', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      foreground: { ...prev.scene.foreground, x: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Position Y</span>
+                <span>{state.scene.foreground.y.toFixed(0)}px</span>
+              </div>
+              <Slider
+                min={-2000}
+                max={2000}
+                step={1}
+                value={[state.scene.foreground.y]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('foreground_y', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      foreground: { ...prev.scene.foreground, y: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between text-[10px]">
+                <span className="text-[#666]">Scale</span>
+                <span>{state.scene.foreground.scale.toFixed(2)}x</span>
+              </div>
+              <Slider
+                min={0.01}
+                max={5}
+                step={0.01}
+                value={[state.scene.foreground.scale]}
+                onValueChange={([val]) =>
+                  setStateWithHistory('foreground_scale', (prev) => ({
+                    ...prev,
+                    scene: {
+                      ...prev.scene,
+                      foreground: { ...prev.scene.foreground, scale: val },
+                    },
+                  }))
+                }
+              />
+            </div>
+
+            <select
+              multiple={false}
+              value={state.scene.foreground.fitMode}
+              onChange={(e) =>
+                setStateWithHistory('foreground_fit', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    foreground: {
+                      ...prev.scene.foreground,
+                      fitMode: e.target.value as 'contain' | 'cover' | 'fill' | 'none',
+                    },
+                  },
+                }))
+              }
+              className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+            >
+              <option value="contain">Contain</option>
+              <option value="cover">Cover</option>
+              <option value="fill">Fill</option>
+              <option value="none">None</option>
+            </select>
+
+            {(state.scene.foreground.mediaType === 'video' || state.scene.foreground.mediaType === 'sequence') && (
+              <div className="space-y-2 p-2 rounded-md bg-white/5 border border-white/10">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-[#777]">Timing</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-[#666]">Start (s)</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={state.scene.foreground.videoStart}
+                      onChange={(e) =>
+                        setStateWithHistory('foreground_video_start', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            foreground: { ...prev.scene.foreground, videoStart: parseFloat(e.target.value) || 0 },
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">Rate</label>
+                    <input
+                      type="number"
+                      min={0.05}
+                      max={4}
+                      step={0.05}
+                      value={state.scene.foreground.videoRate}
+                      onChange={(e) =>
+                        setStateWithHistory('foreground_video_rate', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            foreground: { ...prev.scene.foreground, videoRate: parseFloat(e.target.value) || 1 },
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                </div>
+                {state.scene.foreground.mediaType === 'video' && (
+                  <div className="text-[9px] text-[#666]">PNG/SVG exports don&apos;t embed videos yet (use WebM export).</div>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={() => {
+                const seqId = state.scene.foreground.sequence?.id;
+                if (seqId) dropReferenceSequence(seqId);
+                setStateWithHistory('clear_foreground', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    foreground: { ...prev.scene.foreground, src: null, visible: false, mediaType: 'image', sequence: null },
+                  },
+                }));
+              }}
+              className="w-full py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
+            >
+              Clear
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Titles / Intertitles */}
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Titles</span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
+                const startFrame = state.timeline.enabled ? timelineFrame : 0;
+                const endFrame = clamp(startFrame + 24, startFrame, frameCount - 1);
+                const id = `overlay_${Date.now()}`;
+                setStateWithHistory('overlay_add_title', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    textOverlays: [
+                      ...(prev.scene.textOverlays || []),
+                      {
+                        id,
+                        kind: 'title',
+                        text: 'TITLE',
+                        visible: true,
+                        startFrame,
+                        endFrame,
+                        fontSize: 32,
+                        color: '#ffffff',
+                        align: 'center',
+                      },
+                    ],
+                  },
+                }));
+              }}
+              className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+            >
+              + Title
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
+                const startFrame = state.timeline.enabled ? timelineFrame : 0;
+                const endFrame = clamp(startFrame + 24, startFrame, frameCount - 1);
+                const id = `overlay_${Date.now()}`;
+                setStateWithHistory('overlay_add_intertitle', (prev) => ({
+                  ...prev,
+                  scene: {
+                    ...prev.scene,
+                    textOverlays: [
+                      ...(prev.scene.textOverlays || []),
+                      {
+                        id,
+                        kind: 'intertitle',
+                        text: 'INTERTITLE',
+                        visible: true,
+                        startFrame,
+                        endFrame,
+                        fontSize: 48,
+                        color: '#ffffff',
+                        align: 'center',
+                      },
+                    ],
+                  },
+                }));
+              }}
+              className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+            >
+              + Intertitle
+            </button>
+          </div>
+        </div>
+
+        {(state.scene.textOverlays?.length ?? 0) === 0 ? (
+          <div className="text-[10px] text-[#444]">No overlays yet.</div>
+        ) : (
+          <div className="space-y-2">
+            {(state.scene.textOverlays || []).map((o) => (
+              <div key={o.id} className="p-2 rounded-md bg-white/5 border border-white/10 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={o.visible}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_toggle', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) => (x.id === o.id ? { ...x, visible: e.target.checked } : x)),
+                          },
+                        }))
+                      }
+                      className="rounded"
+                    />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-[#666]">
+                      {o.kind === 'intertitle' ? 'Intertitle' : 'Title'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setStateWithHistory('overlay_delete', (prev) => ({
+                        ...prev,
+                        scene: {
+                          ...prev.scene,
+                          textOverlays: (prev.scene.textOverlays || []).filter((x) => x.id !== o.id),
+                        },
+                      }))
+                    }
+                    className="px-2 py-1 bg-[#331111] hover:bg-[#551111] rounded text-[10px] transition-colors"
+                  >
+                    Delete
+                  </button>
+                </div>
+
+                <input
+                  value={o.text}
+                  onChange={(e) =>
+                    setStateWithHistory('overlay_text', (prev) => ({
+                      ...prev,
+                      scene: {
+                        ...prev.scene,
+                        textOverlays: (prev.scene.textOverlays || []).map((x) => (x.id === o.id ? { ...x, text: e.target.value } : x)),
+                      },
+                    }))
+                  }
+                  className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                />
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-[#666]">Start</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={Math.max(0, state.timeline.clip.frameCount - 1)}
+                      value={o.startFrame}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_start', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                              x.id === o.id ? { ...x, startFrame: parseInt(e.target.value || '0', 10) || 0 } : x,
+                            ),
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">End</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={Math.max(0, state.timeline.clip.frameCount - 1)}
+                      value={o.endFrame}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_end', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                              x.id === o.id ? { ...x, endFrame: parseInt(e.target.value || '0', 10) || 0 } : x,
+                            ),
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 items-end">
+                  <div>
+                    <label className="text-[10px] text-[#666]">Size</label>
+                    <input
+                      type="number"
+                      min={8}
+                      max={160}
+                      value={o.fontSize}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_font_size', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) =>
+                              x.id === o.id ? { ...x, fontSize: parseInt(e.target.value || '0', 10) || 32 } : x,
+                            ),
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">Align</label>
+                    <select
+                      multiple={false}
+                      value={o.align}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_align', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) => (x.id === o.id ? { ...x, align: e.target.value as any } : x)),
+                          },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                    >
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-[#666]">Color</label>
+                    <input
+                      type="color"
+                      value={o.color}
+                      onChange={(e) =>
+                        setStateWithHistory('overlay_color', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            textOverlays: (prev.scene.textOverlays || []).map((x) => (x.id === o.id ? { ...x, color: e.target.value } : x)),
+                          },
+                        }))
+                      }
+                      className="w-full h-8 bg-[#222] border border-[#333] rounded cursor-pointer"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
+        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Masks</div>
+        <div className="mt-2 text-[10px] text-[#444]">Mask uploads + adjustments live in the Joint/Mask widget.</div>
+      </div>
+    </section>
+  );
+
+  const globalWidgetRenderers: Partial<Record<WidgetId, (opts?: GlobalWidgetRenderOpts) => React.ReactNode>> = {
+    look: renderGlobalWidgetLook,
+    views: renderGlobalWidgetViews,
+    pixel_fonts: renderGlobalWidgetPixelFonts,
+    background: renderGlobalWidgetBackground,
+    scene: renderGlobalWidgetScene,
+    project: renderGlobalWidgetProject,
+    export: renderGlobalWidgetExport,
+    pose_capture: renderGlobalWidgetPoseCapture,
+    console: renderGlobalWidgetConsole,
+  };
+
+  const ManikinGlobalPanel = () => {
+    return (
+      <div className="space-y-3 pb-6">
+        <CollapsibleSection title="Rig & Feel" storageKey="btv:manikin:global:rig_feel" defaultOpen>
+          <div className="space-y-3">
+            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[#777] font-mono text-[11px]">FEEL</span>
+                <span className="text-white font-mono text-[11px] tabular-nums">
+                  {getPhysicsBlendMode(state).toUpperCase()} {Math.round((state.physicsRigidity ?? 0) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={state.physicsRigidity ?? 0}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  beginPhysicsDialAction();
+                }}
+                onPointerUp={() => commitPhysicsDialAction()}
+                onPointerCancel={() => commitPhysicsDialAction()}
+                onChange={(e) => {
+                  const v = clamp(parseFloat(e.target.value), 0, 1);
+                  armPoseReliefTransition({
+                    reason: `physics_rigidity:${state.physicsRigidity}->${v}`,
+                    durationMs: 1600,
+                  });
+                  setState((prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
+                }}
+                className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                title="Rig Feel (0 = rigid)"
+              />
+              <button
+                type="button"
+                onClick={() => setRigidRootDragEnabled((v) => !v)}
+                className={`px-3 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all border border-white/5 ${
+                  rigidRootDragEnabled ? 'bg-white text-black' : 'bg-[#222] hover:bg-[#333] text-[#bbb]'
+                }`}
+                title={
+                  rigidRootDragEnabled
+                    ? 'Rigid root dragging: rooted joints stay planted unless you hold Ctrl to move the root target.'
+                    : 'Physics root dragging: dragging a rooted joint moves its root target through the solver.'
+                }
+              >
+                Root Drag: {rigidRootDragEnabled ? 'Rigid' : 'Physics'}
+              </button>
+            </div>
+
+            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex flex-col gap-2">
+              <select
+                value={state.rigidity}
+                onChange={(e) => {
+                  const nextRigidity = e.target.value as RigidityPreset;
+                  armPoseReliefTransition({
+                    reason: `rigidity:${state.rigidity}->${nextRigidity}`,
+                    durationMs: 1600,
+                  });
+                  applyEngineTransition('set_rigidity', (prev) => ({ ...prev, rigidity: nextRigidity }));
+                }}
+                className="px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
+                title="Rigidity (FK)"
+              >
+                <option value="cardboard">Cardboard</option>
+                <option value="realistic">Realistic</option>
+                <option value="rubberhose">Rubberhose</option>
+              </select>
+            </div>
+          </div>
+        </CollapsibleSection>
+
+        {WIDGET_GLOBAL_ORDER.map((id) => {
+          const meta = WIDGETS[id];
+          const render = globalWidgetRenderers[id];
+          return (
+            <CollapsibleSection
+              key={id}
+              title={meta?.title ?? id}
+              storageKey={`btv:manikin:global:widget:${id}`}
+              defaultOpen={id !== 'console' && id !== 'export'}
+              keepMounted={false}
+              headerRight={meta?.docs ? <HelpTip text={meta.docs} /> : null}
+            >
+              {typeof render === 'function' ? render({ showHeader: false }) : <div className="text-[10px] text-[#444]">Missing widget.</div>}
+            </CollapsibleSection>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -6124,29 +7834,8 @@ export default function App() {
               className={`flex items-center gap-3 ${sidebarTab === 'global' && !manikinMode ? 'opacity-0 pointer-events-none select-none' : ''}`}
             >
               <div className="p-2 bg-white rounded-lg">
-                <div className="flex rounded-md bg-black/10 p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setManikinModeEnabled(true)}
-                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      manikinMode ? 'bg-black text-white' : 'text-black/60 hover:text-black'
-                    }`}
-                    title="Build (Paper). Rotation-only FK."
-                    aria-label="Switch to build mode (paper)"
-                  >
-                    Build
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setManikinModeEnabled(false)}
-                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      manikinMode ? 'text-black/60 hover:text-black' : 'bg-black text-white'
-                    }`}
-                    title="IK mode. Digital rig controls."
-                    aria-label="Switch to IK mode"
-                  >
-                    IK
-                  </button>
+                <div className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest text-black/80">
+                  {manikinMode ? 'Build' : 'IK'}
                 </div>
               </div>
               <div>
@@ -6159,34 +7848,6 @@ export default function App() {
                 </p>
               </div>
             </div>
-
-            {manikinMode && (
-              <div className="mt-4 mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">Build (Paper)</div>
-                  <div className="text-[9px] font-mono text-[#444]">Fixed</div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={resetPoseToTPose}
-                    className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
-                    title="Reset pose to T Pose (keeps masks/settings)"
-                  >
-                    Reset Pose
-                  </button>
-                  <button
-                    type="button"
-                    onClick={resetEngine}
-                    className="py-2 bg-[#3a0f0f] hover:bg-[#4a1414] rounded-lg text-[10px] font-bold uppercase transition-all"
-                    title="Reset engine: clears masks, motion, and returns to FK T Pose"
-                  >
-                    Reset Engine
-                  </button>
-                </div>
-              </div>
-            )}
 
             <div className={`mt-4 mb-3 flex flex-col gap-2 ${manikinMode ? 'hidden' : ''}`}>
               <div className="flex items-center justify-between gap-3">
@@ -6358,6 +8019,27 @@ export default function App() {
 	              )}
             </div>
 
+            <div className="mt-4 mb-2 p-3 rounded-xl bg-white/5 border border-white/10">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={resetPoseToTPose}
+                  className="py-2 bg-[#222] hover:bg-[#333] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  title="Reset pose to T Pose (keeps masks/settings)"
+                >
+                  Reset Pose
+                </button>
+                <button
+                  type="button"
+                  onClick={resetEngine}
+                  className="py-2 bg-[#3a0f0f] hover:bg-[#4a1414] rounded-lg text-[10px] font-bold uppercase transition-all"
+                  title="Reset engine: clears masks, motion, and returns to FK T Pose"
+                >
+                  Reset Engine
+                </button>
+              </div>
+            </div>
+
             {manikinMode && (
               <div className="mt-4 flex bg-[#1a1a1a] border border-[#222] rounded-xl p-1">
                 {(
@@ -6423,7 +8105,7 @@ export default function App() {
                     commitHistoryAction={commitHistoryAction}
                     setSelectedJointId={setSelectedJointId}
                     setSelectedConnectionKey={setSelectedConnectionKey}
-                    setMaskJointId={setMaskJointId}
+                    setMaskJointId={setMaskJointIdAndSelect}
                     setManikinJointAngleDeg={setManikinJointAngleDeg}
                     poseSnapshots={poseSnapshots}
                     selectedPoseIndex={manikinPoseSelectedIndex}
@@ -6537,7 +8219,7 @@ export default function App() {
                         state={state}
                         setStateWithHistory={setStateWithHistory}
                         maskJointId={maskJointId}
-                        setMaskJointId={setMaskJointId}
+                        setMaskJointId={setMaskJointIdAndSelect}
                         maskEditArmed={maskEditArmed}
                         setMaskEditArmed={setMaskEditArmed}
                         maskDragMode={maskDragMode}
@@ -6545,7 +8227,64 @@ export default function App() {
                         uploadJointMaskFile={uploadJointMaskFile}
                         uploadMaskFile={uploadMaskFile}
                         copyJointMaskTo={copyJointMaskTo}
+                        currentControlMode={state.controlMode}
+                        onControlModeChange={(mode) => {
+                          if (state.controlMode !== mode) {
+                            armPoseReliefTransition({
+                              reason: `mode:${state.controlMode}->${mode}`,
+                              durationMs: 1600,
+                            });
+                          }
+                          applyEngineTransition('set_control_mode', (prev) =>
+                            prev.controlMode === mode
+                              ? prev
+                              : applyFluidHandshake(prev, {
+                                  ...prev,
+                                  controlMode: mode,
+                                  ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
+                                }),
+                          );
+                        }}
                       />
+                    </div>
+                    
+                    {/* Joint Deactivation Controls */}
+                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Anchor size={14} />
+                        <h2
+                          className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
+                        >
+                          Joint Lock
+                        </h2>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-white/70">Lock Bicep (Single Bone)</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStateWithHistory('toggle_bicep_deactivation', (prev) => 
+                                toggleJointDeactivation(prev, 'l_bicep')
+                              );
+                              setStateWithHistory('toggle_bicep_deactivation_r', (prev) => 
+                                toggleJointDeactivation(prev, 'r_bicep')
+                              );
+                            }}
+                            className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest transition-all ${
+                              (state.deactivatedJoints || new Set<string>()).has('l_bicep') && (state.deactivatedJoints || new Set<string>()).has('r_bicep')
+                                ? 'bg-red-600 text-white'
+                                : 'bg-white/10 text-white/60 hover:bg-white/20'
+                            }`}
+                            title="Lock both bicep joints to create single straight arm bones"
+                          >
+                            {(state.deactivatedJoints || new Set<string>()).has('l_bicep') && (state.deactivatedJoints || new Set<string>()).has('r_bicep') ? 'Locked' : 'Unlock'}
+                          </button>
+                        </div>
+                        <p className="text-[9px] text-white/50">
+                          Locked joints remain perfectly straight, effectively merging bicep and humerus into single bones.
+                        </p>
+                      </div>
                     </div>
                   </section>
                 </WidgetPortal>
@@ -6879,80 +8618,7 @@ export default function App() {
                   </section>
                 </WidgetPortal>
 
-                <WidgetPortal id="console">
-                  <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
-                      <Terminal size={14} />
-                      <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
-                      >
-                        Console
-                      </h2>
-                    </div>
-                    <div className="p-3 rounded-xl bg-white/5 border border-white/10 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {(['info', 'warning', 'error', 'success'] as const).map((lvl) => {
-                            const active = activeLogLevels.has(lvl);
-                            const color =
-                              lvl === 'error'
-                                ? 'text-lime-400'
-                                : lvl === 'warning'
-                                  ? 'text-yellow-300'
-                                  : lvl === 'success'
-                                    ? 'text-green-400'
-                                    : 'text-blue-300';
-                            return (
-                              <button
-                                key={lvl}
-                                type="button"
-                                onClick={() =>
-                                  setActiveLogLevels((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(lvl)) next.delete(lvl);
-                                    else next.add(lvl);
-                                    return next;
-                                  })
-                                }
-                                className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest border ${
-                                  active ? 'bg-[#222] border-[#333]' : 'bg-transparent border-[#222] opacity-60'
-                                } ${color}`}
-                              >
-                                {lvl}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setConsoleLogs([])}
-                          className="px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest bg-[#222] hover:bg-[#333]"
-                        >
-                          Clear
-                        </button>
-                      </div>
-
-                      <div className="space-y-1 font-mono text-[11px]">
-                        {filteredConsoleLogs.slice(-120).map((log) => (
-                          <div key={log.id} className="flex gap-2 items-start">
-                            <span className="text-[#555] shrink-0">
-                              {new Date(log.ts).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                              })}
-                            </span>
-                            <span className="text-[#666] shrink-0">{log.level.toUpperCase()}</span>
-                            <span className="text-white break-words">{log.message}</span>
-                          </div>
-                        ))}
-                        {filteredConsoleLogs.length === 0 && (
-                          <div className="text-[#444]">No logs (filters may be hiding everything).</div>
-                        )}
-                      </div>
-                    </div>
-                  </section>
-                </WidgetPortal>
+                <WidgetPortal id="console">{renderGlobalWidgetConsole()}</WidgetPortal>
 
                 <WidgetPortal id="camera">
                   <section>
@@ -7167,20 +8833,28 @@ export default function App() {
                 <Toggle 
                   label="Auto-Bend (B)" 
                   active={state.bendEnabled} 
-                  onClick={() =>
+                  onClick={() => {
+                    armPoseReliefTransition({
+                      reason: `toggle_bend:${state.bendEnabled ? 'on' : 'off'}`,
+                      durationMs: 1600,
+                    });
                     applyEngineTransition('toggle_bend', (prev) =>
                       applyFluidHandshake(prev, { ...prev, bendEnabled: !prev.bendEnabled }),
-                    )
-                  }
+                    );
+                  }}
                 />
                         <Toggle 
                           label="Elasticity (S)" 
                           active={state.stretchEnabled} 
-                          onClick={() =>
+                          onClick={() => {
+                            armPoseReliefTransition({
+                              reason: `toggle_stretch:${state.stretchEnabled ? 'on' : 'off'}`,
+                              durationMs: 1600,
+                            });
                             applyEngineTransition('toggle_stretch', (prev) =>
                               applyFluidHandshake(prev, { ...prev, stretchEnabled: !prev.stretchEnabled }),
-                            )
-                          }
+                            );
+                          }}
                         />
                   <Toggle
                     label="Lead (L)"
@@ -7195,11 +8869,15 @@ export default function App() {
 	                        <Toggle 
 	                          label="Hard Stop" 
 	                          active={state.hardStop} 
-	                          onClick={() =>
+	                          onClick={() => {
+                        armPoseReliefTransition({
+                          reason: `toggle_hard_stop:${state.hardStop ? 'on' : 'off'}`,
+                          durationMs: 1600,
+                        });
 	                    applyEngineTransition('toggle_hard_stop', (prev) =>
 	                      applyFluidHandshake(prev, { ...prev, hardStop: !prev.hardStop }),
-	                    )
-	                  }
+	                    );
+	                  }}
 	                />
 	              </div>
 
@@ -7735,211 +9413,11 @@ export default function App() {
             </section>
                 </WidgetPortal>
 
-                <WidgetPortal id="look">
-            <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
-                <Maximize2 size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Look</h2>
-              </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {LOOK_MODES.map((mode) => (
-                          <button
-                            key={mode.id}
-                    onClick={() =>
-                      applyEngineTransition('set_look_mode', (prev) =>
-                        prev.lookMode === mode.id ? prev : { ...prev, lookMode: mode.id as LookModeId },
-                      )
-                    }
-                    className={`p-2 rounded-lg border text-[10px] font-bold uppercase transition-all ${state.lookMode === mode.id ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'}`}
-                  >
-                    {mode.label}
-                  </button>
-                        ))}
-                      </div>
-                      <div className="mt-2 text-[#666] text-[9px]">
-                        {(LOOK_MODES.find((m) => m.id === state.lookMode) ?? LOOK_MODES[0])?.description}
-                      </div>
+                <WidgetPortal id="look">{renderGlobalWidgetLook()}</WidgetPortal>
 
-                      <div className="mt-4 p-3 rounded-xl bg-white/5 border border-white/10">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
-                          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] font-mono">
-                            {getBoneHex(state.boneStyle)}
-                          </div>
-                        </div>
-                        <div className="space-y-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Violet → Magenta</div>
-                              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.hueT ?? 0) * 100)}%</div>
-                            </div>
-                            <Slider
-                              min={0}
-                              max={1}
-                              step={0.01}
-                              value={[state.boneStyle?.hueT ?? 0]}
-                              onValueChange={(values) => {
-                                const v = values[0] ?? 0;
-                                setStateWithHistory('bone_style:hue', (prev) => ({
-                                  ...prev,
-                                  boneStyle: { ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }), hueT: clamp(v, 0, 1) },
-                                }));
-                              }}
-                              className="w-full"
-                              trackClassName="bg-transparent h-2"
-                              rangeClassName="bg-transparent"
-                              thumbClassName="border-white/20"
-                              trackStyle={{
-                                background: `linear-gradient(90deg, ${applyLightness(BONE_PALETTE.violet, 0.35)}, ${applyLightness(BONE_PALETTE.magenta, 0.35)})`,
-                              }}
-                              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.7) }}
-                              thumbStyle={{
-                                backgroundColor: getBoneHex(state.boneStyle),
-                                boxShadow:
-                                  '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
-                              }}
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="flex items-center justify-between">
-                              <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Darken / Lighten</div>
-                              <div className="text-[10px] font-mono text-[#777]">{Math.round((state.boneStyle?.lightness ?? 0) * 100)}%</div>
-                            </div>
-                            <Slider
-                              min={-0.5}
-                              max={0.5}
-                              step={0.01}
-                              value={[state.boneStyle?.lightness ?? 0]}
-                              onValueChange={(values) => {
-                                const v = values[0] ?? 0;
-                                setStateWithHistory('bone_style:lightness', (prev) => ({
-                                  ...prev,
-                                  boneStyle: {
-                                    ...(prev.boneStyle ?? { hueT: 0, lightness: 0 }),
-                                    lightness: clamp(v, -1, 1),
-                                  },
-                                }));
-                              }}
-                              className="w-full"
-                              trackClassName="bg-transparent h-2"
-                              rangeClassName="bg-transparent"
-                              thumbClassName="border-white/20"
-                              trackStyle={{
-                                background: `linear-gradient(90deg, ${applyLightness(getBoneHex(state.boneStyle), -0.45)}, ${getBoneHex(state.boneStyle)}, ${applyLightness(getBoneHex(state.boneStyle), 0.45)})`,
-                              }}
-                              rangeStyle={{ backgroundColor: rgbCss(getBoneHex(state.boneStyle), 0.8) }}
-                              thumbStyle={{
-                                backgroundColor: getBoneHex(state.boneStyle),
-                                boxShadow:
-                                  '0 0 0 4px rgb(125 255 170 / 0.18), 0 0 14px rgb(125 255 170 / 0.28)',
-                              }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-                </WidgetPortal>
+                <WidgetPortal id="views">{renderGlobalWidgetViews()}</WidgetPortal>
 
-                <WidgetPortal id="views">
-            <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
-                <Layers size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Views</h2>
-              </div>
-              <div className="space-y-2">
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      applyEngineTransition('create_view', (prev) => {
-                        const nextName = `View ${prev.views.length + 1}`;
-                        const newView = createViewPreset(nextName, prev);
-                        return {
-                          ...prev,
-                          views: [...prev.views, newView],
-                          activeViewId: newView.id,
-                        };
-                      })
-                    }
-                    className="py-2 rounded-lg text-[10px] font-bold uppercase transition-all bg-[#222] hover:bg-[#333]"
-                  >
-                    New
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyEngineTransition('update_view_from_current', (prev) => updateViewFromCurrentState(prev, prev.activeViewId))}
-                    disabled={!state.activeViewId}
-                    className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
-                      state.activeViewId ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                  >
-                    Save
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => applyEngineTransition('delete_view', (prev) => deleteView(prev, prev.activeViewId))}
-                    disabled={!state.activeViewId || state.views.length <= 1}
-                    className={`py-2 rounded-lg text-[10px] font-bold uppercase transition-all ${
-                      state.activeViewId && state.views.length > 1 ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                  >
-                    Delete
-                  </button>
-                </div>
-
-                <div className="space-y-1">
-                  {state.views.map((view) => {
-                    const active = view.id === state.activeViewId;
-                    return (
-                      <button
-                        key={`view:${view.id}`}
-                        type="button"
-                        onClick={() => (active ? null : requestViewSwitch(view.id))}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg border text-[10px] font-bold uppercase tracking-widest transition-all ${
-                          active ? 'bg-white text-black border-white' : 'bg-transparent text-[#666] border-[#222] hover:border-[#444]'
-                        }`}
-                        title={view.name}
-                      >
-                        <span className="truncate">{view.name}</span>
-                        <span className={`text-[9px] ${active ? 'text-black/70' : 'text-[#444]'}`}>{active ? 'Active' : 'Switch'}</span>
-                      </button>
-                    );
-                  })}
-                  {state.views.length === 0 && <div className="text-[10px] text-[#444]">No views.</div>}
-                </div>
-              </div>
-            </section>
-                </WidgetPortal>
-
-                <WidgetPortal id="pixel_fonts">
-            <section>
-              <div className="flex items-center gap-2 mb-4 text-[#666]">
-                <Terminal size={14} />
-                <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Pixel Fonts</h2>
-              </div>
-              <div className="space-y-2">
-                <select
-                  multiple={false}
-                  value={titleFont}
-                  onChange={(e) => setTitleFont(e.target.value)}
-                  className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
-                >
-                  <option value="pixel-mono">Classic Pixel (Press Start)</option>
-                  <option value="pixel-retro">Retro Terminal (VT323)</option>
-                  <option value="pixel-terminal">Modern Terminal (IBM Plex)</option>
-                  <option value="pixel-tech">Tech Mono (Share Tech)</option>
-                  <option value="pixel-clean">Clean Mono (Roboto)</option>
-                  <option value="pixel-display">Display Mono (Major)</option>
-                  <option value="pixel-calligraphy">Pixel Calligraphy (ZCOOL)</option>
-                  <option value="pixel-brush">Brush Script (Zhi Mang)</option>
-                  <option value="pixel-elegant">Elegant Script (Ma Shan)</option>
-                </select>
-                <div className="text-[#666] text-[9px]">
-                  Font style for all titles and intertitles
-                </div>
-              </div>
-            </section>
-                </WidgetPortal>
+                <WidgetPortal id="pixel_fonts">{renderGlobalWidgetPixelFonts()}</WidgetPortal>
 
                 <WidgetPortal id="background">
             <section>
@@ -10224,14 +11702,17 @@ export default function App() {
 	                      e.stopPropagation();
 	                      beginPhysicsDialAction();
 	                    }}
-	                    onMouseDown={(e) => e.stopPropagation()}
 	                    onTouchStart={(e) => e.stopPropagation()}
 	                    onPointerUp={() => commitPhysicsDialAction()}
 	                    onPointerCancel={() => commitPhysicsDialAction()}
 	                    onChange={(e) => {
-	                      const v = clamp(parseFloat(e.target.value), 0, 1);
-	                      setState((prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
-	                    }}
+                      const v = clamp(parseFloat(e.target.value), 0, 1);
+                      armPoseReliefTransition({
+                        reason: `physics_rigidity:${state.physicsRigidity}->${v}`,
+                        durationMs: 1600,
+                      });
+                      setState((prev) => applyFluidHandshake(prev, applyPhysicsMode(prev, v)));
+                    }}
 	                    className="w-32 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
 	                    title="Rig Feel (0 = rigid)"
 	                  />
@@ -10261,11 +11742,16 @@ export default function App() {
                 <select
                   multiple={false}
                   value={state.rigidity}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const nextRigidity = e.target.value as RigidityPreset;
+                    armPoseReliefTransition({
+                      reason: `rigidity:${state.rigidity}->${nextRigidity}`,
+                      durationMs: 1600,
+                    });
                     applyEngineTransition('rigidity', (prev) =>
-                      applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
-                    )
-                  }
+                      applyFluidHandshake(prev, { ...prev, rigidity: nextRigidity }),
+                    );
+                  }}
                   className="px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
                   title="Rigidity (FK)"
                 >

@@ -110,8 +110,9 @@ const drawMaskImage = (args: {
   opacity: number;
   blendMode?: string | null;
   filter?: string | null;
+  pixelate?: number | null;
 }) => {
-  const { ctx, img, x, y, width, height, anchorX, anchorY, rotationDeg, opacity, blendMode, filter } = args;
+  const { ctx, img, x, y, width, height, anchorX, anchorY, rotationDeg, opacity, blendMode, filter, pixelate } = args;
   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   if (!Number.isFinite(width) || !Number.isFinite(height)) return;
   if (width <= 0 || height <= 0) return;
@@ -124,7 +125,28 @@ const drawMaskImage = (args: {
   }
   ctx.translate(x, y);
   ctx.rotate((rotationDeg * Math.PI) / 180);
-  ctx.drawImage(img, -anchorX * width, -anchorY * height, width, height);
+  const px = Number.isFinite(pixelate) ? Math.max(0, pixelate as number) : 0;
+  if (px > 0.0001) {
+    const offW = Math.max(1, Math.floor(width / px));
+    const offH = Math.max(1, Math.floor(height / px));
+    const off = document.createElement('canvas');
+    off.width = offW;
+    off.height = offH;
+    const offCtx = off.getContext('2d');
+    if (offCtx) {
+      offCtx.imageSmoothingEnabled = true;
+      offCtx.clearRect(0, 0, offW, offH);
+      offCtx.drawImage(img, 0, 0, offW, offH);
+      const prevSmooth = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(off, -anchorX * width, -anchorY * height, width, height);
+      ctx.imageSmoothingEnabled = prevSmooth;
+    } else {
+      ctx.drawImage(img, -anchorX * width, -anchorY * height, width, height);
+    }
+  } else {
+    ctx.drawImage(img, -anchorX * width, -anchorY * height, width, height);
+  }
   ctx.restore();
 };
 
@@ -480,14 +502,13 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
         opacity: mask.opacity ?? 1,
         blendMode: mask.blendMode ?? 'normal',
         filter: buildMaskFilter(mask),
+        pixelate: mask.pixelate ?? 0,
       });
     }
 
     if (headMaskImg && scene.headMask?.src && scene.headMask.visible) {
       const mask = scene.headMask;
-      const baseId =
-        mask.relatedJoints?.[0] && mask.relatedJoints[0] in baseJoints ? mask.relatedJoints[0] : 'neck_upper';
-      const basePos = getWorldPositionFromOffsets(baseId, pose.joints, baseJoints);
+      const basePos = getWorldPositionFromOffsets('neck_base', pose.joints, baseJoints);
       const dx = headPos.x - basePos.x;
       const dy = headPos.y - basePos.y;
       const boneLenPx = Math.max(1, Math.hypot(dx, dy) * unitScale);
@@ -500,10 +521,7 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
       let heightPx = thicknessPx;
       let anchorWorldX = headPos.x * unitScale + centerX;
       let anchorWorldY = headPos.y * unitScale + centerY;
-      if (baseId !== 'neck_base') {
-        anchorWorldX = ((headPos.x + basePos.x) / 2) * unitScale + centerX;
-        anchorWorldY = ((headPos.y + basePos.y) / 2) * unitScale + centerY;
-      }
+      
       if (mode === 'rubberhose') {
         anchorWorldX = ((headPos.x + basePos.x) / 2) * unitScale + centerX;
         anchorWorldY = ((headPos.y + basePos.y) / 2) * unitScale + centerY;
@@ -526,6 +544,7 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
         opacity: mask.opacity ?? 1,
         blendMode: mask.blendMode ?? 'normal',
         filter: buildMaskFilter(mask),
+        pixelate: mask.pixelate ?? 0,
       });
     }
 

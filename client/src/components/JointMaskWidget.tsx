@@ -1,9 +1,11 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState, useCallback } from 'react';
 import type { JointMask, MaskBlendMode, SkeletonState } from '@/engine/types';
 import { HelpTip } from '@/components/HelpTip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
-import { RotationWheelControl } from '@/components/RotationWheelControl';
+import { RotationWheelControl, type MaskInfo, type PieceInfo } from '@/components/RotationWheelControl';
+import { AngleDial } from '@/components/AngleDial';
+import type { ControlMode } from '@/engine/types';
 
 export type MaskDragMode =
   | 'move'
@@ -28,9 +30,18 @@ type Props = {
   uploadJointMaskFile: (file: File, jointId: string) => Promise<void>;
   uploadMaskFile: (file: File) => Promise<void>;
   copyJointMaskTo: (sourceJointId: string, targetJointId: string) => void;
+  // Enhanced props for integrated wheel
+  currentControlMode: ControlMode;
+  onControlModeChange: (mode: ControlMode) => void;
 };
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+const wrapDeg360 = (deg: number): number => {
+  // Keep degrees in [-360, 360] while still wrapping for stability.
+  const n = ((deg + 360) % 720 + 720) % 720 - 360;
+  return n === -360 ? 360 : n;
+};
 
 const MASK_BLEND_MODE_OPTIONS: Array<{ value: MaskBlendMode; label: string }> = [
   { value: 'normal', label: 'Normal' },
@@ -163,11 +174,14 @@ export function JointMaskWidget({
   uploadJointMaskFile,
   uploadMaskFile,
   copyJointMaskTo,
+  currentControlMode,
+  onControlModeChange,
 }: Props) {
   const [activeTab, setActiveTab] = useState<'joint' | 'head'>('joint');
   const [jointPickerOpen, setJointPickerOpen] = useState(false);
   const headInputRef = useRef<HTMLInputElement>(null);
   const jointInputRef = useRef<HTMLInputElement>(null);
+  const wheelTargetRotationRef = useRef<number | null>(null);
 
   // Universal mask selection - works for both joint and head masks
   const currentMaskTarget = activeTab === 'head' ? 'head' : maskJointId;
@@ -203,6 +217,48 @@ export function JointMaskWidget({
     }));
   };
 
+  const setHeadMask = (updates: Partial<JointMask>) => {
+    setStateWithHistory('head_mask_update', (prev) => ({
+      ...prev,
+      scene: {
+        ...prev.scene,
+        headMask: { ...prev.scene.headMask, ...updates },
+      },
+    }));
+  };
+
+  const handleMaskRotationBegin = () => {
+    const currentRotation = getMaskProp('rotation', 0);
+    wheelTargetRotationRef.current = currentRotation;
+  };
+
+  const handleMaskRotationEnd = () => {
+    wheelTargetRotationRef.current = null;
+  };
+
+  const handleMaskRotationDelta = (deltaDeg: number) => {
+    const base = wheelTargetRotationRef.current ?? getMaskProp('rotation', 0);
+    const next = wrapDeg360(base + deltaDeg);
+    wheelTargetRotationRef.current = next;
+    
+    if (activeTab === 'head') {
+      setHeadMask({ rotation: next });
+    } else {
+      setJointMask({ rotation: next });
+    }
+  };
+
+  const nudgeMaskRotation = (deltaDeg: number) => {
+    const currentRotation = getMaskProp('rotation', 0);
+    const next = wrapDeg360(currentRotation + deltaDeg);
+    
+    if (activeTab === 'head') {
+      setHeadMask({ rotation: next });
+    } else {
+      setJointMask({ rotation: next });
+    }
+  };
+
   const relationshipIds = useMemo(
     () => dedupe((jointMask?.relatedJoints || []).filter((id) => id && id !== maskJointId && id in state.joints)),
     [jointMask?.relatedJoints, maskJointId, state.joints],
@@ -211,6 +267,85 @@ export function JointMaskWidget({
   const setRelationshipIds = (next: string[]) => {
     setJointMask({ relatedJoints: dedupe(next).filter((id) => id !== maskJointId && id in state.joints) } as any);
   };
+
+  // Prepare data for enhanced wheel
+  const availableMasks: MaskInfo[] = useMemo(() => {
+    const masks: MaskInfo[] = [];
+    
+    // Add head mask
+    if (state.scene.headMask?.src) {
+      masks.push({
+        id: 'head',
+        type: 'head',
+        src: state.scene.headMask.src,
+        visible: state.scene.headMask.visible,
+        label: 'Head Mask',
+      });
+    }
+    
+    // Add joint masks
+    Object.entries(state.scene.jointMasks).forEach(([jointId, mask]) => {
+      if (mask.src) {
+        const joint = state.joints[jointId];
+        masks.push({
+          id: jointId,
+          type: 'joint',
+          src: mask.src,
+          visible: mask.visible,
+          label: joint?.label || jointId,
+        });
+      }
+    });
+    
+    return masks;
+  }, [state.scene.headMask, state.scene.jointMasks, state.joints]);
+
+  const availablePieces: PieceInfo[] = useMemo(() => {
+    return Object.keys(state.joints).map((jointId) => {
+      const joint = state.joints[jointId];
+      const hasMask = Boolean(state.scene.jointMasks[jointId]?.src);
+      return {
+        id: jointId,
+        label: joint?.label || jointId,
+        hasMask,
+      };
+    });
+  }, [state.joints, state.scene.jointMasks]);
+
+  // Handlers for enhanced wheel
+  const handleMaskSelect = useCallback((maskId: string, type: string) => {
+    if (type === 'head') {
+      setActiveTab('head');
+    } else {
+      setActiveTab('joint');
+      setMaskJointId(maskId);
+    }
+  }, [setActiveTab, setMaskJointId]);
+
+  const handlePieceSelect = useCallback((pieceId: string) => {
+    setActiveTab('joint');
+    setMaskJointId(pieceId);
+  }, [setActiveTab, setMaskJointId]);
+
+  const handleMaskUpdate = useCallback((updates: Partial<JointMask>) => {
+    if (activeTab === 'head') {
+      setStateWithHistory('head_mask_update', (prev) => ({
+        ...prev,
+        scene: { ...prev.scene, headMask: { ...prev.scene.headMask, ...updates } },
+      }));
+    } else {
+      setStateWithHistory(`joint_mask_update:${maskJointId}`, (prev) => ({
+        ...prev,
+        scene: {
+          ...prev.scene,
+          jointMasks: {
+            ...prev.scene.jointMasks,
+            [maskJointId]: { ...prev.scene.jointMasks[maskJointId], ...updates },
+          },
+        },
+      }));
+    }
+  }, [activeTab, maskJointId, setStateWithHistory]);
 
   return (
     <div className="space-y-4">
@@ -383,7 +518,7 @@ export function JointMaskWidget({
               </div>
               <Slider
                 min={0.01}
-                max={20}
+                max={50}
                 step={0.01}
                 value={[getMaskProp('scale', 1)]}
                 onValueChange={([val]) =>
@@ -402,7 +537,7 @@ export function JointMaskWidget({
                   </div>
                   <Slider
                     min={0.1}
-                    max={3}
+                    max={10}
                     step={0.01}
                     value={[getMaskProp('stretchX', 1) ?? 1]}
                     onValueChange={([val]) =>
@@ -420,7 +555,7 @@ export function JointMaskWidget({
                   </div>
                   <Slider
                     min={0.1}
-                    max={3}
+                    max={10}
                     step={0.01}
                     value={[getMaskProp('stretchY', 1) ?? 1]}
                     onValueChange={([val]) =>
@@ -450,6 +585,17 @@ export function JointMaskWidget({
                     }))
                   }
                   isDisabled={!getMaskProp('src', null)}
+                  showIntegratedControls={true}
+                  currentMaskType="head"
+                  currentMaskId="head"
+                  maskData={state.scene.headMask}
+                  availableMasks={availableMasks}
+                  availablePieces={availablePieces}
+                  currentControlMode={currentControlMode}
+                  onMaskSelect={handleMaskSelect}
+                  onPieceSelect={handlePieceSelect}
+                  onMaskUpdate={handleMaskUpdate}
+                  onControlModeChange={onControlModeChange}
                 />
               </div>
 
@@ -552,7 +698,7 @@ export function JointMaskWidget({
                   </div>
                   <Slider
                     min={0.01}
-                    max={20}
+                    max={50}
                     step={0.01}
                     value={[getHeadMaskProp('scale', 1)]}
                     onValueChange={([val]) =>
@@ -572,7 +718,7 @@ export function JointMaskWidget({
                     </div>
                     <Slider
                       min={0.1}
-                      max={3}
+                      max={10}
                       step={0.01}
                       value={[getHeadMaskProp('stretchX', 1) ?? 1]}
                       onValueChange={([val]) =>
@@ -590,7 +736,7 @@ export function JointMaskWidget({
                     </div>
                     <Slider
                       min={0.1}
-                      max={3}
+                      max={10}
                       step={0.01}
                       value={[getHeadMaskProp('stretchY', 1) ?? 1]}
                       onValueChange={([val]) =>
@@ -666,39 +812,12 @@ export function JointMaskWidget({
 
                 <div className="space-y-1">
                   <div className="flex justify-between text-[10px]">
-                    <span>Head/Neck</span>
-                    <span className="text-[#666]">
-                      {(() => {
-                        const base = state.scene.headMask?.relatedJoints?.[0];
-                        if (base === 'sternum') return 'STERNUM';
-                        if (base === 'collar') return 'COLLAR';
-                        if (base === 'neck_upper') return 'UPPER NECK';
-                        return 'NECK BASE';
-                      })()}
-                    </span>
+                    <span>Head Rotation Point</span>
+                    <span className="text-[#666]">NECK BASE</span>
                   </div>
-                  <select
-                    multiple={false}
-                    value={state.scene.headMask?.relatedJoints?.[0] || 'neck_base'}
-                    onChange={(e) =>
-                      setStateWithHistory('head_mask_base_joint', (prev) => ({
-                        ...prev,
-                        scene: {
-                          ...prev.scene,
-                          headMask: {
-                            ...(prev.scene.headMask || {}),
-                            relatedJoints: e.target.value === 'neck_base' ? [] : [e.target.value],
-                          },
-                        },
-                      }))
-                    }
-                    className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
-                  >
-                    <option value="neck_base">Neck Base (Head only)</option>
-                    <option value="neck_upper">Upper Neck</option>
-                    <option value="collar">Collar Joint</option>
-                    <option value="sternum">Sternum</option>
-                  </select>
+                  <div className="text-[9px] text-[#555] text-center py-2">
+                    Head masks always rotate at the neck base joint
+                  </div>
                 </div>
 
                 {(getHeadMaskProp('mode', 'cutout') || 'cutout') === 'rubberhose' && (
@@ -738,24 +857,84 @@ export function JointMaskWidget({
                   </>
                 )}
 
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px]">
-                    <span>Rotation</span>
-                    <span>{(getHeadMaskProp('rotation', 0) ?? 0).toFixed(0)}°</span>
+                <div className="space-y-3">
+                  <div className="flex flex-col items-center">
+                    <AngleDial
+                      valueDeg={getHeadMaskProp('rotation', 0) ?? 0}
+                      isDisabled={!getHeadMaskProp('src', null)}
+                      onBegin={handleMaskRotationBegin}
+                      onEnd={handleMaskRotationEnd}
+                      onRotateDelta={handleMaskRotationDelta}
+                      label="Rotation"
+                    />
+
+                    {getHeadMaskProp('src', null) && (
+                      <div className="mt-3 w-full flex items-center gap-2">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] shrink-0">Rotate</div>
+                        <input
+                          type="range"
+                          min={-360}
+                          max={360}
+                          step={1}
+                          value={getHeadMaskProp('rotation', 0) ?? 0}
+                          onPointerDown={handleMaskRotationBegin}
+                          onPointerUp={handleMaskRotationEnd}
+                          onPointerCancel={handleMaskRotationEnd}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (!Number.isFinite(v)) return;
+                            wheelTargetRotationRef.current = v;
+                            setHeadMask({ rotation: v });
+                          }}
+                          className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                          title="Unified rotation slider"
+                        />
+                        <div className="text-[10px] font-mono text-[#444] w-12 text-right tabular-nums">
+                          {(getHeadMaskProp('rotation', 0) ?? 0).toFixed(0)}°
+                        </div>
+                      </div>
+                    )}
+
+                    {getHeadMaskProp('src', null) && (
+                      <div className="mt-2 grid grid-cols-6 gap-1 w-full">
+                        {(
+                          [
+                            { label: '-45', delta: -45 },
+                            { label: '-15', delta: -15 },
+                            { label: '-5', delta: -5 },
+                            { label: '+5', delta: 5 },
+                            { label: '+15', delta: 15 },
+                            { label: '+45', delta: 45 },
+                          ] as const
+                        ).map(({ label, delta }) => (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={() => nudgeMaskRotation(delta)}
+                            className="py-1 rounded bg-[#222] hover:bg-[#333] text-[10px] font-mono font-bold text-white"
+                            title={`Nudge ${label}°`}
+                          >
+                            {label}°
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <RotationWheelControl
-                    value={getHeadMaskProp('rotation', 0) ?? 0}
-                    min={-360}
-                    max={360}
-                    step={1}
-                    onChange={(val) =>
-                      setStateWithHistory('head_mask_rotation', (prev) => ({
-                        ...prev,
-                        scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), rotation: val } },
-                      }))
-                    }
-                    isDisabled={!getHeadMaskProp('src', null)}
-                  />
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px]">
+                      <span>Fine Rotation</span>
+                      <span>{(getHeadMaskProp('rotation', 0) ?? 0).toFixed(0)}°</span>
+                    </div>
+                    <RotationWheelControl
+                      value={getHeadMaskProp('rotation', 0) ?? 0}
+                      min={-360}
+                      max={360}
+                      step={1}
+                      onChange={(val) => setHeadMask({ rotation: val })}
+                      isDisabled={!getHeadMaskProp('src', null)}
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -792,6 +971,68 @@ export function JointMaskWidget({
                       }
                       className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
                     />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Nudge</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <div className="text-[9px] text-[#666]">X</div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {([-10, -1, 1, 10] as const).map((d) => (
+                          <button
+                            key={`head-nudge-x:${d}`}
+                            type="button"
+                            onClick={() =>
+                              setStateWithHistory('head_mask_nudge_x', (prev) => ({
+                                ...prev,
+                                scene: {
+                                  ...prev.scene,
+                                  headMask: {
+                                    ...prev.scene.headMask,
+                                    offsetX: clamp((prev.scene.headMask?.offsetX ?? 0) + d, -5000, 5000),
+                                  },
+                                },
+                              }))
+                            }
+                            className="py-1 rounded bg-[#222] hover:bg-[#333] text-[10px] font-mono font-bold text-white"
+                            disabled={!getHeadMaskProp('src', null)}
+                            title={`Offset X ${d > 0 ? '+' : ''}${d}`}
+                          >
+                            {d > 0 ? `+${d}` : d}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[9px] text-[#666]">Y</div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {([-10, -1, 1, 10] as const).map((d) => (
+                          <button
+                            key={`head-nudge-y:${d}`}
+                            type="button"
+                            onClick={() =>
+                              setStateWithHistory('head_mask_nudge_y', (prev) => ({
+                                ...prev,
+                                scene: {
+                                  ...prev.scene,
+                                  headMask: {
+                                    ...prev.scene.headMask,
+                                    offsetY: clamp((prev.scene.headMask?.offsetY ?? 0) + d, -5000, 5000),
+                                  },
+                                },
+                              }))
+                            }
+                            className="py-1 rounded bg-[#222] hover:bg-[#333] text-[10px] font-mono font-bold text-white"
+                            disabled={!getHeadMaskProp('src', null)}
+                            title={`Offset Y ${d > 0 ? '+' : ''}${d}`}
+                          >
+                            {d > 0 ? `+${d}` : d}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -855,6 +1096,7 @@ export function JointMaskWidget({
                               grayscale: 0,
                               sepia: 0,
                               invert: 0,
+                              pixelate: 0,
                             } as any,
                           },
                         }))
@@ -901,13 +1143,32 @@ export function JointMaskWidget({
                     </div>
                     <Slider
                       min={0}
-                      max={30}
+                      max={60}
                       step={0.5}
                       value={[getHeadMaskProp('blurPx', 0) ?? 0]}
                       onValueChange={([val]) =>
                         setStateWithHistory('head_mask_blur', (prev) => ({
                           ...prev,
                           scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), blurPx: val } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-[#666]">Pixelate</span>
+                      <span>{(getHeadMaskProp('pixelate', 0) ?? 0) > 0 ? `${getHeadMaskProp('pixelate', 0) ?? 0}` : 'Off'}</span>
+                    </div>
+                    <Slider
+                      min={0}
+                      max={32}
+                      step={1}
+                      value={[getHeadMaskProp('pixelate', 0) ?? 0]}
+                      onValueChange={([val]) =>
+                        setStateWithHistory('head_mask_pixelate', (prev) => ({
+                          ...prev,
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), pixelate: val } },
                         }))
                       }
                     />
@@ -977,8 +1238,8 @@ export function JointMaskWidget({
                         <span>{(getHeadMaskProp('hueRotate', 0) ?? 0).toFixed(0)}°</span>
                       </div>
                       <Slider
-                        min={-180}
-                        max={180}
+                        min={-360}
+                        max={360}
                         step={1}
                         value={[getHeadMaskProp('hueRotate', 0) ?? 0]}
                         onValueChange={([val]) =>
@@ -1128,6 +1389,7 @@ export function JointMaskWidget({
                         grayscale: 0,
                         sepia: 0,
                         invert: 0,
+                        pixelate: 0,
                         mode: 'cutout',
                         lengthScale: 1,
                         volumePreserve: false,
@@ -1257,6 +1519,7 @@ export function JointMaskWidget({
                         grayscale: 0,
                         sepia: 0,
                         invert: 0,
+                        pixelate: 0,
                         relatedJoints: [],
                         mode: 'cutout',
                         lengthScale: 1,
@@ -1296,7 +1559,7 @@ export function JointMaskWidget({
                     </div>
                     <Slider
                       min={0.01}
-                      max={20}
+                      max={50}
                       step={0.01}
                       value={[jointMaskScale]}
                       onValueChange={([val]) => setJointMask({ scale: val })}
@@ -1311,7 +1574,7 @@ export function JointMaskWidget({
                       </div>
                       <Slider
                         min={0.1}
-                        max={3}
+                        max={10}
                         step={0.01}
                         value={[jointMask.stretchX ?? 1]}
                         onValueChange={([val]) => setJointMask({ stretchX: val } as any)}
@@ -1324,7 +1587,7 @@ export function JointMaskWidget({
                       </div>
                       <Slider
                         min={0.1}
-                        max={3}
+                        max={10}
                         step={0.01}
                         value={[jointMask.stretchY ?? 1]}
                         onValueChange={([val]) => setJointMask({ stretchY: val } as any)}
@@ -1529,19 +1792,84 @@ export function JointMaskWidget({
                     </>
                   )}
 
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[10px]">
-                      <span>Rotation</span>
-                      <span>{(jointMask.rotation ?? 0).toFixed(0)}°</span>
+                  <div className="space-y-3">
+                    <div className="flex flex-col items-center">
+                      <AngleDial
+                        valueDeg={jointMask.rotation ?? 0}
+                        isDisabled={!jointMask.src}
+                        onBegin={handleMaskRotationBegin}
+                        onEnd={handleMaskRotationEnd}
+                        onRotateDelta={handleMaskRotationDelta}
+                        label="Rotation"
+                      />
+
+                      {jointMask.src && (
+                        <div className="mt-3 w-full flex items-center gap-2">
+                          <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] shrink-0">Rotate</div>
+                        <input
+                          type="range"
+                          min={-360}
+                          max={360}
+                          step={1}
+                          value={jointMask.rotation ?? 0}
+                          onPointerDown={handleMaskRotationBegin}
+                          onPointerUp={handleMaskRotationEnd}
+                          onPointerCancel={handleMaskRotationEnd}
+                            onChange={(e) => {
+                              const v = Number(e.target.value);
+                              if (!Number.isFinite(v)) return;
+                              wheelTargetRotationRef.current = v;
+                              setJointMask({ rotation: v } as any);
+                            }}
+                            className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                            title="Unified rotation slider"
+                          />
+                          <div className="text-[10px] font-mono text-[#444] w-12 text-right tabular-nums">
+                            {(jointMask.rotation ?? 0).toFixed(0)}°
+                          </div>
+                        </div>
+                      )}
+
+                      {jointMask.src && (
+                        <div className="mt-2 grid grid-cols-6 gap-1 w-full">
+                          {(
+                            [
+                              { label: '-45', delta: -45 },
+                              { label: '-15', delta: -15 },
+                              { label: '-5', delta: -5 },
+                              { label: '+5', delta: 5 },
+                              { label: '+15', delta: 15 },
+                              { label: '+45', delta: 45 },
+                            ] as const
+                          ).map(({ label, delta }) => (
+                            <button
+                              key={label}
+                              type="button"
+                              onClick={() => nudgeMaskRotation(delta)}
+                              className="py-1 rounded bg-[#222] hover:bg-[#333] text-[10px] font-mono font-bold text-white"
+                              title={`Nudge ${label}°`}
+                            >
+                              {label}°
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <RotationWheelControl
-                      value={jointMask.rotation ?? 0}
-                      min={-360}
-                      max={360}
-                      step={1}
-                      onChange={(val) => setJointMask({ rotation: val } as any)}
-                      isDisabled={!jointMask.src}
-                    />
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px]">
+                        <span>Fine Rotation</span>
+                        <span>{(jointMask.rotation ?? 0).toFixed(0)}°</span>
+                      </div>
+                      <RotationWheelControl
+                        value={jointMask.rotation ?? 0}
+                        min={-360}
+                        max={360}
+                        step={1}
+                        onChange={(val) => setJointMask({ rotation: val } as any)}
+                        isDisabled={!jointMask.src}
+                      />
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
@@ -1564,6 +1892,46 @@ export function JointMaskWidget({
                         className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
                         disabled={!jointMask.src}
                       />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Nudge</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <div className="text-[9px] text-[#666]">X</div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {([-10, -1, 1, 10] as const).map((d) => (
+                            <button
+                              key={`joint-nudge-x:${d}`}
+                              type="button"
+                              onClick={() => setJointMask({ offsetX: clamp((jointMask.offsetX ?? 0) + d, -5000, 5000) } as any)}
+                              className="py-1 rounded bg-[#222] hover:bg-[#333] text-[10px] font-mono font-bold text-white"
+                              disabled={!jointMask.src}
+                              title={`Offset X ${d > 0 ? '+' : ''}${d}`}
+                            >
+                              {d > 0 ? `+${d}` : d}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[9px] text-[#666]">Y</div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {([-10, -1, 1, 10] as const).map((d) => (
+                            <button
+                              key={`joint-nudge-y:${d}`}
+                              type="button"
+                              onClick={() => setJointMask({ offsetY: clamp((jointMask.offsetY ?? 0) + d, -5000, 5000) } as any)}
+                              className="py-1 rounded bg-[#222] hover:bg-[#333] text-[10px] font-mono font-bold text-white"
+                              disabled={!jointMask.src}
+                              title={`Offset Y ${d > 0 ? '+' : ''}${d}`}
+                            >
+                              {d > 0 ? `+${d}` : d}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -1612,6 +1980,7 @@ export function JointMaskWidget({
                             grayscale: 0,
                             sepia: 0,
                             invert: 0,
+                            pixelate: 0,
                           } as any)
                         }
                         className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
@@ -1649,10 +2018,24 @@ export function JointMaskWidget({
                       </div>
                       <Slider
                         min={0}
-                        max={30}
+                        max={60}
                         step={0.5}
                         value={[((jointMask as any).blurPx ?? 0) as number]}
                         onValueChange={([val]) => setJointMask({ blurPx: val } as any)}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-[10px]">
+                        <span className="text-[#666]">Pixelate</span>
+                        <span>{(((jointMask as any).pixelate ?? 0) as number) > 0 ? `${(jointMask as any).pixelate ?? 0}` : 'Off'}</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={32}
+                        step={1}
+                        value={[((jointMask as any).pixelate ?? 0) as number]}
+                        onValueChange={([val]) => setJointMask({ pixelate: val } as any)}
                       />
                     </div>
 
@@ -1704,9 +2087,9 @@ export function JointMaskWidget({
                           <span>Hue</span>
                           <span>{(((jointMask as any).hueRotate ?? 0) as number).toFixed(0)}°</span>
                         </div>
-                        <Slider
-                          min={-180}
-                          max={180}
+                      <Slider
+                          min={-360}
+                          max={360}
                           step={1}
                           value={[((jointMask as any).hueRotate ?? 0) as number]}
                           onValueChange={([val]) => setJointMask({ hueRotate: val } as any)}

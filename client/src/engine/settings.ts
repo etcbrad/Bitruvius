@@ -3,7 +3,7 @@ import { clamp } from '../utils';
 import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
-import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset } from './types';
+import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode } from './types';
 import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
 import { DEFAULT_PROCEDURAL_BITRUVIAN_GAIT, DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS, DEFAULT_PROCEDURAL_BITRUVIAN_IDLE } from './bitruvian/types';
 import type { TransitionIssue, TransitionResult } from '@/lib/transitionIssues';
@@ -120,6 +120,7 @@ const sanitizeJointMask = (raw: unknown, base: JointMask): JointMask => {
     grayscale: isFiniteNumber((mask as any).grayscale) ? clamp((mask as any).grayscale, 0, 1) : base.grayscale,
     sepia: isFiniteNumber((mask as any).sepia) ? clamp((mask as any).sepia, 0, 1) : base.sepia,
     invert: isFiniteNumber((mask as any).invert) ? clamp((mask as any).invert, 0, 1) : base.invert,
+    pixelate: isFiniteNumber((mask as any).pixelate) ? clamp((mask as any).pixelate, 0, 64) : base.pixelate,
     relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
@@ -153,6 +154,7 @@ const makeDefaultJointMasks = (): Record<string, JointMask> => {
       grayscale: 0,
       sepia: 0,
       invert: 0,
+      pixelate: 0,
       relatedJoints: [],
     };
   }
@@ -384,6 +386,7 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
     grayscale: isFiniteNumber((mask as any).grayscale) ? clamp((mask as any).grayscale, 0, 1) : base.grayscale,
     sepia: isFiniteNumber((mask as any).sepia) ? clamp((mask as any).sepia, 0, 1) : base.sepia,
     invert: isFiniteNumber((mask as any).invert) ? clamp((mask as any).invert, 0, 1) : base.invert,
+    pixelate: isFiniteNumber((mask as any).pixelate) ? clamp((mask as any).pixelate, 0, 64) : base.pixelate,
     relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
@@ -461,13 +464,11 @@ export const makeDefaultState = (): SkeletonState => {
   setFkFollowDeg('neck_base', 'neck_upper', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('neck_upper', 'head', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_clavicle', 'l_shoulder', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_shoulder', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_elbow', 'l_wrist', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_wrist', 'l_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_clavicle', 'l_upper_arm', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('l_upper_arm', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'r_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_clavicle', 'r_shoulder', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_shoulder', 'r_elbow', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_clavicle', 'r_upper_arm', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('r_upper_arm', 'r_elbow', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('r_elbow', 'r_wrist', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('r_wrist', 'r_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
   
@@ -516,12 +517,14 @@ export const makeDefaultState = (): SkeletonState => {
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
 	    // Default: FK-first with a single planted foot for stability.
 	    activeRoots: ['r_ankle'],
+	    deactivatedJoints: new Set<string>(),
 	    groundRootTarget,
 	    footPlungerEnabled: false,
 	    showJoints: true,
-	    jointsOverMasks: false,
-	    lookMode: 'default',
-	    controlMode: 'Cardboard', // FK-heavy default
+    jointsOverMasks: false,
+    lookMode: 'default',
+    armViewMode: '2D',
+    controlMode: 'Cardboard', // FK-heavy default
 	    rigidity: 'cardboard', // Most rigid setting by default
 	    snappiness: 1.0, // Maximum snappiness for crisp rigid movement
     viewScale: 1.0,
@@ -608,6 +611,7 @@ export const makeDefaultState = (): SkeletonState => {
         grayscale: 0,
         sepia: 0,
         invert: 0,
+        pixelate: 0,
         relatedJoints: [],
       },
       jointMasks: makeDefaultJointMasks(),
@@ -740,9 +744,16 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
 
   const rawLookMode = typeof (raw as any).lookMode === 'string' ? ((raw as any).lookMode as string) : null;
   const rawLegacyViewMode = typeof (raw as any).viewMode === 'string' ? ((raw as any).viewMode as string) : null;
+  const rawArmViewMode = typeof (raw as any).armViewMode === 'string' ? ((raw as any).armViewMode as string) : null;
 
   let lookMode: LookModeId = base.lookMode;
+  let armViewMode: ArmViewMode = base.armViewMode;
   let forceLegacy3DRigid = false;
+
+  // Validate armViewMode
+  if (rawArmViewMode && ['2D', '3D', 'hybrid'].includes(rawArmViewMode)) {
+    armViewMode = rawArmViewMode as ArmViewMode;
+  }
   if (rawLookMode && LOOK_MODE_ID_SET.has(rawLookMode as LookModeId)) {
     lookMode = rawLookMode as LookModeId;
   } else if (rawLegacyViewMode) {
@@ -1170,11 +1181,13 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
       torsoDiamond,
 	    physicsRigidity: finalPhysicsRigidity,
 	    activeRoots,
+	    deactivatedJoints: raw.deactivatedJoints instanceof Set ? raw.deactivatedJoints : base.deactivatedJoints,
 	    groundRootTarget,
     footPlungerEnabled,
     showJoints: typeof raw.showJoints === 'boolean' ? raw.showJoints : base.showJoints,
     jointsOverMasks: typeof raw.jointsOverMasks === 'boolean' ? raw.jointsOverMasks : base.jointsOverMasks,
     lookMode,
+    armViewMode,
     controlMode: finalControlMode,
     rigidity: finalRigidity,
     snappiness,

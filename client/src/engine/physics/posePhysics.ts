@@ -138,13 +138,12 @@ const HINGE_LIMITS_DEG: Record<
   string,
   { a: string; b: string; c: string; min: number; max: number }
 > = {
-  l_elbow: { a: 'l_shoulder', b: 'l_elbow', c: 'l_wrist', min: 5, max: 175 },
-  r_elbow: { a: 'r_shoulder', b: 'r_elbow', c: 'r_wrist', min: 5, max: 175 },
+  l_elbow: { a: 'l_upper_arm', b: 'l_elbow', c: 'l_wrist', min: 5, max: 175 },
+  r_elbow: { a: 'r_upper_arm', b: 'r_elbow', c: 'r_wrist', min: 5, max: 175 },
   l_knee: { a: 'l_hip', b: 'l_knee', c: 'l_ankle', min: 5, max: 175 },
   r_knee: { a: 'r_hip', b: 'r_knee', c: 'r_ankle', min: 5, max: 175 },
   // Core joints (conservative; can be tuned later)
-  neck_base: { a: 'collar', b: 'neck_base', c: 'neck_upper', min: 20, max: 160 },
-  neck_upper: { a: 'neck_base', b: 'neck_upper', c: 'head', min: 20, max: 160 },
+  neck_base: { a: 'collar', b: 'neck_base', c: 'head', min: 20, max: 160 },
   sternum: { a: 'navel', b: 'sternum', c: 'collar', min: 30, max: 150 },
 };
 
@@ -358,11 +357,11 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   // Shoulder-driven collar balance: gently bias collar toward aiming at the shoulder midpoint.
   // Only active in bend/stretch contexts to avoid fighting rigid FK intent.
   // During head/neck direct manipulation, defer to interaction-driven constraints to avoid twitchy competing targets.
-  const draggingHeadOrNeck = input.drag?.id === 'head' || input.drag?.id === 'neck_base' || input.drag?.id === 'neck_upper';
+  const draggingHeadOrNeck = input.drag?.id === 'head' || input.drag?.id === 'neck_base';
   if (!draggingHeadOrNeck && rigidity !== 'cardboard' && (bendEnabled || stretchEnabled) && (invMass.collar ?? 1) > 0) {
     const sternumWorld = world0.sternum;
-    const lShoulderWorld = world0.l_shoulder;
-    const rShoulderWorld = world0.r_shoulder;
+    const lShoulderWorld = world0.l_upper_arm;
+    const rShoulderWorld = world0.r_upper_arm;
     if (sternumWorld && lShoulderWorld && rShoulderWorld) {
       const mid = {
         x: (lShoulderWorld.x + rShoulderWorld.x) * 0.5,
