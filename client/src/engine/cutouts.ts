@@ -20,6 +20,7 @@ export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
       fromJointId,
       toJointId,
     },
+    originJointId: null,
     assetId: null,
     visible: false,
     opacity: 1.0,
@@ -35,10 +36,15 @@ export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
     anchorY: 0.5,
   });
 
-  // Spine slots
-  slots['spine_upper'] = createSlot('spine_upper', 'Upper Spine', 'sternum', 'collar', 20);
-  slots['spine_neck'] = createSlot('spine_neck', 'Neck', 'collar', 'neck_base', 25);
+  // Simplified upper-body slots (Head > Collar > Torso)
   slots['head'] = createSlot('head', 'Head', 'neck_base', 'head', 100);
+
+  // Collar covers the top seam of the torso and carries shoulders + neck/head.
+  slots['collar'] = {
+    ...createSlot('collar', 'Collar', 'sternum', 'collar', 75),
+    originJointId: 'sternum',
+    anchorY: 1,
+  };
 
   // Left arm slots
   slots['l_upper_arm'] = createSlot('l_upper_arm', 'L Upper Arm', 'l_shoulder', 'l_elbow', 40);
@@ -61,9 +67,20 @@ export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
   slots['r_foot'] = createSlot('r_foot', 'R Foot', 'r_ankle', 'r_toe', 10);
 
   // Torso slots
-  slots['torso'] = createSlot('torso', 'Torso', 'navel', 'sternum', 50);
-  // Optional waist/pelvis band (mask optional per spec); spans hip-to-hip.
-  slots['waist'] = { ...createSlot('waist', 'Waist', 'l_hip', 'r_hip', 15), visible: false };
+  slots['torso'] = {
+    ...createSlot('torso', 'Torso', 'navel', 'sternum', 50),
+    originJointId: 'navel',
+    anchorY: 1,
+  };
+
+  // Optional waist/pelvis piece (mask optional per spec); spans hip-to-hip.
+  // Origin is the navel seam so it can split cleanly from the torso.
+  slots['waist'] = {
+    ...createSlot('waist', 'Waist', 'l_hip', 'r_hip', 49),
+    originJointId: 'navel',
+    anchorY: 0,
+    visible: false,
+  };
 
   return slots;
 };

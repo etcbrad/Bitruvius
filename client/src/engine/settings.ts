@@ -404,7 +404,8 @@ export const makeDefaultState = (): SkeletonState => {
   // `fkFollowDeg` is a per-rotation-step clamp in degrees (positive = with-parent, negative = against-parent).
   const COLLAR_SOCKET_FOLLOW_DEG = 90;
   setFkFollowDeg('collar', 'neck_base', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('neck_base', 'head', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('neck_base', 'neck_upper', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('neck_upper', 'head', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('l_clavicle', 'l_shoulder', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('l_shoulder', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
@@ -551,6 +552,7 @@ export const makeDefaultState = (): SkeletonState => {
     },
     assets: {},
     cutoutSlots: defaultSlots,
+    cutoutRig: { linkWaistToTorso: false },
     views: defaultViews,
     activeViewId: 'front',
     boneStyle: { hueT: 0, lightness: 0 },
@@ -599,7 +601,7 @@ const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { asse
       name: 'head',
       attachment: {
         type: 'bone',
-        fromJointId: 'neck_base',
+        fromJointId: 'neck_upper',
         toJointId: 'head',
       },
       assetId,
@@ -830,6 +832,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
   // Handle cutout system migration and sanitization
   let assets = base.assets;
   let cutoutSlots = base.cutoutSlots;
+  let cutoutRig = base.cutoutRig ?? { linkWaistToTorso: false };
   let views = base.views;
   let activeViewId = base.activeViewId;
 
@@ -845,6 +848,63 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     // Sanitize existing cutout data
     assets = typeof raw.assets === 'object' && raw.assets !== null ? raw.assets as Record<string, CutoutAsset> : base.assets;
     cutoutSlots = typeof raw.cutoutSlots === 'object' && raw.cutoutSlots !== null ? raw.cutoutSlots as Record<string, CutoutSlot> : base.cutoutSlots;
+  }
+
+  // Normalize legacy slot ids into simplified masks where safe.
+  const normalizeCutoutSlots = (slots: Record<string, CutoutSlot>): Record<string, CutoutSlot> => {
+    const sourceUpper = (slots as any).spine_upper as CutoutSlot | undefined;
+    const sourceNeck = (slots as any).spine_neck as CutoutSlot | undefined;
+    const hasCollar = Boolean((slots as any).collar);
+
+    let next: Record<string, CutoutSlot> = slots;
+    let migratedAny = false;
+
+    const maybeAdoptIntoCollar = (source: CutoutSlot | undefined) => {
+      if (!source) return;
+      if (hasCollar) return;
+      migratedAny = true;
+      next = {
+        ...next,
+        collar: {
+          ...source,
+          id: 'collar',
+          name: 'Collar',
+          attachment: { type: 'bone', fromJointId: 'sternum', toJointId: 'collar' },
+          originJointId: typeof source.originJointId === 'string' ? source.originJointId : 'sternum',
+          anchorY: Number.isFinite(source.anchorY) ? source.anchorY : 1,
+          zIndex: Number.isFinite(source.zIndex) ? source.zIndex : 75,
+        },
+      };
+    };
+
+    maybeAdoptIntoCollar(sourceUpper);
+    if (!migratedAny) maybeAdoptIntoCollar(sourceNeck);
+
+    // Remove legacy slots only when empty or explicitly migrated (to avoid data loss).
+    if ((sourceUpper && migratedAny) || (sourceUpper && !sourceUpper.assetId && !sourceUpper.visible)) {
+      const copy = { ...next } as any;
+      delete copy.spine_upper;
+      next = copy;
+    }
+    if ((sourceNeck && migratedAny) || (sourceNeck && !sourceNeck.assetId && !sourceNeck.visible)) {
+      const copy = { ...next } as any;
+      delete copy.spine_neck;
+      next = copy;
+    }
+
+    return next;
+  };
+
+  cutoutSlots = normalizeCutoutSlots(cutoutSlots);
+
+  const rawCutoutRig = (raw as any).cutoutRig;
+  if (rawCutoutRig && typeof rawCutoutRig === 'object') {
+    cutoutRig = {
+      linkWaistToTorso:
+        typeof (rawCutoutRig as any).linkWaistToTorso === 'boolean'
+          ? (rawCutoutRig as any).linkWaistToTorso
+          : (base.cutoutRig?.linkWaistToTorso ?? false),
+    };
   }
 
   // Sanitize views
@@ -1024,7 +1084,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     }
   }
 
-	  const state: SkeletonState = {
+  const state: SkeletonState = {
 	    joints,
 	    mirroring: typeof raw.mirroring === 'boolean' ? raw.mirroring : base.mirroring,
 	    bendEnabled: finalBendEnabled,
@@ -1074,6 +1134,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     },
     assets,
     cutoutSlots,
+    cutoutRig,
     views,
     activeViewId,
     boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),

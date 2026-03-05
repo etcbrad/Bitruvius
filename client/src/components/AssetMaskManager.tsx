@@ -642,10 +642,18 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px]">
                       <span>Head/Neck</span>
-                      <span className="text-[#999]">{state.scene.headMask.relatedJoints?.[0] === 'collar' ? 'Hybrid' : 'Separate'}</span>
+                      <span className="text-[#999]">
+                        {(() => {
+                          const base = state.scene.headMask.relatedJoints?.[0];
+                          if (base === 'sternum') return 'Sternum';
+                          if (base === 'collar') return 'Collar';
+                          if (base === 'neck_upper') return 'Upper Neck';
+                          return 'Separate';
+                        })()}
+                      </span>
                     </div>
                     <select
-                      value={state.scene.headMask.relatedJoints?.[0] === 'collar' ? 'collar' : 'neck_base'}
+                      value={state.scene.headMask.relatedJoints?.[0] || 'neck_base'}
                       onPointerDownCapture={(e) => e.stopPropagation()}
                       onMouseDownCapture={(e) => e.stopPropagation()}
                       onChange={(e) =>
@@ -653,14 +661,16 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                           ...prev,
                           scene: {
                             ...prev.scene,
-                            headMask: { ...prev.scene.headMask, relatedJoints: e.target.value === 'collar' ? ['collar'] : [] },
+                            headMask: { ...prev.scene.headMask, relatedJoints: e.target.value === 'neck_base' ? [] : [e.target.value] },
                           },
                         }))
                       }
                       className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
                     >
                       <option value="neck_base">Separate (Head only)</option>
-                      <option value="collar">Hybrid (Head+Neck rigid)</option>
+                      <option value="neck_upper">Upper Neck</option>
+                      <option value="collar">Collar Joint</option>
+                      <option value="sternum">Sternum</option>
                     </select>
                   </div>
                   

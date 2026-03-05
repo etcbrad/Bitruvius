@@ -409,7 +409,7 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
     if (headMaskImg && scene.headMask?.src && scene.headMask.visible) {
       const mask = scene.headMask;
       const baseId =
-        mask.relatedJoints?.[0] && mask.relatedJoints[0] in baseJoints ? mask.relatedJoints[0] : 'neck_base';
+        mask.relatedJoints?.[0] && mask.relatedJoints[0] in baseJoints ? mask.relatedJoints[0] : 'neck_upper';
       const basePos = getWorldPositionFromOffsets(baseId, pose.joints, baseJoints);
       const dx = headPos.x - basePos.x;
       const dy = headPos.y - basePos.y;

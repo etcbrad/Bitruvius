@@ -6,7 +6,8 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
   sternum: { id: 'sternum', label: 'Sternum', parent: 'navel', baseOffset: { x: 0, y: -4 }, currentOffset: { x: 0, y: -4 }, targetOffset: { x: 0, y: -4 }, previewOffset: { x: 0, y: -4 }, rotation: 0 },
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  head: { id: 'head', label: 'Head', parent: 'neck_base', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, isEndEffector: true, rotation: 0 },
+  neck_upper: { id: 'neck_upper', label: 'Upper Neck', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
+  head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
 
   l_nipple: { id: 'l_nipple', label: 'L Nipple', parent: 'sternum', baseOffset: { x: -2.5, y: 1.5 }, currentOffset: { x: -2.5, y: 1.5 }, targetOffset: { x: -2.5, y: 1.5 }, previewOffset: { x: -2.5, y: 1.5 }, mirrorId: 'r_nipple', rotation: 0 },
   r_nipple: { id: 'r_nipple', label: 'R Nipple', parent: 'sternum', baseOffset: { x: 2.5, y: 1.5 }, currentOffset: { x: 2.5, y: 1.5 }, targetOffset: { x: 2.5, y: 1.5 }, previewOffset: { x: 2.5, y: 1.5 }, mirrorId: 'l_nipple', rotation: 0 },
@@ -61,7 +62,8 @@ export const CONNECTIONS: Connection[] = [
   { from: "navel", to: "sternum", type: "bone", label: "Torso", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "sternum", to: "collar", type: "bone", label: "Collar", shape: 'diamond', stretchMode: 'rigid' },
   { from: "collar", to: "neck_base", type: "bone", label: "Neck", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "neck_base", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "neck_base", to: "neck_upper", type: "bone", label: "Upper Neck", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "neck_upper", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
   
   // Wireframe connections for spatial structure (thin green lines)
   // NOTE: These are non-hierarchical braces. They intentionally use a non-"bone" type so the physics solver

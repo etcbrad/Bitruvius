@@ -634,6 +634,7 @@ export default function App() {
     | 'hardStop'
     | 'snappiness'
   >>(null);
+  const nonManikinPinTargetsRef = useRef<Record<string, Point> | null>(null);
 
 		  useEffect(() => {
 		    if (manikinMode) return;
@@ -1726,13 +1727,26 @@ export default function App() {
         clearTransientInteractionState();
         setManikinRotateDragging(null);
         manikinRotateDraggingLiveRef.current = null;
+        armPoseReliefTransition({ reason: 'manikin:off', durationMs: 1600 });
+        if (nonManikinResumeRef.current && nonManikinPinTargetsRef.current) {
+          pinTargetsRef.current = nonManikinPinTargetsRef.current;
+        }
         setStateWithHistory('manikin_mode:off', (prev) => {
-          const upgraded: SkeletonState = applyFluidHandshake(prev, {
-            ...prev,
-            controlMode: 'IK',
-            activeRoots: ['l_ankle', 'r_ankle'].filter((id) => id in prev.joints),
-            ...controlSettingsCacheRef.current.ik,
-          });
+          // Persist the "Paper/3D" choice for Manikin mode (rigidity is the user-facing proxy).
+          manikinRigidityRef.current = prev.rigidity;
+
+          const resume = nonManikinResumeRef.current;
+          const upgraded: SkeletonState = applyFluidHandshake(
+            prev,
+            resume
+              ? { ...prev, ...resume }
+              : {
+                  ...prev,
+                  controlMode: 'IK',
+                  activeRoots: ['l_ankle', 'r_ankle'].filter((id) => id in prev.joints),
+                  ...controlSettingsCacheRef.current.ik,
+                },
+          );
           // Hard-set the visible pose so nothing "swims" as we unlock the digital rig.
           const pose = capturePoseSnapshot(prev.joints, 'current');
           return { ...upgraded, joints: applyPoseSnapshotToJoints(upgraded.joints, pose) };
@@ -1744,13 +1758,28 @@ export default function App() {
       clearTransientInteractionState();
       setManikinRotateDragging(null);
       manikinRotateDraggingLiveRef.current = null;
+      nonManikinPinTargetsRef.current = { ...pinTargetsRef.current };
       pinTargetsRef.current = {};
+      armPoseReliefTransition({ reason: 'manikin:on', durationMs: 1600 });
       setStateWithHistory('manikin_mode:on', (prev) => {
+        // Snapshot the current digital settings so we can restore them when leaving Manikin mode.
+        nonManikinResumeRef.current = {
+          controlMode: prev.controlMode,
+          activeRoots: [...prev.activeRoots],
+          rigidity: prev.rigidity,
+          physicsRigidity: prev.physicsRigidity,
+          bendEnabled: prev.bendEnabled,
+          stretchEnabled: prev.stretchEnabled,
+          leadEnabled: prev.leadEnabled,
+          hardStop: prev.hardStop,
+          snappiness: prev.snappiness,
+        };
+
         const next: SkeletonState = applyFluidHandshake(prev, {
           ...prev,
           // Manikin mode: pure FK rotation-only (no pose physics, no IK roots).
           controlMode: 'Cardboard',
-          rigidity: 'cardboard',
+          rigidity: manikinRigidityRef.current,
           physicsRigidity: 0,
           activeRoots: [],
           stretchEnabled: false,
@@ -2776,6 +2805,22 @@ export default function App() {
         const collarIsDragged = drag?.id === 'collar';
 
         if (physicsActive && !sternumIsDragged && !collarIsDragged) {
+          const relief = poseReliefTransitionRef.current;
+          const reliefActive =
+            Boolean(relief) &&
+            !isDirectManipulation &&
+            !drag &&
+            now - (relief!.startMs) >= 0 &&
+            now - (relief!.startMs) <= relief!.durationMs;
+          if (!reliefActive && relief && now - relief.startMs > relief.durationMs + 100) {
+            poseReliefTransitionRef.current = null;
+          }
+          const reliefToken = reliefActive ? `relief:${relief!.token}` : '';
+          const reliefT = reliefActive ? clamp((now - relief!.startMs) / Math.max(1, relief!.durationMs), 0, 1) : 0;
+          const reliefEase = reliefT <= 0 ? 0 : reliefT >= 1 ? 1 : 1 - Math.pow(1 - reliefT, 3);
+          const reliefWireRestLengths = reliefActive ? relief!.wireRestLengths : undefined;
+          const reliefPin = reliefActive ? relief!.pin : undefined;
+
           const handshakeKey = [
             prev.controlMode,
             prev.rigidity,
@@ -2783,6 +2828,7 @@ export default function App() {
             prev.bendEnabled ? 'B1' : 'B0',
             prev.hardStop ? 'H1' : 'H0',
             String(Math.round((prev.physicsRigidity ?? 0) * 100)),
+            reliefToken,
           ].join('|');
           if (physicsHandshakeRef.current.key !== handshakeKey) {
             physicsHandshakeRef.current.key = handshakeKey;
@@ -3057,11 +3103,19 @@ export default function App() {
 	            tensionReliefMaxStrainRef.current = strainSmoothed;
 	            const strainOn = 0.3;
 	            const strainOff = 0.22;
-	            const nowMs = performance.now();
+	            const nowMs = now;
 
 	            if (strainSmoothed <= strainOff) tensionReliefArmedRef.current = true;
 
 	            const baseWireCompliance = defaultWireComplianceForRigidity(prev.rigidity);
+              const wireComplianceEffective = reliefActive
+                ? lerp(baseWireCompliance * 6, baseWireCompliance, reliefEase)
+                : baseWireCompliance;
+              const extraConstraintsEffective = (() => {
+                if (!reliefPin) return extraConstraints;
+                const pin: any = { kind: 'pin', id: reliefPin.id, target: reliefPin.target, compliance: 0 };
+                return extraConstraints?.length ? [...extraConstraints, pin] : [pin];
+              })();
 	            const iterationsBase = isRigidDragMode ? 28 : 16;
 	            const dampingBase = isRigidDragMode ? 0.18 : 0.12;
 	            const physicsDt = isRigidDragMode ? Math.min(dt, 1 / 60) : dt;
@@ -3086,12 +3140,14 @@ export default function App() {
 	                rootTargets: activePinTargets,
 	                drag: dragIsPinned ? null : dragInput,
 	                connectionOverrides: prev.connectionOverrides,
-	                extraConstraints,
+	                extraConstraints: extraConstraintsEffective,
 	                options: {
 	                  dt: physicsDt,
 	                  iterations: iterationsBase + (isRigidDragMode ? 10 : 8),
 	                  damping: dampingBase + 0.08,
-	                  wireCompliance: baseWireCompliance,
+	                  wireCompliance: wireComplianceEffective,
+                    wireRestLengths: reliefWireRestLengths,
+                    wireRestBlend: reliefEase,
 	                  rigidity: prev.rigidity,
 	                  hardStop: prev.hardStop,
 	                  autoBend,
@@ -3109,12 +3165,14 @@ export default function App() {
 		            rootTargets: activePinTargets,
 		            drag: dragIsPinned ? null : dragInput,
 		            connectionOverrides: prev.connectionOverrides,
-		            extraConstraints,
+		            extraConstraints: extraConstraintsEffective,
 		            options: {
 		              dt: physicsDt,
 		              iterations: iterationsBase,
 		              damping: dampingBase,
-		              wireCompliance: baseWireCompliance,
+		              wireCompliance: wireComplianceEffective,
+                  wireRestLengths: reliefWireRestLengths,
+                  wireRestBlend: reliefEase,
 		              rigidity: prev.rigidity,
 		              hardStop: prev.hardStop,
 		              autoBend,
@@ -3186,7 +3244,7 @@ export default function App() {
 
           // Blend physics results in over a short ramp when settings change, so toggling
           // stretch/bend/rigidity doesn't hard-pop the current pose.
-          const transitionSec = prev.rigidity === 'cardboard' ? 0.08 : 0.14;
+          const transitionSec = reliefActive ? clamp(relief!.durationMs / 1000, 0.8, 2.0) : (prev.rigidity === 'cardboard' ? 0.08 : 0.14);
           if (isDirectManipulation || drag) {
             physicsHandshakeRef.current.blend = 1;
           } else {
@@ -3415,6 +3473,7 @@ export default function App() {
   }, [state.procgen.enabled, state.timeline.enabled, state.timeline.clip, timelineFrame, timelinePlaying]);
 
   const handleMouseDown = (id: string) => (e: React.MouseEvent) => {
+    poseReliefTransitionRef.current = null;
     if (manikinMode) {
       e.stopPropagation();
       setTimelinePlaying(false);
@@ -3620,6 +3679,7 @@ export default function App() {
     if (!maskEditArmed) return;
     e.stopPropagation();
     if (manikinMode) return;
+    poseReliefTransitionRef.current = null;
 	    setTimelinePlaying(false);
 	    setSelectedJointId(jointId);
 	    setMaskJointId(jointId);
@@ -4384,6 +4444,23 @@ export default function App() {
       const nextTarget =
         drag && drag.id === effectiveId ? drag.target : getWorldPosition(effectiveId, state.joints, INITIAL_JOINTS, 'preview');
       pinTargetsRef.current = { ...pinTargetsRef.current, [effectiveId]: nextTarget };
+    }
+
+    // Post-drop transition: relieve wire tension over ~1–2s while keeping the dropped piece anchored.
+    // This prevents the common "swim" after releasing an IK drag.
+    if (!manikinModeLiveRef.current && effectiveId && !maskDragging && !groundRootDragging && !rootLeverDraggingId && !rootRotateDragging) {
+      const live = stateLiveRef.current;
+      if (shouldRunPosePhysics(live)) {
+        const pinId = resolveEffectiveManipulationId(effectiveId);
+        const shouldPin = !live.activeRoots.includes(pinId);
+        const pinTarget =
+          pinTargetsRef.current[pinId] ?? getWorldPosition(pinId, live.joints, INITIAL_JOINTS, 'preview');
+        armPoseReliefTransition({
+          reason: 'drop',
+          durationMs: 1600,
+          pin: shouldPin ? { id: pinId, target: pinTarget } : null,
+        });
+      }
     }
     
     // Handle rubberband snap behavior
@@ -5504,6 +5581,16 @@ export default function App() {
     const headLenUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
     const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
 
+    const waistFollowsTorso = Boolean(state.cutoutRig?.linkWaistToTorso);
+    const torsoBaseAngleDeg = (() => {
+      const navelPos = getWorldPosition('navel', state.joints, INITIAL_JOINTS);
+      const sternumPos = getWorldPosition('sternum', state.joints, INITIAL_JOINTS);
+      const dx = sternumPos.x - navelPos.x;
+      const dy = sternumPos.y - navelPos.y;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return 0;
+      return Math.atan2(dy, dx) * (180 / Math.PI) + 90;
+    })();
+
     const slotItems = Object.entries(state.cutoutSlots).flatMap(([slotId, slot]) => {
       const visible = effectiveVisible(slotId, Boolean(slot.visible));
       if (!visible) return [];
@@ -5568,7 +5655,9 @@ export default function App() {
 
         const baseAngle = Math.atan2(dy, dx) * (180 / Math.PI) + 90;
         const mode = slot.mode || 'cutout';
-        const finalAngle = (mode === 'roto' ? 0 : baseAngle) + (slot.rotation || 0);
+        const effectiveBaseAngle =
+          slotId === 'waist' && waistFollowsTorso ? torsoBaseAngleDeg : baseAngle;
+        const finalAngle = (mode === 'roto' ? 0 : effectiveBaseAngle) + (slot.rotation || 0);
 
         const thicknessPx = headLenPx * Math.max(0.01, slot.scale);
         const imgW = Math.max(1, img.naturalWidth || 1);
@@ -5579,12 +5668,22 @@ export default function App() {
         let height = thicknessPx * imgAspect;
         const midX = (fromPos.x + toPos.x) / 2;
         const midY = (fromPos.y + toPos.y) / 2;
-        let anchorWorldX = midX * pxPerUnit + centerX;
-        let anchorWorldY = midY * pxPerUnit + centerY;
+
+        const rawOriginJointId = typeof slot.originJointId === 'string' ? slot.originJointId : null;
+        const impliedOriginJointId =
+          rawOriginJointId ??
+          (slotId === 'torso' || slotId === 'waist' ? 'navel' : slotId === 'collar' ? 'sternum' : null);
+        const originUnits =
+          impliedOriginJointId && impliedOriginJointId in state.joints
+            ? getWorldPosition(impliedOriginJointId, state.joints, INITIAL_JOINTS)
+            : null;
+
+        let anchorWorldX = (originUnits?.x ?? midX) * pxPerUnit + centerX;
+        let anchorWorldY = (originUnits?.y ?? midY) * pxPerUnit + centerY;
 
         if (mode === 'rubberhose') {
-          anchorWorldX = midX * pxPerUnit + centerX;
-          anchorWorldY = midY * pxPerUnit + centerY;
+          anchorWorldX = (originUnits?.x ?? midX) * pxPerUnit + centerX;
+          anchorWorldY = (originUnits?.y ?? midY) * pxPerUnit + centerY;
           height = Math.max(1, boneLenPx * Math.max(0.05, slot.lengthScale || 1));
           if (slot.volumePreserve) {
             width = clamp((thicknessPx * thicknessPx) / height, thicknessPx * 0.15, thicknessPx * 4);
@@ -10390,6 +10489,12 @@ export default function App() {
 	                      type="button"
 	                      onClick={() => {
 	                        if (manikinMode) return;
+                          if (state.controlMode !== mode) {
+                            armPoseReliefTransition({
+                              reason: `mode:${state.controlMode}->${mode}`,
+                              durationMs: 1600,
+                            });
+                          }
 	                        applyEngineTransition('set_control_mode', (prev) =>
 	                          prev.controlMode === mode
 	                            ? prev

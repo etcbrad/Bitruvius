@@ -158,6 +158,16 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 
 2026-03-04
 - Removed the dedicated Physics tab (replaced by Procgen): sidebar tab label now shows `Procgen`, and the former physics widgets are no longer in the sidebar tab lists (`client/src/app/widgets/registry.tsx`, `client/src/App.tsx`).
+
+2026-03-05
+- Simplified upper-body cutout pieces to `Head > Collar > Torso`:
+  - Added `collar` cutout slot (sternum→collar) with higher z-index than torso so it covers the torso seam (`client/src/engine/cutouts.ts`).
+  - Removed default `spine_upper`/`spine_neck` slots; sanitize step migrates legacy `spine_*` into `collar` when safe (`client/src/engine/settings.ts`).
+- Added `CutoutSlot.originJointId` and used it in rendering so torso/waist can share the navel seam pivot (`client/src/engine/types.ts`, `client/src/App.tsx`, `client/src/engine/cutouts.ts`).
+- Waist/Torso split behavior:
+  - Default `torso` + `waist` now both originate at `navel` (torso anchors upward, waist anchors downward) (`client/src/engine/cutouts.ts`).
+  - Added `cutoutRig.linkWaistToTorso` toggle; when enabled, waist reuses torso rotation around the seam (`client/src/engine/types.ts`, `client/src/engine/settings.ts`, `client/src/App.tsx`, `client/src/components/ManikinConsole.tsx`).
+- Playwright smoke (server on `:5055`): `output/web-game/masks-simplify-2026-03-05/shot-0.png`, `output/web-game/masks-simplify-2026-03-05/state-0.json`.
 - Moved core physics controls onto the on-canvas bottom bar: `Rig Feel` (physicsRigidity dial) + `Root Drag` (rigid vs physics) live on-canvas now; removed the redundant sidebar toggle and removed duplicate Rig Feel/Bone Color/rigidity/control-mode blocks from the legacy Rig Controls widget (`client/src/App.tsx`).
 - Bone color controls moved under `Look` so they stay accessible without a Physics tab (`client/src/App.tsx`).
 - Procgen artifact fix: while procgen is actively driving the preview pose, the pose-physics solver no longer runs on top (prevents “double physics” fighting locomotion/grounding) (`client/src/App.tsx`).
@@ -184,3 +194,9 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 - Cutout slot render: `state.cutoutSlots` images now render in `cutoutsLayer` (legacy `scene.headMask` / `scene.jointMasks` still render separately) (`client/src/App.tsx`).
 - Head/joint mask uploads now run through the same processing; joint first upload auto-fits scale to bone length (`client/src/App.tsx`).
 - Build/test: `npm run check` + `npm test` pass. Playwright still fails to launch Chromium with `bootstrap_check_in ... Permission denied (1100)` in this environment.
+
+2026-03-04
+- IK↔FK (Manikin) handshake: toggling Manikin now restores the prior digital mode (controlMode/roots/feel) and remembers Manikin’s Rigidity selection as the Paper/3D proxy (`client/src/App.tsx`).
+- Added a ~1.6s “pose relief” transition after drops/mode switches: blends wire rest lengths toward the current pose and (for non-root drags) pins the dropped joint so it lands exactly with no post-drop swimming (`client/src/App.tsx`, `client/src/engine/physics/posePhysics.ts`).
+- Checks: `npm run check` + `npm test` pass.
+- Playwright smoke: `output/web-game/ik-fk-relief-2026-03-05/shot-0.png`, `output/web-game/ik-fk-relief-2026-03-05/state-0.json` (dev server needed escalated run; sandbox `npm run dev` hit `tsx` IPC pipe EPERM).

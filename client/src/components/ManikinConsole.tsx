@@ -9,10 +9,9 @@ import { applyPoseSnapshotToJoints, capturePoseSnapshot, interpolatePoseSnapshot
 import { processMaskImageFileToDataUrl } from '../app/maskImageProcessing';
 
 const MANIKIN_SLOT_ORDER = [
-  'torso',
-  'spine_upper',
-  'spine_neck',
   'head',
+  'collar',
+  'torso',
   'l_thigh',
   'l_calf',
   'l_foot',
@@ -89,6 +88,7 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
 
   const slotsById = state.cutoutSlots;
   const selectedSlot = slotsById[selectedSlotId] ?? null;
+  const linkWaistToTorso = Boolean(state.cutoutRig?.linkWaistToTorso);
 
   const selectedSlotConnKey = useMemo(() => {
     if (!selectedSlot) return null;
@@ -824,6 +824,22 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
 
           {selectorTab === 'mask' && selectedSlot && (
             <div className="mt-3 space-y-2">
+              <label className="text-[10px] text-[#bbb] flex items-center justify-between gap-2">
+                <span className="uppercase tracking-widest">Link Waist+Torso</span>
+                <input
+                  type="checkbox"
+                  checked={linkWaistToTorso}
+                  onChange={(e) => {
+                    const next = Boolean(e.target.checked);
+                    setStateWithHistory('cutout_rig:link_waist_to_torso', (prev) => ({
+                      ...prev,
+                      cutoutRig: { ...(prev.cutoutRig ?? { linkWaistToTorso: false }), linkWaistToTorso: next },
+                    }));
+                  }}
+                  className="accent-white"
+                  title="When enabled, the waist piece reuses the torso's rotation around the navel seam."
+                />
+              </label>
               <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Mask Size</div>
               <label className="text-[10px] text-[#bbb] flex items-center justify-between gap-2">
                 <span className="uppercase tracking-widest">Scale</span>

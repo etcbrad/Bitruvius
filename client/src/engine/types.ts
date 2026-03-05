@@ -141,6 +141,14 @@ export type CutoutSlot = {
   id: string;
   name: string;
   attachment: CutoutAttachment;
+  /**
+   * Optional world-space origin override for the slot.
+   * When set (and the joint exists), rendering uses this joint's world position
+   * as the anchor/pivot instead of the attachment midpoint.
+   *
+   * Used for simplified torso/waist splits that share a seam (e.g. navel).
+   */
+  originJointId?: string | null;
   assetId: string | null;
   visible: boolean;
   opacity: number;
@@ -200,7 +208,7 @@ export type HeadMask = {
   skewY: MaskBase['skewY'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
-   * When empty, the head mask uses `neck_base` as its relationship.
+   * When empty, the head mask uses `neck_upper` as its relationship.
    *
    * Semantics match `JointMask.relatedJoints`:
    * - 1st entry (driver) acts like a custom "base" joint for direction/length.
@@ -395,6 +403,13 @@ export type SkeletonState = {
   scene: SceneState;
   assets: Record<string, CutoutAsset>;
   cutoutSlots: Record<string, CutoutSlot>;
+  cutoutRig?: {
+    /**
+     * When enabled, the waist cutout reuses the torso's base rotation so the
+     * upper/lower body pieces rotate together around the seam.
+     */
+    linkWaistToTorso: boolean;
+  };
   views: ViewPreset[];
   activeViewId: string;
   boneStyle: BoneStyle;
