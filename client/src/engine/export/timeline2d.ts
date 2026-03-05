@@ -108,18 +108,57 @@ const drawMaskImage = (args: {
   anchorY: number;
   rotationDeg: number;
   opacity: number;
+  blendMode?: string | null;
+  filter?: string | null;
 }) => {
-  const { ctx, img, x, y, width, height, anchorX, anchorY, rotationDeg, opacity } = args;
+  const { ctx, img, x, y, width, height, anchorX, anchorY, rotationDeg, opacity, blendMode, filter } = args;
   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   if (!Number.isFinite(width) || !Number.isFinite(height)) return;
   if (width <= 0 || height <= 0) return;
 
   ctx.save();
   ctx.globalAlpha = clamp(opacity, 0, 1);
+  if (filter) ctx.filter = filter;
+  if (blendMode && blendMode !== 'normal') {
+    ctx.globalCompositeOperation = blendMode === 'normal' ? 'source-over' : (blendMode as any);
+  }
   ctx.translate(x, y);
   ctx.rotate((rotationDeg * Math.PI) / 180);
   ctx.drawImage(img, -anchorX * width, -anchorY * height, width, height);
   ctx.restore();
+};
+
+const buildMaskFilter = (mask: any): string | null => {
+  const blurPx = Number.isFinite(mask?.blurPx) ? mask.blurPx : 0;
+  const brightness = Number.isFinite(mask?.brightness) ? mask.brightness : 1;
+  const contrast = Number.isFinite(mask?.contrast) ? mask.contrast : 1;
+  const saturation = Number.isFinite(mask?.saturation) ? mask.saturation : 1;
+  const hueRotate = Number.isFinite(mask?.hueRotate) ? mask.hueRotate : 0;
+  const grayscale = Number.isFinite(mask?.grayscale) ? mask.grayscale : 0;
+  const sepia = Number.isFinite(mask?.sepia) ? mask.sepia : 0;
+  const invert = Number.isFinite(mask?.invert) ? mask.invert : 0;
+
+  const neutral =
+    blurPx === 0 &&
+    brightness === 1 &&
+    contrast === 1 &&
+    saturation === 1 &&
+    hueRotate === 0 &&
+    grayscale === 0 &&
+    sepia === 0 &&
+    invert === 0;
+  if (neutral) return null;
+
+  return [
+    `blur(${clamp(blurPx, 0, 60)}px)`,
+    `brightness(${clamp(brightness, 0, 3)})`,
+    `contrast(${clamp(contrast, 0, 3)})`,
+    `saturate(${clamp(saturation, 0, 5)})`,
+    `hue-rotate(${clamp(hueRotate, -360, 360)}deg)`,
+    `grayscale(${clamp(grayscale, 0, 1)})`,
+    `sepia(${clamp(sepia, 0, 1)})`,
+    `invert(${clamp(invert, 0, 1)})`,
+  ].join(' ');
 };
 
 const drawReferenceLayerMedia = (
@@ -439,6 +478,8 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
         anchorY: mask.anchorY ?? 0.5,
         rotationDeg,
         opacity: mask.opacity ?? 1,
+        blendMode: mask.blendMode ?? 'normal',
+        filter: buildMaskFilter(mask),
       });
     }
 
@@ -483,6 +524,8 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
         anchorY: mask.anchorY ?? 0.5,
         rotationDeg,
         opacity: mask.opacity ?? 1,
+        blendMode: mask.blendMode ?? 'normal',
+        filter: buildMaskFilter(mask),
       });
     }
 
@@ -576,13 +619,7 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
     if (canvas.parentNode) {
       canvas.parentNode.removeChild(canvas);
     }
-
-    // Null out references (only non-const variables)
-    (backgroundMedia as any) = null;
-    (foregroundMedia as any) = null;
-    (headMaskImg as any) = null;
   };
 
   return { canvas, fps, frameCount, renderFrame, dispose };
 };
-

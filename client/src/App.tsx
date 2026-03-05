@@ -287,7 +287,7 @@ export default function App() {
     const initialState = makeDefaultState();
     const initialManikinState: SkeletonState = {
       ...initialState,
-      // Startup baseline: Manikin mode (pure FK rotation-only).
+      // Startup baseline: Build (Paper) mode (pure FK rotation-only).
       controlMode: 'Cardboard',
       activeRoots: [],
       stretchEnabled: false,
@@ -621,7 +621,6 @@ export default function App() {
   const [manikinMode, setManikinMode] = useState(true);
   const manikinModeLiveRef = useRef(manikinMode);
   manikinModeLiveRef.current = manikinMode;
-  const manikinRigidityRef = useRef<RigidityPreset>('cardboard');
   const nonManikinResumeRef = useRef<null | Pick<
     SkeletonState,
     | 'controlMode'
@@ -634,7 +633,7 @@ export default function App() {
     | 'hardStop'
     | 'snappiness'
   > & { _engineGeneration?: number }>(null);
-  const nonManikinPinTargetsRef = useRef<Record<string, Point> & { _engineGeneration?: number } | null>(null);
+  const nonManikinPinTargetsRef = useRef<{ targets: Record<string, Point>; engineGeneration: number } | null>(null);
   const engineGenerationRef = useRef(0);
 
 		  useEffect(() => {
@@ -1731,13 +1730,10 @@ export default function App() {
         armPoseReliefTransition({ reason: 'manikin:off', durationMs: 1600 });
         if (nonManikinResumeRef.current && nonManikinPinTargetsRef.current &&
           nonManikinResumeRef.current._engineGeneration === engineGenerationRef.current &&
-          nonManikinPinTargetsRef.current._engineGeneration === engineGenerationRef.current) {
-          pinTargetsRef.current = nonManikinPinTargetsRef.current;
+          nonManikinPinTargetsRef.current.engineGeneration === engineGenerationRef.current) {
+          pinTargetsRef.current = nonManikinPinTargetsRef.current.targets;
         }
         setStateWithHistory('manikin_mode:off', (prev) => {
-          // Persist the "Paper/3D" choice for Manikin mode (rigidity is the user-facing proxy).
-          manikinRigidityRef.current = prev.rigidity;
-
           const resume = nonManikinResumeRef.current;
           const upgraded: SkeletonState = applyFluidHandshake(
             prev,
@@ -1754,18 +1750,18 @@ export default function App() {
           const pose = capturePoseSnapshot(prev.joints, 'current');
           return { ...upgraded, joints: applyPoseSnapshotToJoints(upgraded.joints, pose) };
         });
-        addConsoleLog('info', 'Manikin mode disabled: upgraded to digital IK.');
+        addConsoleLog('info', 'Build mode disabled: upgraded to digital IK.');
         return;
       }
 
       clearTransientInteractionState();
       setManikinRotateDragging(null);
       manikinRotateDraggingLiveRef.current = null;
-      nonManikinPinTargetsRef.current = { ...pinTargetsRef.current, _engineGeneration: engineGenerationRef.current };
+      nonManikinPinTargetsRef.current = { targets: { ...pinTargetsRef.current }, engineGeneration: engineGenerationRef.current };
       pinTargetsRef.current = {};
       armPoseReliefTransition({ reason: 'manikin:on', durationMs: 1600 });
-      setStateWithHistory('manikin_mode:on', (prev) => {
-        // Snapshot the current digital settings so we can restore them when leaving Manikin mode.
+        setStateWithHistory('manikin_mode:on', (prev) => {
+        // Snapshot the current digital settings so we can restore them when leaving Build mode.
         nonManikinResumeRef.current = {
           controlMode: prev.controlMode,
           activeRoots: [...prev.activeRoots],
@@ -1781,9 +1777,9 @@ export default function App() {
 
         const next: SkeletonState = applyFluidHandshake(prev, {
           ...prev,
-          // Manikin mode: pure FK rotation-only (no pose physics, no IK roots).
+          // Build mode: pure FK rotation-only (no pose physics, no IK roots).
           controlMode: 'Cardboard',
-          rigidity: manikinRigidityRef.current,
+          rigidity: 'cardboard',
           physicsRigidity: 0,
           activeRoots: [],
           stretchEnabled: false,
@@ -1798,7 +1794,7 @@ export default function App() {
         const pose = capturePoseSnapshot(prev.joints, 'current');
         return { ...next, joints: applyPoseSnapshotToJoints(next.joints, pose) };
       });
-      addConsoleLog('info', 'Manikin mode enabled: rotation-only.');
+      addConsoleLog('info', 'Build mode enabled: paper FK (rotation-only).');
     },
     [addConsoleLog, applyFluidHandshake, clearTransientInteractionState, setStateWithHistory],
   );
@@ -2083,6 +2079,15 @@ export default function App() {
               stretchY: 1.0,
               skewX: 0,
               skewY: 0,
+              blendMode: 'normal',
+              blurPx: 0,
+              brightness: 1,
+              contrast: 1,
+              saturation: 1,
+              hueRotate: 0,
+              grayscale: 0,
+              sepia: 0,
+              invert: 0,
               relatedJoints: [],
             } as any);
 
@@ -5590,6 +5595,44 @@ export default function App() {
     const headLenUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
     const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
 
+    const buildMaskCssFilter = (mask: any): string | undefined => {
+      const blurPx = Number.isFinite(mask?.blurPx) ? mask.blurPx : 0;
+      const brightness = Number.isFinite(mask?.brightness) ? mask.brightness : 1;
+      const contrast = Number.isFinite(mask?.contrast) ? mask.contrast : 1;
+      const saturation = Number.isFinite(mask?.saturation) ? mask.saturation : 1;
+      const hueRotate = Number.isFinite(mask?.hueRotate) ? mask.hueRotate : 0;
+      const grayscale = Number.isFinite(mask?.grayscale) ? mask.grayscale : 0;
+      const sepia = Number.isFinite(mask?.sepia) ? mask.sepia : 0;
+      const invert = Number.isFinite(mask?.invert) ? mask.invert : 0;
+
+      const neutral =
+        blurPx === 0 &&
+        brightness === 1 &&
+        contrast === 1 &&
+        saturation === 1 &&
+        hueRotate === 0 &&
+        grayscale === 0 &&
+        sepia === 0 &&
+        invert === 0;
+      if (neutral) return undefined;
+
+      return [
+        `blur(${clamp(blurPx, 0, 60)}px)`,
+        `brightness(${clamp(brightness, 0, 3)})`,
+        `contrast(${clamp(contrast, 0, 3)})`,
+        `saturate(${clamp(saturation, 0, 5)})`,
+        `hue-rotate(${clamp(hueRotate, -360, 360)}deg)`,
+        `grayscale(${clamp(grayscale, 0, 1)})`,
+        `sepia(${clamp(sepia, 0, 1)})`,
+        `invert(${clamp(invert, 0, 1)})`,
+      ].join(' ');
+    };
+
+    const buildMaskMixBlendMode = (mask: any): string | undefined => {
+      const mode = typeof mask?.blendMode === 'string' ? mask.blendMode : 'normal';
+      return mode && mode !== 'normal' ? mode : undefined;
+    };
+
     const waistFollowsTorso = Boolean(state.cutoutRig?.linkWaistToTorso);
     const torsoBaseAngleDeg = (() => {
       const navelPos = getWorldPosition('navel', state.joints, INITIAL_JOINTS);
@@ -5791,6 +5834,8 @@ export default function App() {
             style={{
               transformOrigin: `${originX}px ${originY}px`,
               transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
+              filter: buildMaskCssFilter(mask),
+              mixBlendMode: buildMaskMixBlendMode(mask) as any,
               pointerEvents: 'none',
             }}
           />
@@ -5903,6 +5948,8 @@ export default function App() {
           style={{
             transformOrigin: `${originX}px ${originY}px`,
             transform: `rotate(${finalAngle}deg) skewX(${mask.skewX ?? 0}deg) skewY(${mask.skewY ?? 0}deg) scale(${mask.stretchX ?? 1}, ${mask.stretchY ?? 1})`,
+            filter: buildMaskCssFilter(mask),
+            mixBlendMode: buildMaskMixBlendMode(mask) as any,
             pointerEvents: maskEditArmed ? 'auto' : 'none',
             cursor: maskEditArmed ? 'grab' : 'default',
           }}
@@ -6059,28 +6106,30 @@ export default function App() {
               className={`flex items-center gap-3 ${sidebarTab === 'global' && !manikinMode ? 'opacity-0 pointer-events-none select-none' : ''}`}
             >
               <div className="p-2 bg-white rounded-lg">
-                <button
-                  type="button"
-                  onClick={() => setManikinModeEnabled(!manikinMode)}
-                  className={`rounded-md p-0.5 ${manikinMode ? 'ring-2 ring-black/60' : ''}`}
-                  title={
-                    manikinMode
-                      ? 'FK mode (paper puppet). Click to upgrade to digital IK/physics.'
-                      : 'Digital rig. Click to return to FK (paper puppet).'
-                  }
-                  aria-label={manikinMode ? 'Switch to digital rig mode' : 'Switch to FK (paper puppet) mode'}
-                >
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                    <circle cx="10" cy="4.4" r="2.0" stroke="black" strokeWidth="1.6" />
-                    <path
-                      d="M10 6.6v8.2M4.2 8.4h11.6M10 14.8l-3.2 3.0M10 14.8l3.2 3.0"
-                      stroke="black"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
+                <div className="flex rounded-md bg-black/10 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setManikinModeEnabled(true)}
+                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      manikinMode ? 'bg-black text-white' : 'text-black/60 hover:text-black'
+                    }`}
+                    title="Build (Paper). Rotation-only FK."
+                    aria-label="Switch to build mode (paper)"
+                  >
+                    Build
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManikinModeEnabled(false)}
+                    className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      manikinMode ? 'text-black/60 hover:text-black' : 'bg-black text-white'
+                    }`}
+                    title="IK mode. Digital rig controls."
+                    aria-label="Switch to IK mode"
+                  >
+                    IK
+                  </button>
+                </div>
               </div>
               <div>
                 <h1 className={`text-lg font-bold tracking-tight ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>BITRUVIUS</h1>
@@ -6096,50 +6145,8 @@ export default function App() {
             {manikinMode && (
               <div className="mt-4 mb-3 p-3 rounded-xl bg-white/5 border border-white/10">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">FK (Rigid)</div>
-                  <div className="text-[9px] font-mono text-[#444]">Hard set</div>
-                </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <span className="text-[9px] font-bold uppercase tracking-widest text-[#666]">Rigidity</span>
-                  <select
-                    value={state.rigidity}
-                    onChange={(e) =>
-                      applyEngineTransition('rigidity', (prev) =>
-                        applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
-                      )
-                    }
-                    className="ml-auto px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
-                    title="Rigidity (FK)"
-                  >
-                    <option value="cardboard">Cardboard</option>
-                    <option value="realistic">Realistic</option>
-                    <option value="rubberhose">Rubberhose</option>
-                  </select>
-                </div>
-
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
-                    <input
-                      type="checkbox"
-                      checked={state.showJoints}
-                      onChange={() =>
-                        applyEngineTransition('toggle_show_joints', (prev) => ({ ...prev, showJoints: !prev.showJoints }))
-                      }
-                      className="accent-white"
-                    />
-                    Joints
-                  </label>
-                  <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
-                    <input
-                      type="checkbox"
-                      checked={state.mirroring}
-                      onChange={() =>
-                        applyEngineTransition('toggle_mirroring', (prev) => ({ ...prev, mirroring: !prev.mirroring }))
-                      }
-                      className="accent-white"
-                    />
-                    Mirror
-                  </label>
+                  <div className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#666]">Build (Paper)</div>
+                  <div className="text-[9px] font-mono text-[#444]">Fixed</div>
                 </div>
 
                 <div className="mt-3 grid grid-cols-2 gap-2">
@@ -6667,6 +6674,7 @@ export default function App() {
                               <div className="space-y-2">
                                 <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Shape</div>
                                 <select
+                                  multiple={false}
                                   value={override?.shape ?? 'auto'}
                                   onChange={(e) => {
                                     const nextShape = e.target.value;
@@ -6739,6 +6747,7 @@ export default function App() {
                                     <span className="text-[#555] font-mono">{override?.mergeToJointId ?? '—'}</span>
                                   </div>
                                   <select
+                                    multiple={false}
                                     value={override?.mergeToJointId ?? ''}
                                     onChange={(e) => {
                                       const next = e.target.value.trim();
@@ -7414,6 +7423,7 @@ export default function App() {
                         <span className="uppercase tracking-widest">Pelvis Bias</span>
                       </label>
                       <select
+                        multiple={false}
                         value={state.hipLock?.pelvisBiasSide ?? 'below'}
                         disabled={!state.hipLock?.pelvisBiasEnabled}
                         onChange={(e) => {
@@ -7862,6 +7872,7 @@ export default function App() {
               </div>
               <div className="space-y-2">
                 <select
+                  multiple={false}
                   value={titleFont}
                   onChange={(e) => setTitleFont(e.target.value)}
                   className="w-full px-2 py-2 bg-[#222] rounded-xl text-[10px] border border-white/5 font-bold uppercase tracking-widest"
@@ -8545,6 +8556,7 @@ export default function App() {
                     </div>
                     
                     <select
+                      multiple={false}
                       value={state.scene.background.fitMode}
                       onChange={(e) =>
                         setStateWithHistory('background_fit', (prev) => ({
@@ -8856,6 +8868,7 @@ export default function App() {
                             </div>
                     
                     <select
+                      multiple={false}
                       value={state.scene.foreground.fitMode}
                       onChange={(e) =>
                         setStateWithHistory('foreground_fit', (prev) => ({
@@ -9152,6 +9165,7 @@ export default function App() {
                                   <div>
                                     <label className="text-[10px] text-[#666]">Align</label>
                                     <select
+                                      multiple={false}
                                       value={o.align}
                                       onChange={(e) =>
                                         setStateWithHistory('overlay_align', (prev) => ({
@@ -9989,6 +10003,7 @@ export default function App() {
                         </g>
                       );
                     })()}
+          </svg>
           {/* Coordinates moved to top-right */}
           <div className="absolute top-8 right-8 bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl">
             <div className="flex items-center gap-3 font-mono text-[11px]">
@@ -10032,277 +10047,6 @@ export default function App() {
               )}
             </div>
           </div>
-          {state.timeline.enabled && (() => {
-            const frameCount = Math.max(2, Math.floor(state.timeline.clip.frameCount));
-            const fps = Math.max(1, Math.floor(state.timeline.clip.fps));
-	            const hasKeyframe = timelineKeyframes.some((k) => k.frame === timelineFrame);
-
-            return (
-              <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-[#121212]/90 backdrop-blur-md border border-[#222] rounded-xl px-6 py-4">
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (timelinePlaying) {
-                        setTimelinePlaying(false);
-                        return;
-                      }
-                      timelineFrameRef.current = timelineFrame;
-                      setTimelinePlaying(true);
-                    }}
-                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                  >
-                    {timelinePlaying ? 'Pause' : 'Play'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={setKeyframeHere}
-                    className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                  >
-                    {hasKeyframe ? 'Update Key' : 'Set Key'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={deleteKeyframeHere}
-                    disabled={!hasKeyframe}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      hasKeyframe ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                    }`}
-                  >
-                    Delete Key
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setPoseTracingEnabled((prev) => !prev)}
-                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      poseTracingEnabled ? 'bg-[#3366cc] text-white' : 'bg-[#222] hover:bg-[#333]'
-                    }`}
-                    title="Pose Trace (P)"
-                  >
-                    Pose Trace
-                  </button>
-
-	                  <button
-	                    type="button"
-	                    onClick={() => jumpToAdjacentKeyframe(-1)}
-	                    disabled={!timelineKeyframes.length}
-	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-	                    title="Prev keyframe ([ or Shift+←)"
-	                  >
-                    Prev Key
-                  </button>
-
-	                  <button
-	                    type="button"
-	                    onClick={() => jumpToAdjacentKeyframe(1)}
-	                    disabled={!timelineKeyframes.length}
-	                    className={`px-3 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                      timelineKeyframes.length ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
-	                    }`}
-	                    title="Next keyframe (] or Shift+→)"
-	                  >
-                    Next Key
-                  </button>
-
-                  {(state.scene.background.mediaType === 'video' || state.scene.background.mediaType === 'sequence') && state.scene.background.src && (
-                    <button
-                      type="button"
-                      onClick={fitTimelineToBackgroundVideo}
-                      className="px-3 py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase tracking-widest transition-all"
-                      title="Match timeline length to background reference"
-                    >
-                      Match Ref
-                    </button>
-                  )}
-
-                  <div className="ml-auto flex items-center gap-4">
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>FPS</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={60}
-                        value={state.timeline.clip?.fps || 24}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 1, 60);
-                          setStateWithHistory('timeline_set_fps', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              clip: { ...prev.timeline.clip, fps: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>Frames</span>
-                      <input
-                        type="number"
-                        min={2}
-                        max={600}
-                        value={state.timeline.clip?.frameCount || 120}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 2, 600);
-                          setStateWithHistory('timeline_set_frame_count', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-	                              clip: {
-	                                ...prev.timeline.clip,
-	                                frameCount: next,
-	                                keyframes: (Array.isArray(prev.timeline.clip.keyframes) ? prev.timeline.clip.keyframes : []).filter(
-	                                  (k) => k.frame < next,
-	                                ),
-	                              },
-	                            },
-	                          }));
-                          setTimelineFrame((f) => {
-                            const clamped = clamp(f, 0, next - 1);
-                            timelineFrameRef.current = clamped;
-                            return clamped;
-                          });
-                        }}
-                        className="w-20 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                      <span>Easing</span>
-                      <select
-                        value={state.timeline.clip?.easing || 'linear'}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = e.target.value === 'easeInOut' ? 'easeInOut' : 'linear';
-                          setStateWithHistory('timeline_set_easing', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              clip: { ...prev.timeline.clip, easing: next },
-                            },
-                          }));
-                        }}
-                        className="px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white text-xs"
-                      >
-                        <option value="linear">Linear</option>
-                        <option value="easeInOut">EaseInOut</option>
-                      </select>
-                    </div>
-
-                    <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666] select-none">
-                      <input
-                        type="checkbox"
-                        checked={state.timeline.onionSkin.enabled}
-                        onChange={() => {
-                          setTimelinePlaying(false);
-                          setStateWithHistory('toggle_onion_skin', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, enabled: !prev.timeline.onionSkin.enabled },
-                            },
-                          }));
-                        }}
-                        className="accent-white"
-                      />
-                      Onion
-                    </label>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="w-28 font-mono text-xs text-[#666]">
-                    {timelineFrame}/{frameCount - 1}
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={frameCount - 1}
-                    step={1}
-                    value={timelineFrame}
-                    onPointerDown={() => {
-                      setTimelinePlaying(false);
-                      historyCtrlRef.current.beginAction('timeline_scrub', state);
-                    }}
-                    onPointerUp={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onPointerCancel={() =>
-                      setState((prev) => {
-                        const changed = historyCtrlRef.current.commitAction(prev);
-                        return changed ? { ...prev } : prev;
-                      })
-                    }
-                    onChange={(e) => applyTimelineFrame(parseInt(e.target.value, 10))}
-                    className="flex-1 accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
-                  />
-                  <div className="w-24 text-[10px] font-bold uppercase tracking-widest text-[#666] text-right">
-                    Keys: {state.timeline.clip?.keyframes?.length || 0}
-                  </div>
-                </div>
-
-                {state.timeline.onionSkin.enabled && (
-                  <div className="mt-3 flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-[#666]">
-                    <div className="flex items-center gap-2">
-                      <span>Past</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={state.timeline.onionSkin.past}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
-                          setStateWithHistory('onion_past', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, past: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Future</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={12}
-                        value={state.timeline.onionSkin.future}
-                        onChange={(e) => {
-                          setTimelinePlaying(false);
-                          const next = clamp(parseInt(e.target.value || '0', 10), 0, 12);
-                          setStateWithHistory('onion_future', (prev) => ({
-                            ...prev,
-                            timeline: {
-                              ...prev.timeline,
-                              onionSkin: { ...prev.timeline.onionSkin, future: next },
-                            },
-                          }));
-                        }}
-                        className="w-16 px-2 py-1 rounded-md bg-[#0a0a0a] border border-[#222] text-white font-mono text-xs"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-                  </svg>
 
           {/* Floating Widgets */}
           {WIDGET_UNDOCK_ENABLED &&
@@ -10465,57 +10209,57 @@ export default function App() {
 	              </div>
 	            )}
 
-            <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-2">
-              <select
-                value={state.rigidity}
-                onChange={(e) =>
-                  applyEngineTransition('rigidity', (prev) =>
-                    applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
-                  )
-                }
-                className="px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
-                title="Rigidity (FK)"
-              >
-                <option value="cardboard">Cardboard</option>
-                <option value="realistic">Realistic</option>
-                <option value="rubberhose">Rubberhose</option>
-              </select>
+            {!manikinMode && (
+              <div className="bg-[#121212]/70 backdrop-blur-md border border-[#222] px-3 py-2 rounded-xl flex items-center gap-2">
+                <select
+                  multiple={false}
+                  value={state.rigidity}
+                  onChange={(e) =>
+                    applyEngineTransition('rigidity', (prev) =>
+                      applyFluidHandshake(prev, { ...prev, rigidity: e.target.value as any }),
+                    )
+                  }
+                  className="px-2 py-1.5 bg-[#222] rounded-lg text-[10px] border border-white/5 font-bold uppercase tracking-widest text-[#ddd]"
+                  title="Rigidity (FK)"
+                >
+                  <option value="cardboard">Cardboard</option>
+                  <option value="realistic">Realistic</option>
+                  <option value="rubberhose">Rubberhose</option>
+                </select>
 
-	              {!manikinMode && (
-	                <div className="flex bg-[#222] rounded-lg p-1">
-	                  {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
-	                    <button
-	                      key={`barmode:${mode}`}
-	                      type="button"
-	                      onClick={() => {
-	                        if (manikinMode) return;
-                          if (state.controlMode !== mode) {
-                            armPoseReliefTransition({
-                              reason: `mode:${state.controlMode}->${mode}`,
-                              durationMs: 1600,
-                            });
-                          }
-	                        applyEngineTransition('set_control_mode', (prev) =>
-	                          prev.controlMode === mode
-	                            ? prev
-	                            : applyFluidHandshake(prev, {
-	                                ...prev,
-	                                controlMode: mode,
-	                                ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
-	                              }),
-	                        )
-	                      }}
-	                      className={`px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-	                        state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'
-	                      }`}
-	                      title={controlModeUi[mode].title}
-	                    >
-	                      {controlModeUi[mode].label}
-	                    </button>
-	                  ))}
-	                </div>
-	              )}
-	            </div>
+                <div className="flex bg-[#222] rounded-lg p-1">
+                  {(['Cardboard', 'Rubberband', 'IK', 'JointDrag'] as const).map((mode) => (
+                    <button
+                      key={`barmode:${mode}`}
+                      type="button"
+                      onClick={() => {
+                        if (state.controlMode !== mode) {
+                          armPoseReliefTransition({
+                            reason: `mode:${state.controlMode}->${mode}`,
+                            durationMs: 1600,
+                          });
+                        }
+                        applyEngineTransition('set_control_mode', (prev) =>
+                          prev.controlMode === mode
+                            ? prev
+                            : applyFluidHandshake(prev, {
+                                ...prev,
+                                controlMode: mode,
+                                ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
+                              }),
+                        );
+                      }}
+                      className={`px-2 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                        state.controlMode === mode ? 'bg-white text-black' : 'text-[#666] hover:text-white'
+                      }`}
+                      title={controlModeUi[mode].title}
+                    >
+                      {controlModeUi[mode].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <button
               type="button"
@@ -10687,7 +10431,8 @@ export default function App() {
                     <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-[#666]">
                       <span>Easing</span>
                       <select
-                        value={state.timeline.clip?.easing || 'linear'}
+                        multiple={false}
+                        value={state.timeline.clip?.easing === 'easeInOut' ? 'easeInOut' : 'linear'}
                         onChange={(e) => {
                           setTimelinePlaying(false);
                           const next = e.target.value === 'easeInOut' ? 'easeInOut' : 'linear';

@@ -1,0 +1,10 @@
+[
+  {
+    "type": "console.error",
+    "text": "The above error occurred in the <select> component:\n\n    at select\n    at div\n    at div\n    at div\n    at div\n    at svg\n    at div\n    at main\n    at div\n    at Provider (http://localhost:5055/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/chunk-KR5IEQXW.js?v=cbe7fc95:43:15)\n    at TooltipProvider (http://localhost:5055/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=cbe7fc95:84:5)\n    at App (http://localhost:5055/src/App.tsx?t=1772691251818:229:36)\n    at Route (http://localhost:5055/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/wouter.js?v=cbe7fc95:357:16)\n    at Switch (http://localhost:5055/@fs/Users/bradleygeiser/Downloads/Bitruvius%202/node_modules/.vite/deps/wouter.js?v=cbe7fc95:414:17)\n\nConsider adding an error boundary to your tree to customize error handling behavior.\nVisit https://reactjs.org/link/error-boundaries to learn more about error boundaries."
+  },
+  {
+    "type": "pageerror",
+    "text": "TypeError: Cannot read properties of undefined (reading 'length')"
+  }
+]

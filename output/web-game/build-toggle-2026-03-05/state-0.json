@@ -1,0 +1,67 @@
+{
+  "showJoints": true,
+  "tensionRelief": {
+    "recentlyApplied": false,
+    "maxWireStrain": 0
+  },
+  "procgen": {
+    "enabled": false,
+    "mode": "walk_in_place",
+    "strength": 1,
+    "seed": 1,
+    "cycleFrames": 48,
+    "options": {
+      "inPlace": true,
+      "groundingEnabled": true,
+      "pauseWhileDragging": true,
+      "groundPlaneY": 13,
+      "groundPlaneVisible": true
+    }
+  },
+  "view": {
+    "scale": 1,
+    "offset": {
+      "x": 0,
+      "y": 0
+    }
+  },
+  "nanCount": 0,
+  "joints": {
+    "navel": {
+      "x": 0,
+      "y": 0
+    },
+    "sternum": {
+      "x": 0,
+      "y": -4
+    },
+    "head": {
+      "x": 0,
+      "y": -1
+    },
+    "l_hip": {
+      "x": -2,
+      "y": 1
+    },
+    "r_hip": {
+      "x": 2,
+      "y": 1
+    },
+    "l_knee": {
+      "x": 0,
+      "y": 6
+    },
+    "r_knee": {
+      "x": 0,
+      "y": 6
+    },
+    "l_ankle": {
+      "x": 0,
+      "y": 6
+    },
+    "r_ankle": {
+      "x": 0,
+      "y": 6
+    }
+  }
+}

@@ -90,6 +90,24 @@ export type Connection = {
 
 export type MaskMode = 'cutout' | 'rubberhose' | 'roto';
 
+export type MaskBlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-dodge'
+  | 'color-burn'
+  | 'hard-light'
+  | 'soft-light'
+  | 'difference'
+  | 'exclusion'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity';
+
 export type BoneStretchMode = 'rigid' | 'elastic' | 'stretch';
 export type ManikinFkMode = 'stretch' | 'bend';
 
@@ -111,6 +129,16 @@ type MaskBase = {
   stretchY: number;
   skewX: number;
   skewY: number;
+  // Appearance / filters (neutral defaults yield no effect)
+  blendMode: MaskBlendMode;
+  blurPx: number;
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  hueRotate: number;
+  grayscale: number;
+  sepia: number;
+  invert: number;
 };
 
 export type CutoutAsset = {
@@ -182,6 +210,15 @@ export type JointMask = {
   stretchY: MaskBase['stretchY'];
   skewX: MaskBase['skewX'];
   skewY: MaskBase['skewY'];
+  blendMode: MaskBase['blendMode'];
+  blurPx: MaskBase['blurPx'];
+  brightness: MaskBase['brightness'];
+  contrast: MaskBase['contrast'];
+  saturation: MaskBase['saturation'];
+  hueRotate: MaskBase['hueRotate'];
+  grayscale: MaskBase['grayscale'];
+  sepia: MaskBase['sepia'];
+  invert: MaskBase['invert'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
    * When empty, the mask uses the joint's parent (if any) as its relationship.
@@ -206,6 +243,15 @@ export type HeadMask = {
   stretchY: MaskBase['stretchY'];
   skewX: MaskBase['skewX'];
   skewY: MaskBase['skewY'];
+  blendMode: MaskBase['blendMode'];
+  blurPx: MaskBase['blurPx'];
+  brightness: MaskBase['brightness'];
+  contrast: MaskBase['contrast'];
+  saturation: MaskBase['saturation'];
+  hueRotate: MaskBase['hueRotate'];
+  grayscale: MaskBase['grayscale'];
+  sepia: MaskBase['sepia'];
+  invert: MaskBase['invert'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
    * When empty, the head mask uses `neck_upper` as its relationship.

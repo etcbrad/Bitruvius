@@ -260,6 +260,7 @@ export const CutoutsUI: React.FC<CutoutsUIProps> = ({ state, setState, setStateW
                     {/* Asset Assignment */}
                     <div className="flex gap-2">
                       <select
+                        multiple={false}
                         value={slot.assetId || ''}
                         onChange={(e) => assignAssetToSlot(slotId, e.target.value || null)}
                         className="flex-1 bg-[#222] text-[10px] px-2 py-1 rounded border border-[#333] focus:border-white outline-none"

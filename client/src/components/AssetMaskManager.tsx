@@ -300,6 +300,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       </button>
                       <span className="flex-1 text-[10px] font-medium">{slot.name}</span>
                       <select
+                        multiple={false}
                         value={slot.assetId || ''}
                         onChange={(e) => assignAssetToSlot(slotId, e.target.value || null)}
                         className="flex-1 bg-[#222] text-[10px] px-2 py-1 rounded border border-[#333] focus:border-white outline-none"
@@ -653,6 +654,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                       </span>
                     </div>
                     <select
+                      multiple={false}
                       value={state.scene.headMask?.relatedJoints?.[0] || 'neck_base'}
                       onPointerDownCapture={(e) => e.stopPropagation()}
                       onMouseDownCapture={(e) => e.stopPropagation()}
@@ -818,6 +820,7 @@ export const AssetMaskManager: React.FC<AssetMaskManagerProps> = ({
                 <span className="text-[10px] font-bold uppercase tracking-widest">Joint Masks</span>
                 <div className="flex items-center gap-2">
                   <select
+                    multiple={false}
                     value={maskJointId}
                     onChange={(e) => setMaskJointId(e.target.value)}
                     className="px-2 py-1 bg-[#222] rounded text-[10px] border border-[#333] focus:border-white outline-none"

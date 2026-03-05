@@ -810,6 +810,7 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
           <div className="mt-3">
             <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] mb-1">Piece</div>
             <select
+              multiple={false}
               value={selectedSlotId}
               onChange={(e) => selectSlot(e.target.value as ManikinSlotId)}
               className="w-full px-2 py-2 bg-[#222] rounded-md text-[10px] border border-white/5 font-bold uppercase tracking-widest"
@@ -948,6 +949,7 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
               <div>
                 <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] mb-1">Shape</div>
                 <select
+                  multiple={false}
                   value={state.connectionOverrides[selectedSlotConnKey]?.shape ?? 'auto'}
                   onChange={(e) => {
                     const nextShape = e.target.value;

@@ -11,6 +11,25 @@ import type { TransitionIssue, TransitionResult } from '@/lib/transitionIssues';
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
 
+const MASK_BLEND_MODE_SET = new Set([
+  'normal',
+  'multiply',
+  'screen',
+  'overlay',
+  'darken',
+  'lighten',
+  'color-dodge',
+  'color-burn',
+  'hard-light',
+  'soft-light',
+  'difference',
+  'exclusion',
+  'hue',
+  'saturation',
+  'color',
+  'luminosity',
+]);
+
 const safeNumber = (value: unknown, fallback = 0) => (isFiniteNumber(value) ? value : fallback);
 
 const safePoint = (value: unknown, fallback: Point): Point => {
@@ -71,6 +90,10 @@ const sanitizeJointMask = (raw: unknown, base: JointMask): JointMask => {
   const mask = raw as Partial<JointMask>;
   const mode = mask.mode === 'cutout' || mask.mode === 'rubberhose' || mask.mode === 'roto' ? mask.mode : base.mode;
   const src = typeof mask.src === 'string' ? mask.src : base.src;
+  const blendMode =
+    typeof (mask as any).blendMode === 'string' && MASK_BLEND_MODE_SET.has((mask as any).blendMode)
+      ? ((mask as any).blendMode as any)
+      : base.blendMode;
   return {
     src,
     visible: typeof mask.visible === 'boolean' ? mask.visible : Boolean(src),
@@ -88,6 +111,15 @@ const sanitizeJointMask = (raw: unknown, base: JointMask): JointMask => {
     stretchY: isFiniteNumber(mask.stretchY) ? clamp(mask.stretchY, 0.1, 10) : base.stretchY,
     skewX: isFiniteNumber(mask.skewX) ? clamp(mask.skewX, -45, 45) : base.skewX,
     skewY: isFiniteNumber(mask.skewY) ? clamp(mask.skewY, -45, 45) : base.skewY,
+    blendMode,
+    blurPx: isFiniteNumber((mask as any).blurPx) ? clamp((mask as any).blurPx, 0, 60) : base.blurPx,
+    brightness: isFiniteNumber((mask as any).brightness) ? clamp((mask as any).brightness, 0, 3) : base.brightness,
+    contrast: isFiniteNumber((mask as any).contrast) ? clamp((mask as any).contrast, 0, 3) : base.contrast,
+    saturation: isFiniteNumber((mask as any).saturation) ? clamp((mask as any).saturation, 0, 5) : base.saturation,
+    hueRotate: isFiniteNumber((mask as any).hueRotate) ? clamp((mask as any).hueRotate, -360, 360) : base.hueRotate,
+    grayscale: isFiniteNumber((mask as any).grayscale) ? clamp((mask as any).grayscale, 0, 1) : base.grayscale,
+    sepia: isFiniteNumber((mask as any).sepia) ? clamp((mask as any).sepia, 0, 1) : base.sepia,
+    invert: isFiniteNumber((mask as any).invert) ? clamp((mask as any).invert, 0, 1) : base.invert,
     relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
@@ -112,6 +144,15 @@ const makeDefaultJointMasks = (): Record<string, JointMask> => {
       stretchY: 1.0,
       skewX: 0,
       skewY: 0,
+      blendMode: 'normal',
+      blurPx: 0,
+      brightness: 1,
+      contrast: 1,
+      saturation: 1,
+      hueRotate: 0,
+      grayscale: 0,
+      sepia: 0,
+      invert: 0,
       relatedJoints: [],
     };
   }
@@ -312,6 +353,10 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
   const mask = raw as Partial<HeadMask>;
   const mode = mask.mode === 'cutout' || mask.mode === 'rubberhose' || mask.mode === 'roto' ? mask.mode : base.mode;
   const src = typeof mask.src === 'string' ? mask.src : base.src;
+  const blendMode =
+    typeof (mask as any).blendMode === 'string' && MASK_BLEND_MODE_SET.has((mask as any).blendMode)
+      ? ((mask as any).blendMode as any)
+      : base.blendMode;
   
   return {
     src,
@@ -330,6 +375,15 @@ const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
     stretchY: isFiniteNumber(mask.stretchY) ? clamp(mask.stretchY, 0.1, 10) : base.stretchY,
     skewX: isFiniteNumber(mask.skewX) ? clamp(mask.skewX, -45, 45) : base.skewX,
     skewY: isFiniteNumber(mask.skewY) ? clamp(mask.skewY, -45, 45) : base.skewY,
+    blendMode,
+    blurPx: isFiniteNumber((mask as any).blurPx) ? clamp((mask as any).blurPx, 0, 60) : base.blurPx,
+    brightness: isFiniteNumber((mask as any).brightness) ? clamp((mask as any).brightness, 0, 3) : base.brightness,
+    contrast: isFiniteNumber((mask as any).contrast) ? clamp((mask as any).contrast, 0, 3) : base.contrast,
+    saturation: isFiniteNumber((mask as any).saturation) ? clamp((mask as any).saturation, 0, 5) : base.saturation,
+    hueRotate: isFiniteNumber((mask as any).hueRotate) ? clamp((mask as any).hueRotate, -360, 360) : base.hueRotate,
+    grayscale: isFiniteNumber((mask as any).grayscale) ? clamp((mask as any).grayscale, 0, 1) : base.grayscale,
+    sepia: isFiniteNumber((mask as any).sepia) ? clamp((mask as any).sepia, 0, 1) : base.sepia,
+    invert: isFiniteNumber((mask as any).invert) ? clamp((mask as any).invert, 0, 1) : base.invert,
     relatedJoints: sanitizeRelatedJoints(mask.relatedJoints, base.relatedJoints),
   };
 };
@@ -545,6 +599,15 @@ export const makeDefaultState = (): SkeletonState => {
         stretchY: 1.0,
         skewX: 0,
         skewY: 0,
+        blendMode: 'normal',
+        blurPx: 0,
+        brightness: 1,
+        contrast: 1,
+        saturation: 1,
+        hueRotate: 0,
+        grayscale: 0,
+        sepia: 0,
+        invert: 0,
         relatedJoints: [],
       },
       jointMasks: makeDefaultJointMasks(),

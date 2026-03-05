@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import type { JointMask, SkeletonState } from '@/engine/types';
+import type { JointMask, MaskBlendMode, SkeletonState } from '@/engine/types';
 import { HelpTip } from '@/components/HelpTip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
@@ -31,6 +31,25 @@ type Props = {
 };
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+const MASK_BLEND_MODE_OPTIONS: Array<{ value: MaskBlendMode; label: string }> = [
+  { value: 'normal', label: 'Normal' },
+  { value: 'multiply', label: 'Multiply' },
+  { value: 'screen', label: 'Screen' },
+  { value: 'overlay', label: 'Overlay' },
+  { value: 'darken', label: 'Darken' },
+  { value: 'lighten', label: 'Lighten' },
+  { value: 'color-dodge', label: 'Color Dodge' },
+  { value: 'color-burn', label: 'Color Burn' },
+  { value: 'hard-light', label: 'Hard Light' },
+  { value: 'soft-light', label: 'Soft Light' },
+  { value: 'difference', label: 'Difference' },
+  { value: 'exclusion', label: 'Exclusion' },
+  { value: 'hue', label: 'Hue' },
+  { value: 'saturation', label: 'Saturation' },
+  { value: 'color', label: 'Color' },
+  { value: 'luminosity', label: 'Luminosity' },
+];
 
 const dedupe = (ids: string[]) => {
   const out: string[] = [];
@@ -414,6 +433,7 @@ export function JointMaskWidget({
                     <span className="text-[#666]">{(getHeadMaskProp('mode', 'cutout') || 'cutout').toUpperCase()}</span>
                   </div>
                   <select
+                    multiple={false}
                     value={getHeadMaskProp('mode', 'cutout') || 'cutout'}
                     onChange={(e) =>
                       setStateWithHistory('head_mask_mode', (prev) => ({
@@ -443,6 +463,7 @@ export function JointMaskWidget({
                     </span>
                   </div>
                   <select
+                    multiple={false}
                     value={state.scene.headMask?.relatedJoints?.[0] || 'neck_base'}
                     onChange={(e) =>
                       setStateWithHistory('head_mask_base_joint', (prev) => ({
@@ -597,6 +618,221 @@ export function JointMaskWidget({
                     />
                   </div>
                 </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Filters</div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setStateWithHistory('head_mask_filters_reset', (prev) => ({
+                          ...prev,
+                          scene: {
+                            ...prev.scene,
+                            headMask: {
+                              ...(prev.scene.headMask || {}),
+                              blendMode: 'normal',
+                              blurPx: 0,
+                              brightness: 1,
+                              contrast: 1,
+                              saturation: 1,
+                              hueRotate: 0,
+                              grayscale: 0,
+                              sepia: 0,
+                              invert: 0,
+                            } as any,
+                          },
+                        }))
+                      }
+                      className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+                      disabled={!getHeadMaskProp('src', null)}
+                      title="Reset filter + blend values"
+                    >
+                      Reset
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-[10px]">
+                      <span>Blend</span>
+                      <span className="text-[#666]">
+                        {(getHeadMaskProp('blendMode', 'normal') || 'normal').toUpperCase()}
+                      </span>
+                    </div>
+                    <select
+                      multiple={false}
+                      value={getHeadMaskProp('blendMode', 'normal') || 'normal'}
+                      onChange={(e) =>
+                        setStateWithHistory('head_mask_blend_mode', (prev) => ({
+                          ...prev,
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), blendMode: e.target.value as any } },
+                        }))
+                      }
+                      className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                      disabled={!getHeadMaskProp('src', null)}
+                    >
+                      {MASK_BLEND_MODE_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-[#666]">Blur</span>
+                      <span>{(getHeadMaskProp('blurPx', 0) ?? 0).toFixed(1)}px</span>
+                    </div>
+                    <Slider
+                      min={0}
+                      max={30}
+                      step={0.5}
+                      value={[getHeadMaskProp('blurPx', 0) ?? 0]}
+                      onValueChange={([val]) =>
+                        setStateWithHistory('head_mask_blur', (prev) => ({
+                          ...prev,
+                          scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), blurPx: val } },
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Brightness</span>
+                        <span>{(getHeadMaskProp('brightness', 1) ?? 1).toFixed(2)}</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={3}
+                        step={0.01}
+                        value={[getHeadMaskProp('brightness', 1) ?? 1]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_brightness', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), brightness: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Contrast</span>
+                        <span>{(getHeadMaskProp('contrast', 1) ?? 1).toFixed(2)}</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={3}
+                        step={0.01}
+                        value={[getHeadMaskProp('contrast', 1) ?? 1]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_contrast', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), contrast: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Saturation</span>
+                        <span>{(getHeadMaskProp('saturation', 1) ?? 1).toFixed(2)}</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={5}
+                        step={0.01}
+                        value={[getHeadMaskProp('saturation', 1) ?? 1]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_saturation', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), saturation: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Hue</span>
+                        <span>{(getHeadMaskProp('hueRotate', 0) ?? 0).toFixed(0)}°</span>
+                      </div>
+                      <Slider
+                        min={-180}
+                        max={180}
+                        step={1}
+                        value={[getHeadMaskProp('hueRotate', 0) ?? 0]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_hue', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), hueRotate: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Gray</span>
+                        <span>{Math.round(clamp(getHeadMaskProp('grayscale', 0) ?? 0, 0, 1) * 100)}%</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={[getHeadMaskProp('grayscale', 0) ?? 0]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_grayscale', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), grayscale: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Sepia</span>
+                        <span>{Math.round(clamp(getHeadMaskProp('sepia', 0) ?? 0, 0, 1) * 100)}%</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={[getHeadMaskProp('sepia', 0) ?? 0]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_sepia', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), sepia: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[9px] text-[#666]">
+                        <span>Invert</span>
+                        <span>{Math.round(clamp(getHeadMaskProp('invert', 0) ?? 0, 0, 1) * 100)}%</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={[getHeadMaskProp('invert', 0) ?? 0]}
+                        onValueChange={([val]) =>
+                          setStateWithHistory('head_mask_invert', (prev) => ({
+                            ...prev,
+                            scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), invert: val } },
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="text-[10px] text-[#444]">No head mask uploaded.</div>
@@ -668,6 +904,18 @@ export function JointMaskWidget({
                         stretchY: 1,
                         skewX: 0,
                         skewY: 0,
+                        blendMode: 'normal',
+                        blurPx: 0,
+                        brightness: 1,
+                        contrast: 1,
+                        saturation: 1,
+                        hueRotate: 0,
+                        grayscale: 0,
+                        sepia: 0,
+                        invert: 0,
+                        mode: 'cutout',
+                        lengthScale: 1,
+                        volumePreserve: false,
                         relatedJoints: [],
                       };
                     }
@@ -831,7 +1079,7 @@ export function JointMaskWidget({
                   </label>
                   <button
                     type="button"
-                    onClick={() =>
+                      onClick={() =>
                       setJointMask({
                         src: null,
                         visible: false,
@@ -846,6 +1094,15 @@ export function JointMaskWidget({
                         stretchY: 1,
                         skewX: 0,
                         skewY: 0,
+                        blendMode: 'normal',
+                        blurPx: 0,
+                        brightness: 1,
+                        contrast: 1,
+                        saturation: 1,
+                        hueRotate: 0,
+                        grayscale: 0,
+                        sepia: 0,
+                        invert: 0,
                         relatedJoints: [],
                         mode: 'cutout',
                         lengthScale: 1,
@@ -956,6 +1213,7 @@ export function JointMaskWidget({
                       <span className="text-[#666]">{(jointMask.mode || 'cutout').toUpperCase()}</span>
                     </div>
                     <select
+                      multiple={false}
                       value={jointMask.mode || 'cutout'}
                       onChange={(e) => setJointMask({ mode: e.target.value as any } as any)}
                       className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
@@ -1184,8 +1442,170 @@ export function JointMaskWidget({
                     </div>
                   </div>
 
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Filters</div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setJointMask({
+                            blendMode: 'normal',
+                            blurPx: 0,
+                            brightness: 1,
+                            contrast: 1,
+                            saturation: 1,
+                            hueRotate: 0,
+                            grayscale: 0,
+                            sepia: 0,
+                            invert: 0,
+                          } as any)
+                        }
+                        className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
+                        disabled={!jointMask.src}
+                        title="Reset filter + blend values"
+                      >
+                        Reset
+                      </button>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[10px]">
+                        <span>Blend</span>
+                        <span className="text-[#666]">{((jointMask as any).blendMode || 'normal').toUpperCase()}</span>
+                      </div>
+                      <select
+                        multiple={false}
+                        value={((jointMask as any).blendMode || 'normal') as any}
+                        onChange={(e) => setJointMask({ blendMode: e.target.value as any } as any)}
+                        className="w-full px-2 py-1 bg-[#222] rounded text-[10px]"
+                        disabled={!jointMask.src}
+                      >
+                        {MASK_BLEND_MODE_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-[10px]">
+                        <span className="text-[#666]">Blur</span>
+                        <span>{(((jointMask as any).blurPx ?? 0) as number).toFixed(1)}px</span>
+                      </div>
+                      <Slider
+                        min={0}
+                        max={30}
+                        step={0.5}
+                        value={[((jointMask as any).blurPx ?? 0) as number]}
+                        onValueChange={([val]) => setJointMask({ blurPx: val } as any)}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Brightness</span>
+                          <span>{(((jointMask as any).brightness ?? 1) as number).toFixed(2)}</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={3}
+                          step={0.01}
+                          value={[((jointMask as any).brightness ?? 1) as number]}
+                          onValueChange={([val]) => setJointMask({ brightness: val } as any)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Contrast</span>
+                          <span>{(((jointMask as any).contrast ?? 1) as number).toFixed(2)}</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={3}
+                          step={0.01}
+                          value={[((jointMask as any).contrast ?? 1) as number]}
+                          onValueChange={([val]) => setJointMask({ contrast: val } as any)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Saturation</span>
+                          <span>{(((jointMask as any).saturation ?? 1) as number).toFixed(2)}</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={5}
+                          step={0.01}
+                          value={[((jointMask as any).saturation ?? 1) as number]}
+                          onValueChange={([val]) => setJointMask({ saturation: val } as any)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Hue</span>
+                          <span>{(((jointMask as any).hueRotate ?? 0) as number).toFixed(0)}°</span>
+                        </div>
+                        <Slider
+                          min={-180}
+                          max={180}
+                          step={1}
+                          value={[((jointMask as any).hueRotate ?? 0) as number]}
+                          onValueChange={([val]) => setJointMask({ hueRotate: val } as any)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Gray</span>
+                          <span>{Math.round(clamp(((jointMask as any).grayscale ?? 0) as number, 0, 1) * 100)}%</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={[((jointMask as any).grayscale ?? 0) as number]}
+                          onValueChange={([val]) => setJointMask({ grayscale: val } as any)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Sepia</span>
+                          <span>{Math.round(clamp(((jointMask as any).sepia ?? 0) as number, 0, 1) * 100)}%</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={[((jointMask as any).sepia ?? 0) as number]}
+                          onValueChange={([val]) => setJointMask({ sepia: val } as any)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[9px] text-[#666]">
+                          <span>Invert</span>
+                          <span>{Math.round(clamp(((jointMask as any).invert ?? 0) as number, 0, 1) * 100)}%</span>
+                        </div>
+                        <Slider
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={[((jointMask as any).invert ?? 0) as number]}
+                          onValueChange={([val]) => setJointMask({ invert: val } as any)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-2 items-end">
                     <select
+                      multiple={false}
                       value=""
                       onChange={(e) => {
                         const target = e.target.value;
