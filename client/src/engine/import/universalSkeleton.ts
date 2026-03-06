@@ -228,6 +228,10 @@ export class UniversalSkeletonConverter {
               x: bone.localX,
               y: bone.localY,
             },
+            previewOffset: {
+              x: bone.localX,
+              y: bone.localY,
+            },
             rotation: bone.rotationZ || 0,
           };
           
@@ -395,7 +399,7 @@ export class UniversalSkeletonFactory {
       version: '1.0',
       source: 'manual',
       bones: {},
-      rootBoneId: '',
+      rootBoneIds: [],
       metadata: {
         unit: 'pixels',
         coordinateSystem: 'y-down',

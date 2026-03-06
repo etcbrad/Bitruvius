@@ -10,7 +10,7 @@ const createFrameFingerprinter = (size = 16): ((source: CanvasImageSource) => nu
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true } as any);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true } as any) as CanvasRenderingContext2D | null;
   if (!ctx) return () => null;
 
   ctx.imageSmoothingEnabled = true;

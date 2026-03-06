@@ -9,7 +9,6 @@ export type WidgetId =
   | 'edit'
   | 'joint_hierarchy'
   | 'joint_masks'
-  | 'cutout_relationships'
   | 'bone_inspector'
   | 'rig_controls'
   | 'responsiveness'
@@ -44,7 +43,6 @@ export const isWidgetId = (value: unknown): value is WidgetId => {
     value === 'edit' ||
     value === 'joint_hierarchy' ||
     value === 'joint_masks' ||
-    value === 'cutout_relationships' ||
     value === 'bone_inspector' ||
     value === 'rig_controls' ||
     value === 'responsiveness' ||
@@ -123,14 +121,6 @@ export const WIDGETS: Record<
     docs: <div className="text-[11px] text-[#bbb]">Edit cutout masks and masking behavior.</div>,
     defaultFloatSize: { w: 360, h: 420 },
     minFloatSize: { w: 240, h: 200 },
-  },
-  cutout_relationships: {
-    title: 'Cutout Relationships',
-    tabGroup: 'character',
-    isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Visualize and debug cutout overlaps and ordering.</div>,
-    defaultFloatSize: { w: 420, h: 420 },
-    minFloatSize: { w: 260, h: 200 },
   },
   bone_inspector: {
     title: 'Rig Inspector',
@@ -284,7 +274,7 @@ export const WIDGET_GLOBAL_ORDER: WidgetId[] = [
 ];
 
 export const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
-  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'cutout_relationships', 'bone_inspector'],
+  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'bone_inspector'],
   physics: ['procgen'],
   animation: ['animation', 'camera'],
   global: WIDGET_GLOBAL_ORDER,

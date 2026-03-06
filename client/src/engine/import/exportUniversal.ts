@@ -1,5 +1,5 @@
 import type { SkeletonState } from '../types';
-import { UniversalSkeleton } from './universalSkeleton';
+import type { UniversalBone, UniversalSkeleton } from './universalSkeleton';
 
 export class UniversalSkeletonExporter {
   private static findRootJoint(state: SkeletonState): string {
@@ -33,7 +33,7 @@ export class UniversalSkeletonExporter {
       version: '1.0',
       source: 'bitruvius',
       bones: {},
-      rootBoneId: rootJointId,
+      rootBoneIds: [rootJointId],
       metadata: {
         unit: 'pixels',
         coordinateSystem: 'y-down',
@@ -43,7 +43,7 @@ export class UniversalSkeletonExporter {
 
     // Convert Bitruvius joints to universal bones
     Object.entries(state.joints).forEach(([jointId, joint]) => {
-      const universalBone = {
+      const universalBone: UniversalBone = {
         id: jointId,
         name: joint.label || jointId,
         parentId: joint.parent,
@@ -56,6 +56,8 @@ export class UniversalSkeletonExporter {
         rotationX: 0,
         rotationY: 0,
         rotationZ: joint.rotation || 0,
+        skewX: 0,
+        skewY: 0,
         scaleX: 1,
         scaleY: 1,
         scaleZ: 1,

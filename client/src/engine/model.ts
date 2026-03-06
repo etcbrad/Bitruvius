@@ -10,9 +10,6 @@ export const SLENDERBIT_JOINTS: Record<string, Joint> = {
   neck_upper: { id: 'neck_upper', label: 'Neck Upper', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
   head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
 
-  l_nipple: { id: 'l_nipple', label: 'L Nipple', parent: 'sternum', baseOffset: { x: -2.5, y: 1.5 }, currentOffset: { x: -2.5, y: 1.5 }, targetOffset: { x: -2.5, y: 1.5 }, previewOffset: { x: -2.5, y: 1.5 }, mirrorId: 'r_nipple', rotation: 0 },
-  r_nipple: { id: 'r_nipple', label: 'R Nipple', parent: 'sternum', baseOffset: { x: 2.5, y: 1.5 }, currentOffset: { x: 2.5, y: 1.5 }, targetOffset: { x: 2.5, y: 1.5 }, previewOffset: { x: 2.5, y: 1.5 }, mirrorId: 'l_nipple', rotation: 0 },
-
   l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.5, y: -1.25 }, currentOffset: { x: -1.5, y: -1.25 }, targetOffset: { x: -1.5, y: -1.25 }, previewOffset: { x: -1.5, y: -1.25 }, mirrorId: 'r_clavicle', rotation: 0 },
   l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: -1.5, y: 3.75 }, currentOffset: { x: -1.5, y: 3.75 }, targetOffset: { x: -1.5, y: 3.75 }, previewOffset: { x: -1.5, y: 3.75 }, mirrorId: 'r_bicep', rotation: 0 },
   l_elbow: { id: 'l_elbow', label: 'L Elbow', parent: 'l_bicep', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, rotation: 0 },
@@ -37,8 +34,6 @@ export const SLENDERBIT_JOINTS: Record<string, Joint> = {
 };
 
 // New default humanoid model with inverted shoulder mechanics
-// NOTE: Arm (shoulder/bicep) X offsets are intentionally inverted compared to SLENDERBIT_JOINTS
-// to maintain compatibility with existing animations and constraints
 export const INITIAL_JOINTS: Record<string, Joint> = {
   root: { id: 'root', label: 'Root', parent: null, baseOffset: { x: 0, y: 0 }, currentOffset: { x: 0, y: 0 }, targetOffset: { x: 0, y: 0 }, previewOffset: { x: 0, y: 0 }, rotation: 0 },
   navel: { id: 'navel', label: 'Waist', parent: 'root', baseOffset: { x: 0, y: 0 }, currentOffset: { x: 0, y: 0 }, targetOffset: { x: 0, y: 0 }, previewOffset: { x: 0, y: 0 }, rotation: 0 },
@@ -48,20 +43,19 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
   neck_upper: { id: 'neck_upper', label: 'Neck Upper', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
   head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
 
-  l_nipple: { id: 'l_nipple', label: 'L Nipple', parent: 'sternum', baseOffset: { x: -2.5, y: 1.5 }, currentOffset: { x: -2.5, y: 1.5 }, targetOffset: { x: -2.5, y: 1.5 }, previewOffset: { x: -2.5, y: 1.5 }, mirrorId: 'r_nipple', rotation: 0 },
-  r_nipple: { id: 'r_nipple', label: 'R Nipple', parent: 'sternum', baseOffset: { x: 2.5, y: 1.5 }, currentOffset: { x: 2.5, y: 1.5 }, targetOffset: { x: 2.5, y: 1.5 }, previewOffset: { x: 2.5, y: 1.5 }, mirrorId: 'l_nipple', rotation: 0 },
-
   l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.5, y: -1.25 }, currentOffset: { x: -1.5, y: -1.25 }, targetOffset: { x: -1.5, y: -1.25 }, previewOffset: { x: -1.5, y: -1.25 }, mirrorId: 'r_clavicle', rotation: 0 },
-  l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: 4.25, y: 1.5 }, currentOffset: { x: 4.25, y: 1.5 }, targetOffset: { x: 4.25, y: 1.5 }, previewOffset: { x: 4.25, y: 1.5 }, mirrorId: 'r_bicep', rotation: 0 },
-  l_elbow: { id: 'l_elbow', label: 'L Elbow', parent: 'l_bicep', baseOffset: { x: 3.75, y: 0.5 }, currentOffset: { x: 3.75, y: 0.5 }, targetOffset: { x: 3.75, y: 0.5 }, previewOffset: { x: 3.75, y: 0.5 }, rotation: 0 },
-  l_wrist: { id: 'l_wrist', label: 'L Wrist', parent: 'l_elbow', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, isEndEffector: true, mirrorId: 'r_wrist', rotation: 0 },
-  l_fingertip: { id: 'l_fingertip', label: 'L Fingertip', parent: 'l_wrist', baseOffset: { x: 1.5, y: 0 }, currentOffset: { x: 1.5, y: 0 }, targetOffset: { x: 1.5, y: 0 }, previewOffset: { x: 1.5, y: 0 }, mirrorId: 'r_fingertip', rotation: 0 },
+  // Humerus length matches clavicle; remaining reach is allocated to the upper arm.
+  l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: -1.841, y: 0.65 }, currentOffset: { x: -1.841, y: 0.65 }, targetOffset: { x: -1.841, y: 0.65 }, previewOffset: { x: -1.841, y: 0.65 }, mirrorId: 'r_bicep', rotation: 0 },
+  l_elbow: { id: 'l_elbow', label: 'L Elbow', parent: 'l_bicep', baseOffset: { x: -4.711, y: 0.629 }, currentOffset: { x: -4.711, y: 0.629 }, targetOffset: { x: -4.711, y: 0.629 }, previewOffset: { x: -4.711, y: 0.629 }, rotation: 0 },
+  l_wrist: { id: 'l_wrist', label: 'L Wrist', parent: 'l_elbow', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, isEndEffector: true, mirrorId: 'r_wrist', rotation: 0 },
+  l_fingertip: { id: 'l_fingertip', label: 'L Fingertip', parent: 'l_wrist', baseOffset: { x: -1.5, y: 0 }, currentOffset: { x: -1.5, y: 0 }, targetOffset: { x: -1.5, y: 0 }, previewOffset: { x: -1.5, y: 0 }, mirrorId: 'r_fingertip', rotation: 0 },
 
   r_clavicle: { id: 'r_clavicle', label: 'R Clavicle', parent: 'collar', baseOffset: { x: 1.5, y: -1.25 }, currentOffset: { x: 1.5, y: -1.25 }, targetOffset: { x: 1.5, y: -1.25 }, previewOffset: { x: 1.5, y: -1.25 }, mirrorId: 'l_clavicle', rotation: 0 },
-  r_bicep: { id: 'r_bicep', label: 'R Bicep', parent: 'r_clavicle', baseOffset: { x: -4.25, y: 1.5 }, currentOffset: { x: -4.25, y: 1.5 }, targetOffset: { x: -4.25, y: 1.5 }, previewOffset: { x: -4.25, y: 1.5 }, mirrorId: 'l_bicep', rotation: 0 },
-  r_elbow: { id: 'r_elbow', label: 'R Elbow', parent: 'r_bicep', baseOffset: { x: -3.75, y: 0.5 }, currentOffset: { x: -3.75, y: 0.5 }, targetOffset: { x: -3.75, y: 0.5 }, previewOffset: { x: -3.75, y: 0.5 }, rotation: 0 },
-  r_wrist: { id: 'r_wrist', label: 'R Wrist', parent: 'r_elbow', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, isEndEffector: true, mirrorId: 'l_wrist', rotation: 0 },
-  r_fingertip: { id: 'r_fingertip', label: 'R Fingertip', parent: 'r_wrist', baseOffset: { x: -1.5, y: 0 }, currentOffset: { x: -1.5, y: 0 }, targetOffset: { x: -1.5, y: 0 }, previewOffset: { x: -1.5, y: 0 }, mirrorId: 'l_fingertip', rotation: 0 },
+  // Humerus length matches clavicle; remaining reach is allocated to the upper arm.
+  r_bicep: { id: 'r_bicep', label: 'R Bicep', parent: 'r_clavicle', baseOffset: { x: 1.841, y: 0.65 }, currentOffset: { x: 1.841, y: 0.65 }, targetOffset: { x: 1.841, y: 0.65 }, previewOffset: { x: 1.841, y: 0.65 }, mirrorId: 'l_bicep', rotation: 0 },
+  r_elbow: { id: 'r_elbow', label: 'R Elbow', parent: 'r_bicep', baseOffset: { x: 4.711, y: 0.629 }, currentOffset: { x: 4.711, y: 0.629 }, targetOffset: { x: 4.711, y: 0.629 }, previewOffset: { x: 4.711, y: 0.629 }, rotation: 0 },
+  r_wrist: { id: 'r_wrist', label: 'R Wrist', parent: 'r_elbow', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, isEndEffector: true, mirrorId: 'l_wrist', rotation: 0 },
+  r_fingertip: { id: 'r_fingertip', label: 'R Fingertip', parent: 'r_wrist', baseOffset: { x: 1.5, y: 0 }, currentOffset: { x: 1.5, y: 0 }, targetOffset: { x: 1.5, y: 0 }, previewOffset: { x: 1.5, y: 0 }, mirrorId: 'l_fingertip', rotation: 0 },
 
   l_hip: { id: 'l_hip', label: 'L Hip', parent: 'navel', baseOffset: { x: -1.5, y: -1.75 }, currentOffset: { x: -1.5, y: -1.75 }, targetOffset: { x: -1.5, y: -1.75 }, previewOffset: { x: -1.5, y: -1.75 }, mirrorId: 'r_hip', rotation: 0 },
   l_knee: { id: 'l_knee', label: 'L Knee', parent: 'l_hip', baseOffset: { x: 0, y: 6 }, currentOffset: { x: 0, y: 6 }, targetOffset: { x: 0, y: 6 }, previewOffset: { x: 0, y: 6 }, rotation: 0 },
@@ -75,46 +69,39 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
 };
 
 export const CONNECTIONS: Connection[] = [
-  // Inverted shoulder mechanics - left clavicle holds right shoulder, right clavicle holds left shoulder
-  { from: "collar", to: "l_clavicle", type: "bone", label: "L_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "l_clavicle", to: "r_bicep", type: "rigid", label: "Trapezius_L_to_R", shape: 'muscle', stretchMode: 'stretch' },
-  { from: "r_bicep", to: "r_elbow", type: "bone", label: "R_Humerus", shape: 'muscle', stretchMode: 'rigid' },
-  { from: "collar", to: "r_clavicle", type: "bone", label: "R_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "r_clavicle", to: "l_bicep", type: "rigid", label: "Trapezius_R_to_L", shape: 'muscle', stretchMode: 'stretch' },
-  { from: "l_bicep", to: "l_elbow", type: "bone", label: "L_Humerus", shape: 'muscle', stretchMode: 'rigid' },
-  { from: "l_elbow", to: "l_wrist", type: "bone", label: "L_Radius_Ulna", shape: 'tapered', stretchMode: 'rigid' },
-  { from: "r_elbow", to: "r_wrist", type: "bone", label: "R_Radius_Ulna", shape: 'tapered', stretchMode: 'rigid' },
-  { from: "l_wrist", to: "l_fingertip", type: "soft_limit", label: "L_Hand", shape: 'wire', stretchMode: 'rigid' },
-  { from: "r_wrist", to: "r_fingertip", type: "soft_limit", label: "R_Hand", shape: 'wire', stretchMode: 'rigid' },
-  { from: "l_elbow", to: "l_nipple", type: "structural_link", shape: 'wire', stretchMode: 'rigid' },
-  { from: "r_elbow", to: "r_nipple", type: "structural_link", shape: 'wire', stretchMode: 'rigid' },
-  { from: "l_nipple", to: "navel", type: "structural_link", shape: 'wire', stretchMode: 'rigid' },
-  { from: "r_nipple", to: "navel", type: "structural_link", shape: 'wire', stretchMode: 'rigid' },
-  { from: "navel", to: "l_hip", type: "bone", label: "L_Pelvic Connect", shape: 'bone', stretchMode: 'rigid' },
-  { from: "navel", to: "r_hip", type: "bone", label: "R_Pelvic Connect", shape: 'bone', stretchMode: 'rigid' },
-  { from: "l_hip", to: "l_knee", type: "bone", label: "L_Femur", shape: 'muscle', stretchMode: 'rigid' },
-  { from: "r_hip", to: "r_knee", type: "bone", label: "R_Femur", shape: 'muscle', stretchMode: 'rigid' },
-  { from: "l_knee", to: "l_ankle", type: "bone", label: "L_Tibia", shape: 'tapered', stretchMode: 'rigid' },
-  { from: "r_knee", to: "r_ankle", type: "bone", label: "R_Tibia", shape: 'tapered', stretchMode: 'rigid' },
-  { from: "l_ankle", to: "l_toe", type: "bone", label: "L_Foot", shape: 'tapered', stretchMode: 'rigid' },
-  { from: "r_ankle", to: "r_toe", type: "bone", label: "R_Foot", shape: 'tapered', stretchMode: 'rigid' },
-  // Core spine connections
+  // Clean bones-only rig (parent → child), no bracing connectors.
+  // Note: `root → navel` is a technical anchor and intentionally omitted.
+
+  // Spine / head
   { from: "navel", to: "sternum", type: "bone", label: "Torso", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "sternum", to: "collar", type: "bone", label: "Collar", shape: 'diamond', stretchMode: 'rigid' },
   { from: "collar", to: "neck_base", type: "bone", label: "Neck", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "neck_base", to: "neck_upper", type: "bone", label: "Neck Upper", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "neck_upper", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
-  
-  // Wireframe connections for spatial structure (thin green lines)
-  // NOTE: These are non-hierarchical braces. They intentionally use a non-"bone" type so the physics solver
-  // treats them as soft distance constraints (helping the torso/pelvis behave more like a deformable mass).
-  // Hip lock: rendered as a horizontal bone; physics behavior is added as an explicit constraint.
-  { from: "l_hip", to: "r_hip", type: "bone", label: "Hip Lock", shape: 'bone', stretchMode: 'rigid' },
-  // Simplified zig-zag shoulder structure for accordion compression
-  { from: "l_clavicle", to: "r_clavicle", type: "tendon", label: "Shoulder Tendon", shape: 'tendon', stretchMode: 'rigid' },
-  { from: "l_clavicle", to: "sternum", type: "bone", label: "Torso Diamond", shape: 'diamond', stretchMode: 'rigid' },
-  { from: "r_clavicle", to: "sternum", type: "bone", label: "Torso Diamond", shape: 'diamond', stretchMode: 'rigid' },
-  // Note: do not brace into `neck_base` (neck is the intended "drop" hinge).
-  { from: "l_bicep", to: "navel", type: "structural_link", label: "L Torso Brace", shape: 'wireframe', stretchMode: 'rigid' },
-  { from: "r_bicep", to: "navel", type: "structural_link", label: "R Torso Brace", shape: 'wireframe', stretchMode: 'rigid' },
+
+  // Left arm
+  { from: "collar", to: "l_clavicle", type: "bone", label: "L_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "l_clavicle", to: "l_bicep", type: "bone", label: "L_Humerus", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "l_bicep", to: "l_elbow", type: "bone", label: "L_Upper Arm", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "l_elbow", to: "l_wrist", type: "bone", label: "L_Forearm", shape: 'tapered', stretchMode: 'rigid' },
+  { from: "l_wrist", to: "l_fingertip", type: "bone", label: "L_Hand", shape: 'tapered', stretchMode: 'rigid' },
+
+  // Right arm
+  { from: "collar", to: "r_clavicle", type: "bone", label: "R_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "r_clavicle", to: "r_bicep", type: "bone", label: "R_Humerus", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "r_bicep", to: "r_elbow", type: "bone", label: "R_Upper Arm", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "r_elbow", to: "r_wrist", type: "bone", label: "R_Forearm", shape: 'tapered', stretchMode: 'rigid' },
+  { from: "r_wrist", to: "r_fingertip", type: "bone", label: "R_Hand", shape: 'tapered', stretchMode: 'rigid' },
+
+  // Left leg
+  { from: "navel", to: "l_hip", type: "bone", label: "L_Pelvis", shape: 'bone', stretchMode: 'rigid' },
+  { from: "l_hip", to: "l_knee", type: "bone", label: "L_Femur", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "l_knee", to: "l_ankle", type: "bone", label: "L_Tibia", shape: 'tapered', stretchMode: 'rigid' },
+  { from: "l_ankle", to: "l_toe", type: "bone", label: "L_Foot", shape: 'tapered', stretchMode: 'rigid' },
+
+  // Right leg
+  { from: "navel", to: "r_hip", type: "bone", label: "R_Pelvis", shape: 'bone', stretchMode: 'rigid' },
+  { from: "r_hip", to: "r_knee", type: "bone", label: "R_Femur", shape: 'muscle', stretchMode: 'rigid' },
+  { from: "r_knee", to: "r_ankle", type: "bone", label: "R_Tibia", shape: 'tapered', stretchMode: 'rigid' },
+  { from: "r_ankle", to: "r_toe", type: "bone", label: "R_Foot", shape: 'tapered', stretchMode: 'rigid' },
 ];

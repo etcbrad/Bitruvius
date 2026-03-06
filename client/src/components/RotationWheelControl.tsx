@@ -30,6 +30,7 @@ type RotationWheelControlProps = {
   className?: string;
   // Enhanced props for integration
   showIntegratedControls?: boolean;
+  integratedMenuOffsetPx?: number;
   currentMaskType?: 'joint' | 'head' | 'standalone';
   currentMaskId?: string;
   maskData?: JointMask | HeadMask;
@@ -66,6 +67,7 @@ export const RotationWheelControl: React.FC<RotationWheelControlProps> = ({
   isDisabled = false,
   className = '',
   showIntegratedControls = false,
+  integratedMenuOffsetPx = 0,
   currentMaskType = 'joint',
   currentMaskId = '',
   maskData,
@@ -199,7 +201,8 @@ export const RotationWheelControl: React.FC<RotationWheelControlProps> = ({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 w-80 bg-[#1a1a1a] border border-[#333] rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto"
+        className="absolute top-full left-1/2 transform -translate-x-1/2 w-80 bg-[#1a1a1a] border border-[#333] rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto"
+        style={{ marginTop: 8 + integratedMenuOffsetPx }}
       >
         {/* Tab Navigation */}
         <div className="flex bg-[#222] rounded-t-lg p-1 gap-1">
@@ -308,6 +311,15 @@ export const RotationWheelControl: React.FC<RotationWheelControlProps> = ({
           {activeTab === 'transform' && maskData && (
             <div className="space-y-3">
               <ControlGroup title="Basic Transform">
+                <MiniSlider
+                  label="Rotation"
+                  value={maskData.rotation || 0}
+                  min={-360}
+                  max={360}
+                  step={1}
+                  onChange={(val) => handleMaskPropUpdate('rotation', val)}
+                  displayValue={`${Math.round(maskData.rotation || 0)}°`}
+                />
                 <MiniSlider
                   label="Scale"
                   value={maskData.scale || 1}
@@ -523,4 +535,3 @@ export const RotationWheelControl: React.FC<RotationWheelControlProps> = ({
     </div>
   );
 };
-

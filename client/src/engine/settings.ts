@@ -1,9 +1,16 @@
 import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
-import { INITIAL_JOINTS, CONNECTIONS } from './model';
+import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode } from './types';
-import type { WalkingEngineGait, PhysicsControls, IdleSettings } from './bitruvian/types';
+import {
+  DEFAULT_PROCEDURAL_BITRUVIAN_GAIT,
+  DEFAULT_PROCEDURAL_BITRUVIAN_IDLE,
+  DEFAULT_PROCEDURAL_BITRUVIAN_PHYSICS,
+  type IdleSettings,
+  type PhysicsControls,
+  type WalkingEngineGait,
+} from './bitruvian/types';
 import type { TransitionIssue, TransitionResult } from '@/lib/transitionIssues';
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -245,8 +252,6 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
   if (!rawValue || typeof rawValue !== 'object') return out;
   const raw = rawValue as Record<string, unknown>;
   for (const [key, value] of Object.entries(raw)) {
-    if (!(key in INITIAL_JOINTS)) continue;
-    
     const v = value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
     if (!v) continue;
     
@@ -260,7 +265,7 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
       hidden: undefined,
     };
     
-    if (ALLOWED_SHAPES.has(v.shape)) {
+    if (typeof v.shape === 'string' && ALLOWED_SHAPES.has(v.shape)) {
       next.shape = v.shape;
     }
     
@@ -474,35 +479,6 @@ export const makeDefaultState = (): SkeletonState => {
     defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), fkFollowDeg };
   };
 
-  // Set all bones to rigid for manikin mode (Cardboard controlMode)
-  const isManikinMode = true; // Default to manikin mode
-  if (isManikinMode) {
-    // Apply rigid stretchMode to all connections for manikin mode
-    CONNECTIONS.forEach(conn => {
-      if (conn.type === 'bone') {
-        const key = canonicalConnKey(conn.from, conn.to);
-        defaultConnectionOverrides[key] = { 
-          ...(defaultConnectionOverrides[key] ?? {}), 
-          stretchMode: 'rigid' as const 
-        };
-      }
-    });
-    
-    // Override trapezius connections to be rigid
-    const trapeziusConnections = [
-      { from: 'l_clavicle', to: 'r_bicep' },
-      { from: 'r_clavicle', to: 'l_bicep' }
-    ];
-    
-    trapeziusConnections.forEach(conn => {
-      const key = canonicalConnKey(conn.from, conn.to);
-      defaultConnectionOverrides[key] = { 
-        ...(defaultConnectionOverrides[key] ?? {}), 
-        stretchMode: 'rigid' as const 
-      };
-    });
-  }
-
   // Default FK follow: collar acts as shoulder socket. Rotating collar rotates neck/head and both arms.
   // Simplified shoulder mechanics - direct connections for accordion compression
   const COLLAR_SOCKET_FOLLOW_DEG = 90;
@@ -559,10 +535,10 @@ export const makeDefaultState = (): SkeletonState => {
     bendEnabled: false, // Default: no auto-bend (rigid)
     stretchEnabled: false, // Ensure stretching is disabled by default
 	    leadEnabled: true,
-      clavicleConstraintEnabled: true,
+      clavicleConstraintEnabled: false,
 	    hardStop: true, // Enable hard stops for rigid joint limits
       shapeshiftingEnabled: false,
-      torsoDiamond: { enabled: true, dynamic: false },
+      torsoDiamond: { enabled: false, dynamic: false },
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
 	    // Default: FK-first with a single planted foot for stability.
 	    activeRoots: ['r_ankle'],
@@ -673,7 +649,7 @@ export const makeDefaultState = (): SkeletonState => {
     activeViewId: 'front',
     boneStyle: { hueT: 0, lightness: 0 },
     hipLock: {
-      enabled: true,
+      enabled: false,
       extendCompressEnabled: false,
       restLen: undefined,
       minScale: 1,
@@ -682,7 +658,7 @@ export const makeDefaultState = (): SkeletonState => {
       fkLengthScale: 1,
       walkModeEnabled: false,
       walkAmount: 0.75,
-      pelvisBiasEnabled: true,
+      pelvisBiasEnabled: false,
       pelvisBiasSide: 'below',
       pelvisBiasAmount: 1,
     },

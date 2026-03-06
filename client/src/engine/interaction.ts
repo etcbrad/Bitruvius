@@ -41,14 +41,17 @@ const jointLength = (
 
 const getIkRootForEffector = (effectorId: string): string | null => {
   // Heuristic anchors (avoid pulling the whole spine around for limb IK).
-  // These match the current rig in `src/engine/model.ts`.
-  if (effectorId === 'head') return 'neck_upper';
-  if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_upper_arm';
-  if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_upper_arm';
-  if (effectorId === 'l_ankle') return 'l_hip';
-  if (effectorId === 'r_ankle') return 'r_hip';
-  if (effectorId === 'l_toe') return 'l_hip';
-  if (effectorId === 'r_toe') return 'r_hip';
+  // IMPORTANT: keep these in sync with the current rig in `src/engine/model.ts`.
+  //
+  // "Top → bottom" normalization:
+  // - Head pulls the neck chain but does not translate the torso (root at collar).
+  // - Arms solve from clavicle down (root at clavicle).
+  // - Legs solve from hip down (root at hip).
+  if (effectorId === 'head') return 'collar';
+  if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_clavicle';
+  if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_clavicle';
+  if (effectorId === 'l_ankle' || effectorId === 'l_toe') return 'l_hip';
+  if (effectorId === 'r_ankle' || effectorId === 'r_toe') return 'r_hip';
   return null;
 };
 
@@ -187,7 +190,7 @@ export const applyDragToState = (
     // Rotate all joints in the nested kinematic chain above sacrum
     // This respects the hierarchy: Sacrum → Navel → Sternum → Collar (Branch Point)
     const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 'head', 
-                          'l_nipple', 'r_nipple', 'l_rib', 'r_rib',
+                          'l_rib', 'r_rib',
                           'l_clavicle', 'r_clavicle', 'l_upper_arm', 'r_upper_arm', 'l_elbow', 'r_elbow', 
                           'l_wrist', 'r_wrist', 'l_fingertip', 'r_fingertip'];
     
@@ -439,6 +442,12 @@ export const applyBalanceDragToState = (
   const pinnedSet = new Set(Object.keys(pinnedWorld ?? {}));
   const pinnedCount = pinnedSet.size;
 
+  // When lifting the puppet by the head/neck while feet are pinned, bias toward
+  // vertical motion and let horizontal alignment "tension" center the body over the pins.
+  // This mimics a paper puppet hanging under gravity: it rises smoothly and recenters
+  // instead of shimmying side-to-side with the cursor.
+  const isLiftHandle = draggingId === 'head' || draggingId === 'neck_base' || draggingId === 'neck_upper';
+
   type PinnedLeg = {
     ankleId: 'l_ankle' | 'r_ankle';
     hipId: 'l_hip' | 'r_hip';
@@ -464,26 +473,14 @@ export const applyBalanceDragToState = (
     })
     .filter((v): v is PinnedLeg => Boolean(v));
 
-  const canMove = (t: number): boolean => {
+  const canMoveDelta = (delta: Point): boolean => {
     for (const leg of legs) {
-      const hipAtT = add(leg.hipWorldStart, scalePoint(desiredDelta, t));
+      const hipAtT = add(leg.hipWorldStart, delta);
       const d = dist(hipAtT, leg.ankleWorldTarget);
       if (d > leg.reach + 1e-4) return false;
     }
     return true;
   };
-
-  let t = 1;
-  if (legs.length && (Math.abs(desiredDelta.x) + Math.abs(desiredDelta.y) > 1e-9) && !canMove(1)) {
-    let lo = 0;
-    let hi = 1;
-    for (let i = 0; i < 20; i++) {
-      const mid = (lo + hi) / 2;
-      if (canMove(mid)) lo = mid;
-      else hi = mid;
-    }
-    t = lo;
-  }
 
   // Inertia / "momentum matching":
   // - When only feet are pinned, let the whole body sway more freely.
@@ -494,7 +491,64 @@ export const applyBalanceDragToState = (
   const baseFollow = draggingId === 'head' || draggingId === 'neck_base' ? 0.985 : 1.0;
   const follow = clamp(baseFollow / (1 + extraPins * 0.14), 0.72, 1.0);
 
-  const delta = scalePoint(desiredDelta, t * follow);
+  const { delta, tension } = (() => {
+    // Horizontal follow is heavily damped for lift handles when legs are pinned,
+    // otherwise it matches normal balance translation.
+    const cursorXFollow =
+      isLiftHandle && legs.length ? (legs.length >= 2 ? 0.08 : 0.16) : 1.0;
+
+    let proposed = {
+      x: desiredDelta.x * follow * cursorXFollow,
+      y: desiredDelta.y * follow,
+    };
+
+    if (isLiftHandle && legs.length) {
+      const centerTargetX = (() => {
+        if (pinnedWorld.l_ankle && pinnedWorld.r_ankle) return (pinnedWorld.l_ankle.x + pinnedWorld.r_ankle.x) / 2;
+        if (pinnedWorld.l_ankle) return pinnedWorld.l_ankle.x;
+        if (pinnedWorld.r_ankle) return pinnedWorld.r_ankle.x;
+        return null;
+      })();
+
+      if (typeof centerTargetX === 'number' && Number.isFinite(centerTargetX)) {
+        // Center the torso (navel) over the pins as lift increases.
+        const navelWorldStart = getWorldPosition('navel', nextJoints, INITIAL_JOINTS, 'preview');
+        const navelXAfter = navelWorldStart.x + proposed.x;
+        const dxCenter = centerTargetX - navelXAfter;
+        const liftMag = Math.abs(proposed.y);
+        const strengthBase = legs.length >= 2 ? 0.38 : 0.26;
+        const strength = strengthBase * clamp(liftMag / 1.25, 0, 1);
+        proposed = { ...proposed, x: proposed.x + dxCenter * strength };
+      }
+    }
+
+    if (!legs.length) return { delta: proposed, tension: 0 };
+
+    // Find the furthest feasible translation (hard stop at reach limit).
+    let sMax = 1;
+    if ((Math.abs(proposed.x) + Math.abs(proposed.y) > 1e-9) && !canMoveDelta(proposed)) {
+      let lo = 0;
+      let hi = 1;
+      for (let i = 0; i < 20; i += 1) {
+        const mid = (lo + hi) / 2;
+        const cand = scalePoint(proposed, mid);
+        if (canMoveDelta(cand)) lo = mid;
+        else hi = mid;
+      }
+      sMax = lo;
+    }
+
+    const hardStop = scalePoint(proposed, sMax);
+    const nextTension = clamp(1 - sMax, 0, 1);
+
+    // Ease the final tension: as we approach the hard stop, slow the translation down
+    // (but never exceed the hard stop).
+    const easeAlpha =
+      isLiftHandle && legs.length ? clamp(1 - nextTension * 0.85, 0.12, 1) : 1;
+    const eased = scalePoint(hardStop, easeAlpha);
+
+    return { delta: eased, tension: nextTension };
+  })();
 
   const nextRootOffset = add(root.previewOffset, delta);
   nextJoints.root = {
@@ -546,8 +600,9 @@ export const applyBalanceDragToState = (
     draggingId === 'cranium' ||
     draggingId === 'head';
 
-  // Skip spine handle logic for spine handles to prevent interference
-  if (isSpineHandle) {
+  // Only run spine-handle correction when we're not under final tension (hard stop),
+  // otherwise it fights the reach limit and can produce shimmy.
+  if (isSpineHandle && tension < 1e-6) {
     const afterWorld = getWorldPosition(draggingId, nextJoints, INITIAL_JOINTS, 'preview');
     const err = dist(afterWorld, mouseWorld);
     if (err > 1e-3) {

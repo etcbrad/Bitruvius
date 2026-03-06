@@ -79,8 +79,6 @@ import { HelpTip } from './components/HelpTip';
 import { ProcgenWidget } from './components/ProcgenWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
 import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
-import { MaskToggle } from '@/components/MaskToggle';
-import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import { ManikinConsole, ManikinGlobalPanel } from './components/ManikinConsole';
 import { CollapsibleSection } from './components/CollapsibleSection';
 import type { TransitionIssue } from '@/lib/transitionIssues';
@@ -463,6 +461,7 @@ export default function App() {
   }>(null);
   const wireRestHoldRef = useRef<null | { token: string; wireRestLengths: Record<string, number> }>(null);
   const postDropPinRef = useRef<null | { id: string; target: Point; expiresMs: number }>(null);
+  const posePhysicsWakeUntilMsRef = useRef(0);
   const headDragMomentumRef = useRef<{ dx: number; dy: number } | null>(null);
   const posePhysicsWorldHistoryRef = useRef<{
     prev: Record<string, Point> | null;
@@ -958,7 +957,7 @@ export default function App() {
   );
 
   const handleBgVideoMeta = useCallback(
-    (meta: ReferenceVideoMeta, expectedSrc: string) => {
+    (meta: ReferenceVideoMeta, expectedSrc: string | null) => {
       setBgVideoMeta(meta);
       if (!expectedSrc) return;
       if (!(meta.duration > REFERENCE_MAX_SECONDS)) return;
@@ -973,7 +972,7 @@ export default function App() {
   );
 
   const handleFgVideoMeta = useCallback(
-    (meta: ReferenceVideoMeta, expectedSrc: string) => {
+    (meta: ReferenceVideoMeta, expectedSrc: string | null) => {
       setFgVideoMeta(meta);
       if (!expectedSrc) return;
       if (!(meta.duration > REFERENCE_MAX_SECONDS)) return;
@@ -1858,6 +1857,16 @@ export default function App() {
           const pose = capturePoseSnapshot(prev.joints, 'current');
           return { ...upgraded, joints: applyPoseSnapshotToJoints(upgraded.joints, pose) };
         });
+        // Wake pose physics immediately on mode switch so the IK/physics rig settles without requiring a drag.
+        // The main loop normally gates physics at rest; this ensures the new settings apply right away.
+        {
+          const nowMs = performance.now();
+          posePhysicsWakeUntilMsRef.current = Math.max(posePhysicsWakeUntilMsRef.current, nowMs + 450);
+          const pinId = 'root' in stateLiveRef.current.joints ? 'root' : 'navel';
+          const pinTarget = getWorldPosition(pinId, stateLiveRef.current.joints, INITIAL_JOINTS, 'preview');
+          postDropPinRef.current = { id: pinId, target: pinTarget, expiresMs: nowMs + 450 };
+          posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
+        }
         addConsoleLog('info', 'Build mode disabled: upgraded to digital IK.');
         return;
       }
@@ -2916,11 +2925,12 @@ export default function App() {
           hipWalkRuntimeRef.current.tSec = 0;
         }
 
+	        const physicsWakeActive = now <= posePhysicsWakeUntilMsRef.current;
 	        const physicsActive =
 	          !manikinModeLiveRef.current &&
 	          shouldRunPosePhysics(prev) &&
 	          allowPosePhysics &&
-	          (Boolean(drag) || prev.activeRoots.length > 0);
+	          (Boolean(drag) || prev.activeRoots.length > 0 || physicsWakeActive);
         
         // Exclude balance joints from physics when they're being dragged to prevent tension/jitter.
         // Note: Navel drags proxy to sternum (handled via `drag.id`).
@@ -4744,7 +4754,6 @@ export default function App() {
     if (maskDragging) {
       setMaskDragging(null);
       maskDraggingLiveRef.current = false;
-      setMaskEditArmed(false);
     }
 
     setGroundRootDragging(false);
@@ -5562,10 +5571,6 @@ export default function App() {
 
     if (isNaN(sx) || isNaN(sy)) return null;
 
-    const isNipple = id.includes('nipple');
-
-    if (isNipple) return null;
-
     const isNosferatu = isNosferatuLook;
     const fillColor = isNosferatu
       ? '#ffffff'
@@ -6052,10 +6057,12 @@ export default function App() {
           }
         }
 
-        const originX = snapPx(anchorWorldX + mask.offsetX);
-        const originY = snapPx(anchorWorldY + mask.offsetY);
-        const x = snapPx(originX - mask.anchorX * width);
-        const y = snapPx(originY - mask.anchorY * height);
+        // Avoid pixel-snapping mask placement to reduce visible jitter/flicker during transform edits
+        // (especially noticeable when stretching/scaling).
+        const originX = anchorWorldX + mask.offsetX;
+        const originY = anchorWorldY + mask.offsetY;
+        const x = originX - mask.anchorX * width;
+        const y = originY - mask.anchorY * height;
 
         return (
           <image
@@ -6166,10 +6173,12 @@ export default function App() {
         }
       }
 
-      const originX = snapPx(anchorWorldX + mask.offsetX);
-      const originY = snapPx(anchorWorldY + mask.offsetY);
-      const x = snapPx(originX - mask.anchorX * width);
-      const y = snapPx(originY - mask.anchorY * height);
+      // Avoid pixel-snapping mask placement to reduce visible jitter/flicker during transform edits
+      // (especially noticeable when stretching/scaling).
+      const originX = anchorWorldX + mask.offsetX;
+      const originY = anchorWorldY + mask.offsetY;
+      const x = originX - mask.anchorX * width;
+      const y = originY - mask.anchorY * height;
 
       return (
         <image
@@ -6213,9 +6222,6 @@ export default function App() {
       'r_shoulder', 'r_elbow', 'r_wrist', 'r_fingertip'
     ];
     
-    // Additional joints
-    const additionalJoints = ['l_nipple', 'r_nipple'];
-    
     // Add head to toe joints with bones between them
     for (let i = 0; i < headToToeOrder.length; i++) {
       const jointId = headToToeOrder[i];
@@ -6249,14 +6255,6 @@ export default function App() {
             hierarchy.push({ joint, level: 1, type: 'bone', boneTo: nextJointId });
           }
         }
-      }
-    }
-    
-    // Add additional joints
-    for (const jointId of additionalJoints) {
-      const joint = joints[jointId];
-      if (joint) {
-        hierarchy.push({ joint, level: 0, type: 'joint' });
       }
     }
     
@@ -8513,20 +8511,21 @@ export default function App() {
                       </h2>
                     </div>
                     <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-                      <JointMaskWidget
-                        state={state}
-                        setStateWithHistory={setStateWithHistory}
-                        maskJointId={maskJointId}
-                        setMaskJointId={setMaskJointIdAndSelect}
-                        maskEditArmed={maskEditArmed}
-                        setMaskEditArmed={setMaskEditArmed}
+	                      <JointMaskWidget
+	                        state={state}
+	                        setStateWithHistory={setStateWithHistory}
+	                        addConsoleLog={addConsoleLog}
+	                        maskJointId={maskJointId}
+	                        setMaskJointId={setMaskJointIdAndSelect}
+	                        maskEditArmed={maskEditArmed}
+	                        setMaskEditArmed={setMaskEditArmed}
                         maskDragMode={maskDragMode}
                         setMaskDragMode={setMaskDragMode}
-                        uploadJointMaskFile={uploadJointMaskFile}
-                        uploadMaskFile={uploadMaskFile}
-                        copyJointMaskTo={copyJointMaskTo}
-                        currentControlMode={state.controlMode}
-                        onControlModeChange={(mode) => {
+	                        uploadJointMaskFile={uploadJointMaskFile}
+	                        uploadMaskFile={uploadMaskFile}
+	                        copyJointMaskTo={copyJointMaskTo}
+	                        currentControlMode={state.controlMode}
+	                        onControlModeChange={(mode) => {
                           if (state.controlMode !== mode) {
                             armPoseReliefTransition({
                               reason: `mode:${state.controlMode}->${mode}`,
@@ -8583,27 +8582,6 @@ export default function App() {
                           Locked joints remain perfectly straight, effectively merging bicep and humerus into single bones.
                         </p>
                       </div>
-                    </div>
-                  </section>
-                </WidgetPortal>
-
-                <WidgetPortal id="cutout_relationships">
-                  <section>
-                    <div className="flex items-center gap-2 mb-4 text-[#666]">
-                      <Layers size={14} />
-                      <h2
-                        className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
-                      >
-                        Cutout Relationships
-                      </h2>
-                    </div>
-                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-                      <CutoutRelationshipVisualizer
-                        state={state}
-                        setStateWithHistory={setStateWithHistory}
-                        uploadJointMaskFile={uploadJointMaskFile}
-                        addConsoleLog={addConsoleLog}
-                      />
                     </div>
                   </section>
                 </WidgetPortal>
@@ -11792,8 +11770,8 @@ export default function App() {
             {Object.keys(state.joints).map(id => {
               const joint = state.joints[id];
               if (!joint.parent) return null;
-              // Skip nipples for automatic bones
-              if (id.includes('nipple')) return null;
+              // `root` is a technical anchor; don't auto-render a `root → navel` bone.
+              if (joint.parent === 'root') return null;
               // Check if this connection is already explicitly defined
               const exists = CONNECTIONS.some(c => 
                 (c.from === joint.parent && c.to === id) || 
@@ -12603,14 +12581,6 @@ export default function App() {
       setTransitionWarningOpen(false);
       setTransitionWarningIssues([]);
     }}
-  />
-  <MaskToggle
-    state={state}
-    selectedJointId={selectedJointId}
-    maskEditArmed={maskEditArmed}
-    setMaskEditArmed={setMaskEditArmed}
-    uploadJointMaskFile={uploadJointMaskFile}
-    setStateWithHistory={setStateWithHistory}
   />
 </div>
 </TooltipProvider>

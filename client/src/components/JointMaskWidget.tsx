@@ -1,6 +1,8 @@
 import React, { useMemo, useRef, useState, useCallback } from 'react';
 import type { JointMask, MaskBlendMode, SkeletonState } from '@/engine/types';
 import { HelpTip } from '@/components/HelpTip';
+import { CollapsibleSection } from '@/components/CollapsibleSection';
+import { CutoutRelationshipVisualizer } from '@/components/CutoutRelationshipVisualizer';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
 import { RotationWheelControl, type MaskInfo, type PieceInfo } from '@/components/RotationWheelControl';
@@ -23,6 +25,7 @@ export type MaskDragMode =
 type Props = {
   state: SkeletonState;
   setStateWithHistory: (action: string, updater: (prev: SkeletonState) => SkeletonState) => void;
+  addConsoleLog: (type: 'success' | 'error' | 'info', message: string) => void;
   maskJointId: string;
   setMaskJointId: (id: string) => void;
   maskEditArmed: boolean;
@@ -167,6 +170,7 @@ function CompactThumb({
 export function JointMaskWidget({
   state,
   setStateWithHistory,
+  addConsoleLog,
   maskJointId,
   setMaskJointId,
   maskEditArmed,
@@ -227,6 +231,59 @@ export function JointMaskWidget({
         headMask: { ...prev.scene.headMask, ...updates },
       },
     }));
+  };
+
+  const canUploadCurrent = activeTab === 'head' ? true : Boolean(selectedJoint);
+  const hasCurrentMask = Boolean(getMaskProp('src', null));
+
+  const uploadCurrentMask = () => {
+    if (!canUploadCurrent) return;
+    if (activeTab === 'head') headInputRef.current?.click();
+    else jointInputRef.current?.click();
+  };
+
+  const clearCurrentMask = () => {
+    if (activeTab === 'head') {
+      setStateWithHistory('head_mask_clear', (prev) => ({
+        ...prev,
+        scene: {
+          ...prev.scene,
+          headMask: { ...prev.scene.headMask, src: null, visible: false },
+        },
+      }));
+      return;
+    }
+
+    if (!jointMask) return;
+    setJointMask({
+      src: null,
+      visible: false,
+      opacity: 1,
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      rotation: 0,
+      anchorX: 0.5,
+      anchorY: 0.5,
+      stretchX: 1,
+      stretchY: 1,
+      skewX: 0,
+      skewY: 0,
+      blendMode: 'normal',
+      blurPx: 0,
+      brightness: 1,
+      contrast: 1,
+      saturation: 1,
+      hueRotate: 0,
+      grayscale: 0,
+      sepia: 0,
+      invert: 0,
+      pixelate: 0,
+      mode: 'cutout',
+      lengthScale: 1,
+      volumePreserve: false,
+      relatedJoints: [],
+    } as any);
   };
 
   const handleMaskRotationBegin = () => {
@@ -351,6 +408,132 @@ export function JointMaskWidget({
 
   return (
     <div className="space-y-4">
+      <div className="space-y-2">
+        <button
+          type="button"
+          onClick={uploadCurrentMask}
+          disabled={!canUploadCurrent}
+          className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+            canUploadCurrent ? 'bg-[#222] hover:bg-[#333]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+          }`}
+          title={
+            activeTab === 'head'
+              ? 'Upload head mask'
+              : selectedJoint
+                ? `Upload mask for ${selectedJoint.label || maskJointId}`
+                : 'Select a joint'
+          }
+        >
+          Upload
+        </button>
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2">
+            {activeTab === 'joint' && (
+              <button
+                type="button"
+                onClick={() => setMaskEditArmed(!maskEditArmed)}
+                disabled={!canPlace}
+                className={`px-2 py-1 rounded text-[10px] transition-colors ${
+                  canPlace
+                    ? maskEditArmed
+                      ? 'bg-[#2b0057] hover:bg-[#3a007a]'
+                      : 'bg-[#222] hover:bg-[#333]'
+                    : 'bg-[#181818] text-[#444] cursor-not-allowed'
+                }`}
+                title={canPlace ? 'Click + drag the mask once to place it' : 'Upload a mask and enable Visible to place'}
+              >
+                {maskEditArmed ? 'Placing…' : 'Place'}
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={clearCurrentMask}
+              disabled={!hasCurrentMask}
+              className={`px-2 py-1 rounded text-[10px] transition-colors ${
+                hasCurrentMask ? 'bg-[#333] hover:bg-[#444]' : 'bg-[#181818] text-[#444] cursor-not-allowed'
+              }`}
+              title={activeTab === 'head' ? 'Clear head mask' : 'Clear selected joint mask'}
+            >
+              Clear
+            </button>
+
+            {activeTab === 'joint' && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStateWithHistory('clear_all_masks', (prev) => {
+                    const newMasks = { ...prev.scene.jointMasks };
+                    for (const id in newMasks) {
+                      newMasks[id] = {
+                        ...newMasks[id],
+                        src: null,
+                        visible: false,
+                        opacity: 1,
+                        scale: 1,
+                        offsetX: 0,
+                        offsetY: 0,
+                        rotation: 0,
+                        anchorX: 0.5,
+                        anchorY: 0.5,
+                        stretchX: 1,
+                        stretchY: 1,
+                        skewX: 0,
+                        skewY: 0,
+                        blendMode: 'normal',
+                        blurPx: 0,
+                        brightness: 1,
+                        contrast: 1,
+                        saturation: 1,
+                        hueRotate: 0,
+                        grayscale: 0,
+                        sepia: 0,
+                        invert: 0,
+                        pixelate: 0,
+                        mode: 'cutout',
+                        lengthScale: 1,
+                        volumePreserve: false,
+                        relatedJoints: [],
+                      };
+                    }
+                    return { ...prev, scene: { ...prev.scene, jointMasks: newMasks } };
+                  })
+                }
+                className="px-2 py-1 bg-[#331111] hover:bg-[#551111] rounded text-[10px] transition-colors"
+                title="Clear all joint masks"
+              >
+                Clear All
+              </button>
+            )}
+          </div>
+
+          <label className="flex items-center gap-2 text-[10px] select-none">
+            <input
+              type="checkbox"
+              checked={Boolean(getMaskProp('visible', false))}
+              onChange={(e) => {
+                const v = e.target.checked;
+                if (activeTab === 'head') {
+                  setHeadMask({ visible: v });
+                } else {
+                  setJointMask({ visible: v });
+                }
+              }}
+              className="rounded"
+              disabled={!hasCurrentMask}
+            />
+            Visible
+          </label>
+        </div>
+
+        {activeTab === 'joint' && maskEditArmed && (
+          <div className="text-[9px] text-[#666]">
+            Joints stay draggable while placing; grab the mask away from the joint to transform it.
+          </div>
+        )}
+      </div>
+
       <div className="p-3 rounded-xl bg-white/5 border border-white/10">
         <div className="flex items-center justify-between mb-2">
           <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Bone Color</div>
@@ -489,21 +672,8 @@ export function JointMaskWidget({
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      if (currentJoint) {
-                        jointInputRef.current?.click();
-                        setJointPickerOpen(false);
-                      }
-                    }}
-                    disabled={!currentJoint}
-                    className="flex-1 py-1.5 bg-[#222] hover:bg-[#333] rounded text-[10px] font-bold uppercase tracking-widest transition-all border border-[#333] disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Upload to Selected
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setJointPickerOpen(false)}
-                    className="px-2 py-1.5 bg-[#333] hover:bg-[#444] rounded text-[10px] font-bold uppercase tracking-widest transition-all"
+                    className="flex-1 px-2 py-1.5 bg-[#333] hover:bg-[#444] rounded text-[10px] font-bold uppercase tracking-widest transition-all"
                   >
                     Cancel
                   </button>
@@ -516,7 +686,7 @@ export function JointMaskWidget({
 
       {activeTab === 'head' && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="space-y-2">
             <div className="flex items-center gap-2">
               <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Head Mask</div>
               <HelpTip
@@ -531,30 +701,34 @@ export function JointMaskWidget({
                 }
               />
             </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => headInputRef.current?.click()}
-                className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-              >
-                Upload
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setStateWithHistory('head_mask_clear', (prev) => ({
+
+            {/* Wheel + details menu. Menu is positioned below the upload row under the wheel. */}
+            <div className="flex flex-col items-center gap-2">
+              <RotationWheelControl
+                value={getHeadMaskProp('rotation', 0) ?? 0}
+                min={-360}
+                max={360}
+                step={1}
+                onChange={(val) =>
+                  setStateWithHistory('head_mask_rotation', (prev) => ({
                     ...prev,
-                    scene: {
-                      ...prev.scene,
-                      headMask: { ...prev.scene.headMask, src: null, visible: false },
-                    },
+                    scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), rotation: val } },
                   }))
                 }
-                className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
-                disabled={!getHeadMaskProp('src', null)}
-              >
-                Clear
-              </button>
+                isDisabled={!getHeadMaskProp('src', null)}
+                showIntegratedControls={true}
+                integratedMenuOffsetPx={40}
+                currentMaskType="head"
+                currentMaskId="head"
+                maskData={state.scene.headMask}
+                availableMasks={availableMasks}
+                availablePieces={availablePieces}
+                currentControlMode={currentControlMode}
+                onMaskSelect={handleMaskSelect}
+                onPieceSelect={handlePieceSelect}
+                onMaskUpdate={handleMaskUpdate}
+                onControlModeChange={onControlModeChange}
+              />
             </div>
           </div>
 
@@ -645,37 +819,6 @@ export function JointMaskWidget({
                     }
                   />
                 </div>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex justify-between text-[10px]">
-                  <span>Rotation</span>
-                  <span>{(getMaskProp('rotation', 0) ?? 0).toFixed(0)}°</span>
-                </div>
-                <RotationWheelControl
-                  value={getMaskProp('rotation', 0) ?? 0}
-                  min={-360}
-                  max={360}
-                  step={1}
-                  onChange={(val) =>
-                    setStateWithHistory('head_mask_rotation', (prev) => ({
-                      ...prev,
-                      scene: { ...prev.scene, headMask: { ...(prev.scene.headMask || {}), rotation: val } },
-                    }))
-                  }
-                  isDisabled={!getMaskProp('src', null)}
-                  showIntegratedControls={true}
-                  currentMaskType="head"
-                  currentMaskId="head"
-                  maskData={state.scene.headMask}
-                  availableMasks={availableMasks}
-                  availablePieces={availablePieces}
-                  currentControlMode={currentControlMode}
-                  onMaskSelect={handleMaskSelect}
-                  onPieceSelect={handlePieceSelect}
-                  onMaskUpdate={handleMaskUpdate}
-                  onControlModeChange={onControlModeChange}
-                />
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1398,7 +1541,7 @@ export function JointMaskWidget({
 
       {activeTab === 'joint' && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center">
             <div className="flex items-center gap-2">
               <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Joint/Mask</div>
               <HelpTip
@@ -1422,84 +1565,7 @@ export function JointMaskWidget({
                 }
               />
             </div>
-            <div className="flex gap-2">
-	              <button
-	                type="button"
-	                onClick={() => setMaskEditArmed(!maskEditArmed)}
-	                disabled={!canPlace}
-	                className={`px-2 py-1 rounded text-[10px] transition-colors ${
-	                  canPlace
-	                    ? maskEditArmed
-                      ? 'bg-[#2b0057] hover:bg-[#3a007a]'
-                      : 'bg-[#222] hover:bg-[#333]'
-                    : 'bg-[#181818] text-[#444] cursor-not-allowed'
-                }`}
-                title={canPlace ? 'Click + drag the mask once to place it' : 'Upload a mask and enable Visible to place'}
-              >
-                {maskEditArmed ? 'Placing…' : 'Place'}
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setStateWithHistory('clear_all_masks', (prev) => {
-                    const newMasks = { ...prev.scene.jointMasks };
-                    for (const id in newMasks) {
-                      newMasks[id] = {
-                        ...newMasks[id],
-                        src: null,
-                        visible: false,
-                        opacity: 1,
-                        scale: 1,
-                        offsetX: 0,
-                        offsetY: 0,
-                        rotation: 0,
-                        anchorX: 0.5,
-                        anchorY: 0.5,
-                        stretchX: 1,
-                        stretchY: 1,
-                        skewX: 0,
-                        skewY: 0,
-                        blendMode: 'normal',
-                        blurPx: 0,
-                        brightness: 1,
-                        contrast: 1,
-                        saturation: 1,
-                        hueRotate: 0,
-                        grayscale: 0,
-                        sepia: 0,
-                        invert: 0,
-                        pixelate: 0,
-                        mode: 'cutout',
-                        lengthScale: 1,
-                        volumePreserve: false,
-                        relatedJoints: [],
-                      };
-                    }
-                    return { ...prev, scene: { ...prev.scene, jointMasks: newMasks } };
-                  })
-                }
-                className="px-2 py-1 bg-[#331111] hover:bg-[#551111] rounded text-[10px] transition-colors"
-                title="Clear all joint masks"
-              >
-                Clear All
-              </button>
-              <button
-                type="button"
-                onClick={() => jointInputRef.current?.click()}
-                className="px-2 py-1 bg-[#222] hover:bg-[#333] rounded text-[10px] transition-colors"
-                disabled={!selectedJoint}
-                title={selectedJoint ? `Upload mask for ${selectedJoint.label || maskJointId}` : 'Select a joint'}
-              >
-                Upload
-              </button>
-            </div>
           </div>
-
-          {maskEditArmed && (
-            <div className="text-[9px] text-[#666]">
-              Joints stay draggable while placing; grab the mask away from the joint to transform it.
-            </div>
-          )}
 
           <div className="flex items-center justify-between gap-2">
             <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">Drag Mode</div>
@@ -1560,56 +1626,6 @@ export function JointMaskWidget({
               <div className="flex items-center justify-between">
                 <div className="text-[10px] text-[#666] uppercase tracking-widest font-bold">
                   {currentJoint?.label || maskJointId}
-                </div>
-                <div className="flex gap-2 items-center">
-                  <label className="flex items-center gap-2 text-[10px] select-none">
-                    <input
-                      type="checkbox"
-                      checked={currentMask?.visible}
-                      onChange={(e) => setJointMask({ visible: e.target.checked })}
-                      className="rounded"
-                      disabled={!currentMask?.src}
-                    />
-                    Visible
-                  </label>
-                  <button
-                    type="button"
-                      onClick={() =>
-                      setJointMask({
-                        src: null,
-                        visible: false,
-                        opacity: 1,
-                        scale: 1,
-                        offsetX: 0,
-                        offsetY: 0,
-                        rotation: 0,
-                        anchorX: 0.5,
-                        anchorY: 0.5,
-                        stretchX: 1,
-                        stretchY: 1,
-                        skewX: 0,
-                        skewY: 0,
-                        blendMode: 'normal',
-                        blurPx: 0,
-                        brightness: 1,
-                        contrast: 1,
-                        saturation: 1,
-                        hueRotate: 0,
-                        grayscale: 0,
-                        sepia: 0,
-                        invert: 0,
-                        pixelate: 0,
-                        relatedJoints: [],
-                        mode: 'cutout',
-                        lengthScale: 1,
-                        volumePreserve: true,
-                      } as any)
-                    }
-                    className="px-2 py-1 bg-[#333] hover:bg-[#444] rounded text-[10px] transition-colors"
-                    disabled={!jointMask.src}
-                  >
-                    Clear
-                  </button>
                 </div>
               </div>
 
@@ -2258,6 +2274,17 @@ export function JointMaskWidget({
           )}
         </div>
       )}
+
+      <CollapsibleSection title="Hierarchy" storageKey="btv:masks:hierarchy" defaultOpen={false}>
+        <div className="p-2 rounded-lg bg-[#0a0a0a] border border-white/10">
+          <CutoutRelationshipVisualizer
+            state={state}
+            setStateWithHistory={setStateWithHistory}
+            uploadJointMaskFile={uploadJointMaskFile}
+            addConsoleLog={addConsoleLog}
+          />
+        </div>
+      </CollapsibleSection>
     </div>
   );
 }

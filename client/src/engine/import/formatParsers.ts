@@ -1,4 +1,5 @@
-import { UniversalSkeleton, UniversalSkeletonFactory } from './universalSkeleton';
+import { UniversalSkeletonFactory } from './universalSkeleton';
+import type { UniversalBone, UniversalSkeleton } from './universalSkeleton';
 
 /**
  * Format-specific parsers for converting external skeletal data to UniversalSkeleton
@@ -23,13 +24,17 @@ export class FormatParsers {
           rotationX: 0,
           rotationY: 0,
           rotationZ: bone.angle || 0,
+          skewX: 0,
+          skewY: 0,
           scaleX: bone.scaleX || 1,
           scaleY: bone.scaleY || 1,
           scaleZ: 1,
           length: bone.length,
-        };
+        } satisfies UniversalBone;
         
-        if (!bone.parent) skeleton.rootBoneId = bone.id;
+        if (!bone.parent) {
+          if (!skeleton.rootBoneIds.includes(bone.id)) skeleton.rootBoneIds.push(bone.id);
+        }
       });
     }
     
@@ -57,7 +62,7 @@ export class FormatParsers {
       let current = '';
       let inQuotes = false;
       
-      for (let char of line) {
+      for (const char of line) {
         if (char === '"') {
           inQuotes = !inQuotes;
         } else if (char === ',' && !inQuotes) {
@@ -84,10 +89,12 @@ export class FormatParsers {
         throw new Error(`Row ${i} missing required bone_id or id field`);
       }
       
-      skeleton.bones[bone.bone_id || bone.id] = {
-        id: bone.bone_id || bone.id,
-        name: bone.name || bone.bone_id || bone.id,
-        parentId: bone.parent_id || bone.parent || null,
+      const id = bone.bone_id || bone.id;
+      const parentId = bone.parent_id || bone.parent || null;
+      skeleton.bones[id] = {
+        id,
+        name: bone.name || id,
+        parentId,
         worldX: bone.x || 0,
         worldY: bone.y || 0,
         localX: bone.x || 0,
@@ -95,13 +102,17 @@ export class FormatParsers {
         rotationX: 0,
         rotationY: 0,
         rotationZ: bone.angle || 0,
+        skewX: 0,
+        skewY: 0,
         scaleX: bone.scaleX ?? 1,
         scaleY: bone.scaleY ?? 1,
         scaleZ: 1,
         length: bone.length,
-      };
+      } satisfies UniversalBone;
         
-      if (!bone.parent) skeleton.rootBoneId = bone.id;
+      if (!parentId) {
+        if (!skeleton.rootBoneIds.includes(id)) skeleton.rootBoneIds.push(id);
+      }
     }
     
     return skeleton;
@@ -125,13 +136,17 @@ export class FormatParsers {
           rotationX: 0,
           rotationY: 0,
           rotationZ: bone.rotation || 0,
+          skewX: 0,
+          skewY: 0,
           scaleX: bone.scaleX || 1,
           scaleY: bone.scaleY || 1,
           scaleZ: 1,
           length: bone.length,
-        };
+        } satisfies UniversalBone;
         
-        if (!bone.parent) skeleton.rootBoneId = bone.name;
+        if (!bone.parent) {
+          if (!skeleton.rootBoneIds.includes(bone.name)) skeleton.rootBoneIds.push(bone.name);
+        }
       });
     }
     

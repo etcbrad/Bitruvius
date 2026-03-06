@@ -1,4 +1,4 @@
-import { UniversalSkeleton, ImportResult } from './universalSkeleton';
+import type { ImportResult, UniversalSkeleton } from './universalSkeleton';
 
 export class SkeletonValidator {
   static validateUniversalSkeleton(skeleton: UniversalSkeleton): ImportResult {
@@ -29,19 +29,19 @@ export class SkeletonValidator {
     }
 
     // Validate root bone
-    if (!skeleton.rootBoneId) {
+    if (!Array.isArray(skeleton.rootBoneIds) || skeleton.rootBoneIds.length === 0) {
       result.warnings.push('No root bone specified, auto-detecting...');
-      skeleton.rootBoneId = this.findRootBone(skeleton);
+      skeleton.rootBoneIds = [this.findRootBone(skeleton)];
     }
 
-    if (!skeleton.bones[skeleton.rootBoneId]) {
-      result.errors.push(`Root bone '${skeleton.rootBoneId}' not found`);
+    const rootBoneId = skeleton.rootBoneIds[0];
+    if (!rootBoneId || !skeleton.bones[rootBoneId]) {
+      result.errors.push(`Root bone '${rootBoneId || ''}' not found`);
       result.success = false;
     }
 
     // Validate bone hierarchy
-    const visited = new Set<string>();
-    const cycles = this.detectCycles(skeleton.bones, skeleton.rootBoneId);
+    const cycles = this.detectCycles(skeleton.bones);
     
     if (cycles.length > 0) {
       result.errors.push(`Cycles detected: ${cycles.join(', ')}`);

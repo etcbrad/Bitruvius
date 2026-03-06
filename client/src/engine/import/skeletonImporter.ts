@@ -1,6 +1,7 @@
-import { UniversalSkeleton, UniversalSkeletonConverter, ImportResult, UniversalSkeletonFactory } from './universalSkeleton';
+import { UniversalSkeletonConverter, UniversalSkeletonFactory } from './universalSkeleton';
 import { FormatParsers } from './formatParsers';
 import type { SkeletonState } from '../types';
+import type { ImportResult, UniversalSkeleton } from './universalSkeleton';
 
 export class SkeletonImporter {
   static async importFromFile(file: File): Promise<ImportResult> {
@@ -41,8 +42,9 @@ export class SkeletonImporter {
     } catch (error) {
       return {
         success: false,
-        sourceFormat: 'clipboard',
-        metadata: { bonesImported: 0, bonesMapped: 0, bonesUnmapped: 0 },
+        joints: {},
+        mappings: [],
+        metadata: { sourceFormat: 'clipboard', bonesImported: 0, bonesMapped: 0, bonesUnmapped: 0 },
         warnings: [],
         errors: [error instanceof Error ? error.message : 'Unknown error occurred'],
       };

@@ -5,6 +5,7 @@ import { runProcgenGroundingTests } from './procgen_grounding.test';
 import { runControlSettingsTests } from './controlSettings.test';
 import { runFabrikTests } from './fabrik.test';
 import { runInvariantTests } from './invariants.test';
+import { runModelSimplifyTests } from './modelSimplify.test';
 import { runTimelineBakeTests } from './timelineBake.test';
 import { runManikinFkTests } from './manikin_fk.test';
 
@@ -14,6 +15,7 @@ const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'controlSettings', fn: runControlSettingsTests },
   { name: 'fabrik', fn: runFabrikTests },
   { name: 'invariants', fn: runInvariantTests },
+  { name: 'model_simplify', fn: runModelSimplifyTests },
   { name: 'timeline_bake', fn: runTimelineBakeTests },
   { name: 'manikin_fk', fn: runManikinFkTests },
 ];
