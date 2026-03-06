@@ -103,7 +103,7 @@ export class UniversalSkeletonExporter {
     const id = jointId.toLowerCase();
     if (id.startsWith('l_') || id.includes('left')) return 'left';
     if (id.startsWith('r_') || id.includes('right')) return 'right';
-    if (['root', 'navel', 'sternum', 'collar', 'neck_base', 'neck_upper', 'head'].includes(id)) return 'center';
+    if (['root', 'navel', 'sternum', 'collar', 'neck_base', 'head'].includes(id)) return 'center';
     return undefined;
   }
 

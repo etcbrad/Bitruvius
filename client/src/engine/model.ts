@@ -7,8 +7,7 @@ export const SLENDERBIT_JOINTS: Record<string, Joint> = {
   sternum: { id: 'sternum', label: 'Sternum', parent: 'navel', baseOffset: { x: 0, y: -4 }, currentOffset: { x: 0, y: -4 }, targetOffset: { x: 0, y: -4 }, previewOffset: { x: 0, y: -4 }, rotation: 0 },
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  neck_upper: { id: 'neck_upper', label: 'Neck Upper', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
+    head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
 
   l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.5, y: -1.25 }, currentOffset: { x: -1.5, y: -1.25 }, targetOffset: { x: -1.5, y: -1.25 }, previewOffset: { x: -1.5, y: -1.25 }, mirrorId: 'r_clavicle', rotation: 0 },
   l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: -1.5, y: 3.75 }, currentOffset: { x: -1.5, y: 3.75 }, targetOffset: { x: -1.5, y: 3.75 }, previewOffset: { x: -1.5, y: 3.75 }, mirrorId: 'r_bicep', rotation: 0 },
@@ -40,8 +39,7 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
   sternum: { id: 'sternum', label: 'Sternum', parent: 'navel', baseOffset: { x: 0, y: -4 }, currentOffset: { x: 0, y: -4 }, targetOffset: { x: 0, y: -4 }, previewOffset: { x: 0, y: -4 }, rotation: 0 },
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  neck_upper: { id: 'neck_upper', label: 'Neck Upper', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
+    head: { id: 'head', label: 'Head', parent: 'neck_upper', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
 
   l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.5, y: -1.25 }, currentOffset: { x: -1.5, y: -1.25 }, targetOffset: { x: -1.5, y: -1.25 }, previewOffset: { x: -1.5, y: -1.25 }, mirrorId: 'r_clavicle', rotation: 0 },
   // Humerus length matches clavicle; remaining reach is allocated to the upper arm.
@@ -76,8 +74,7 @@ export const CONNECTIONS: Connection[] = [
   { from: "navel", to: "sternum", type: "bone", label: "Torso", shape: 'cylinder', stretchMode: 'rigid' },
   { from: "sternum", to: "collar", type: "bone", label: "Collar", shape: 'diamond', stretchMode: 'rigid' },
   { from: "collar", to: "neck_base", type: "bone", label: "Neck", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "neck_base", to: "neck_upper", type: "bone", label: "Neck Upper", shape: 'cylinder', stretchMode: 'rigid' },
-  { from: "neck_upper", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
+  { from: "neck_base", to: "head", type: "bone", label: "Head", shape: 'cylinder', stretchMode: 'rigid' },
 
   // Left arm
   { from: "collar", to: "l_clavicle", type: "bone", label: "L_Clavicle", shape: 'cylinder', stretchMode: 'rigid' },

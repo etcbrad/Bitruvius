@@ -483,8 +483,7 @@ export const makeDefaultState = (): SkeletonState => {
   // Simplified shoulder mechanics - direct connections for accordion compression
   const COLLAR_SOCKET_FOLLOW_DEG = 90;
   setFkFollowDeg('collar', 'neck_base', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('neck_base', 'neck_upper', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('neck_upper', 'head', COLLAR_SOCKET_FOLLOW_DEG);
+  setFkFollowDeg('neck_base', 'head', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('l_clavicle', 'l_bicep', COLLAR_SOCKET_FOLLOW_DEG); // Direct: left clavicle -> left bicep
   setFkFollowDeg('l_bicep', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);

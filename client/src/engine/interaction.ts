@@ -446,7 +446,7 @@ export const applyBalanceDragToState = (
   // vertical motion and let horizontal alignment "tension" center the body over the pins.
   // This mimics a paper puppet hanging under gravity: it rises smoothly and recenters
   // instead of shimmying side-to-side with the cursor.
-  const isLiftHandle = draggingId === 'head' || draggingId === 'neck_base' || draggingId === 'neck_upper';
+  const isLiftHandle = draggingId === 'head' || draggingId === 'neck_base';
 
   type PinnedLeg = {
     ankleId: 'l_ankle' | 'r_ankle';
