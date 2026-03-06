@@ -1,4 +1,5 @@
 import type { LookModeId } from './lookModes';
+import type { BalancedNeckConfig } from './balancedNeck';
 
 export type RigidityPreset = 'cardboard' | 'realistic' | 'rubberhose';
 
@@ -261,7 +262,7 @@ export type HeadMask = {
   pixelate: MaskBase['pixelate'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
-   * When empty, the head mask uses `neck_upper` as its relationship.
+   * When empty, the head mask uses `skull` as its relationship.
    *
    * Semantics match `JointMask.relatedJoints`:
    * - 1st entry (driver) acts like a custom "base" joint for direction/length.
@@ -440,6 +441,12 @@ export type SkeletonState = {
     dynamic: boolean;
     restEdges?: Record<string, number>;
   };
+  /**
+   * Build-time proportion control for the abdomen link:
+   * scales the sternum↔navel separation while keeping the upper torso (sternum→collar chain) visually stable.
+   * 1.0 = baseline.
+   */
+  torsoNavelScale: number;
   physicsRigidity: number; // 0..1 macro slider (0=rigid)
   // Default: FK-first with a single planted foot for stability.
   activeRoots: string[];
@@ -493,6 +500,7 @@ export type SkeletonState = {
     minScale: number; // relative to base collar width
     maxScale: number; // relative to base collar width
   };
+  balancedNeck: BalancedNeckConfig;
   /**
    * Per-bone overrides keyed by canonical connection key `${min(a,b)}:${max(a,b)}`.
    * Used for editor controls and physics behavior; avoids mutating module-level CONNECTIONS.

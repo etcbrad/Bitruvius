@@ -115,10 +115,10 @@ export const WIDGETS: Record<
     minFloatSize: { w: 240, h: 200 },
   },
   joint_masks: {
-    title: 'Masks',
+    title: 'Details',
     tabGroup: 'character',
     isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Edit cutout masks and masking behavior.</div>,
+    docs: <div className="text-[11px] text-[#bbb]">Mask uploads, mask transforms, and related rig details.</div>,
     defaultFloatSize: { w: 360, h: 420 },
     minFloatSize: { w: 240, h: 200 },
   },
@@ -126,7 +126,7 @@ export const WIDGETS: Record<
     title: 'Rig Inspector',
     tabGroup: 'character',
     isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Inspect bones, joints, and stretch behavior.</div>,
+    docs: <div className="text-[11px] text-[#bbb]">Deprecated. Use Details for Mask/Joint/Bone/Shape controls.</div>,
     defaultFloatSize: { w: 360, h: 300 },
     minFloatSize: { w: 240, h: 180 },
   },
@@ -274,7 +274,7 @@ export const WIDGET_GLOBAL_ORDER: WidgetId[] = [
 ];
 
 export const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
-  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks', 'bone_inspector'],
+  character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks'],
   physics: ['procgen'],
   animation: ['animation', 'camera'],
   global: WIDGET_GLOBAL_ORDER,

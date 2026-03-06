@@ -61,6 +61,8 @@ import { CONNECTIONS, INITIAL_JOINTS } from './engine/model';
 import { applyGroundRootCorrectionToJoints, computeGroundPivotWorld, computeTouchdownYWorld } from './engine/rooting';
 import { shouldRunPosePhysics, stepPosePhysics } from './engine/physics/posePhysics';
 import { buildWorldPoseFromJoints, worldPoseToOffsets } from './engine/physics/xpbd';
+import { applyBalancedNeckConstraint } from './engine/balancedNeck';
+import { applyNeckBaseCenteredOffsets } from './engine/neckBase';
 import { bakeProcgenLoop, createProcgenRuntime, resetProcgenRuntime, stepProcgenPose, type ProcgenRuntime } from './engine/procedural';
 import { applyDeactivationConstraints, toggleJointDeactivation } from './engine/jointDeactivation';
 import { applyPhysicsMode, getPhysicsBlendMode, createRigidStartPoint } from './engine/physics-config';
@@ -78,9 +80,12 @@ import { AtomicUnitsControl } from './components/AtomicUnitsControl';
 import { HelpTip } from './components/HelpTip';
 import { ProcgenWidget } from './components/ProcgenWidget';
 import { RotationWheelControl } from '@/components/RotationWheelControl';
-import { JointMaskWidget, type MaskDragMode } from '@/components/JointMaskWidget';
+import { DetailsWidget } from '@/components/DetailsWidget';
+import { HumanoidBacklightOverlay } from '@/components/HumanoidBacklightOverlay';
 import { ManikinConsole, ManikinGlobalPanel } from './components/ManikinConsole';
 import { CollapsibleSection } from './components/CollapsibleSection';
+import { BalancedNeckControls } from './components/BalancedNeckControls';
+import { DEFAULT_BALANCED_NECK_CONFIG } from './engine/balancedNeck';
 import type { TransitionIssue } from '@/lib/transitionIssues';
 import {
   BACKGROUND_COLOR_KEY,
@@ -163,6 +168,17 @@ type GridOverlayTransform = {
 };
 
 type WireRestDef = { a: string; b: string; rest: number };
+
+type MaskDragMode =
+  | 'move'
+  | 'widen'
+  | 'expand'
+  | 'shrink'
+  | 'rotate'
+  | 'scale'
+  | 'stretch'
+  | 'skew'
+  | 'anchor';
 
 const TENSION_RELIEF_LABEL = 'TENSION RELIEF';
 const WIDGET_UNDOCK_ENABLED = false;
@@ -304,6 +320,7 @@ export default function App() {
       snappiness: 1.0,
       rigidity: 'cardboard',
       physicsRigidity: 0,
+      balancedNeck: DEFAULT_BALANCED_NECK_CONFIG,
     };
     const snap = snapshotControlSettings(initialManikinState);
     const fallbackCache: ControlSettingsCache = { fk: { ...snap }, ik: { ...snap } };
@@ -449,6 +466,15 @@ export default function App() {
   const baseHipLockRestRef = useRef<number | null>(null);
   const baseCollarLockRestRef = useRef<number | null>(null);
   const baseTorsoDiamondRestRef = useRef<Record<string, number> | null>(null);
+  const torsoNavelScaleDragRef = useRef<null | {
+    baseScale: number;
+    baseLen: number;
+    dir: Point;
+    sternumWorld: Point;
+    navelWorld: Point;
+    navelOffset: Point;
+    sternumOffset: Point;
+  }>(null);
   const hipWalkRuntimeRef = useRef<{ tSec: number }>({ tSec: 0 });
   const rubberbandAnchorPinRef = useRef<{ id: string; target: Point } | null>(null);
   const physicsHandshakeRef = useRef<{ key: string; blend: number }>({ key: '', blend: 1 });
@@ -1198,10 +1224,10 @@ export default function App() {
       return;
     }
 
-    if (focus.stage === 'bone') {
-      activateWidget('bone_inspector');
-      return;
-    }
+	    if (focus.stage === 'bone') {
+	      activateWidget('joint_masks');
+	      return;
+	    }
 
     activateWidget('joint_masks');
   }, [activateWidget, focusBoneKeyForJointId, focusJointId, setState]);
@@ -3344,9 +3370,13 @@ export default function App() {
 		          });
           hingeSignsRef.current = result.hingeSigns;
 
-          const canStabilizeOscillation = !drag && !isDirectManipulation;
-          if (canStabilizeOscillation) {
-            const history = posePhysicsWorldHistoryRef.current;
+	          // Apply balanced neck constraint after physics
+	          const balancedJoints = applyBalancedNeckConstraint(result.joints, prev.balancedNeck);
+	          result.joints = applyNeckBaseCenteredOffsets(balancedJoints, INITIAL_JOINTS);
+
+	          const canStabilizeOscillation = !drag && !isDirectManipulation;
+	          if (canStabilizeOscillation) {
+	            const history = posePhysicsWorldHistoryRef.current;
             const prevWorld = history.prev;
             const prev2World = history.prev2;
             const scale = clamp(prev.viewScale ?? 1, 0.001, 1000);
@@ -5447,6 +5477,19 @@ export default function App() {
               style={{ opacity: shapeOpacity }}
             />
           );
+        case 'trapezoid_inverted': {
+          // Wider toward the "to" joint (x=len) to suggest a skull mass.
+          const h0 = 3.5 * shapeScale;
+          const h1 = 9.0 * shapeScale;
+          return (
+            <polygon
+              points={`0,${-h0} ${len},${-h1} ${len},${h1} 0,${h0}`}
+              fill={fillColor}
+              transform={`translate(${x1}, ${y1}) rotate(${angle})`}
+              style={{ opacity: shapeOpacity }}
+            />
+          );
+        }
         case 'cylinder':
            return (
             <rect
@@ -6026,6 +6069,7 @@ export default function App() {
         const mask = item.mask;
 
         const basePos = getWorldPosition('collar', state.joints, INITIAL_JOINTS);
+        const headPos = getWorldPosition('head', state.joints, INITIAL_JOINTS);
         const secondaryCentroid = null;
 
         const headX = headPos.x * pxPerUnit + centerX;
@@ -6902,16 +6946,6 @@ export default function App() {
             applyEngineTransition('toggle_show_joints', (prev) => ({
               ...prev,
               showJoints: !prev.showJoints,
-            }))
-          }
-        />
-        <Toggle
-          label="Joints Above Masks"
-          active={state.jointsOverMasks}
-          onClick={() =>
-            applyEngineTransition('toggle_joints_over_masks', (prev) => ({
-              ...prev,
-              jointsOverMasks: !prev.jointsOverMasks,
             }))
           }
         />
@@ -7981,10 +8015,6 @@ export default function App() {
         )}
       </div>
 
-      <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
-        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Masks</div>
-        <div className="mt-2 text-[10px] text-[#444]">Mask uploads + adjustments live in the Joint/Mask widget.</div>
-      </div>
     </section>
   );
 
@@ -8072,6 +8102,13 @@ export default function App() {
             </div>
           </div>
         </CollapsibleSection>
+
+        <BalancedNeckControls 
+          config={state.balancedNeck}
+          onConfigChange={(config) => setState(prev => ({ ...prev, balancedNeck: config }))}
+          clavicleConstraintEnabled={state.clavicleConstraintEnabled}
+          onClavicleConstraintChange={(enabled) => setState(prev => ({ ...prev, clavicleConstraintEnabled: enabled }))}
+        />
 
         {WIDGET_GLOBAL_ORDER.map((id) => {
           const meta = WIDGETS[id];
@@ -8390,21 +8427,42 @@ export default function App() {
           {manikinMode ? (
             <div className="flex-1 min-h-0 flex flex-col px-6 pb-6">
               <div className="flex-1 min-h-0 overflow-y-auto mt-4">
-                {manikinSidebarTab === 'manikin' ? (
-                  <ManikinConsole
-                    state={state}
-                    setStateNoHistory={setStateNoHistory}
-                    setStateWithHistory={setStateWithHistory}
-                    beginHistoryAction={beginHistoryAction}
-                    commitHistoryAction={commitHistoryAction}
-                    setSelectedJointId={setSelectedJointId}
-                    setSelectedConnectionKey={setSelectedConnectionKey}
-                    setMaskJointId={setMaskJointIdAndSelect}
-                    setManikinJointAngleDeg={setManikinJointAngleDeg}
-                    poseSnapshots={poseSnapshots}
-                    selectedPoseIndex={manikinPoseSelectedIndex}
-                    setSelectedPoseIndex={setManikinPoseSelectedIndex}
-                    onAddPose={addPoseSnapshot}
+	                {manikinSidebarTab === 'manikin' ? (
+	                  <ManikinConsole
+	                    state={state}
+	                    setStateNoHistory={setStateNoHistory}
+	                    setStateWithHistory={setStateWithHistory}
+	                    selectedJointId={selectedJointId}
+	                    setSelectedJointId={setSelectedJointId}
+	                    selectedConnectionKey={selectedConnectionKey}
+	                    setSelectedConnectionKey={setSelectedConnectionKey}
+	                    maskJointId={maskJointId}
+	                    setMaskJointId={setMaskJointIdAndSelect}
+	                    setManikinJointAngleDeg={setManikinJointAngleDeg}
+	                    currentControlMode={state.controlMode}
+	                    onControlModeChange={(mode) => {
+	                      if (state.controlMode !== mode) {
+	                        armPoseReliefTransition({
+	                          reason: `mode:${state.controlMode}->${mode}`,
+	                          durationMs: 1600,
+	                        });
+	                      }
+	                      applyEngineTransition('set_control_mode', (prev) =>
+	                        prev.controlMode === mode
+	                          ? prev
+	                          : applyFluidHandshake(prev, {
+	                              ...prev,
+	                              controlMode: mode,
+	                              ...controlSettingsCacheRef.current[controlGroupForMode(mode)],
+	                            }),
+	                      );
+	                    }}
+	                    uploadHeadMaskFile={uploadMaskFile}
+	                    uploadJointMaskFile={uploadJointMaskFile}
+	                    poseSnapshots={poseSnapshots}
+	                    selectedPoseIndex={manikinPoseSelectedIndex}
+	                    setSelectedPoseIndex={setManikinPoseSelectedIndex}
+	                    onAddPose={addPoseSnapshot}
                     onUpdatePose={updatePoseSnapshotAtIndex}
                     onApplyPose={applyPoseSnapshotAtIndex}
                   />
@@ -8505,25 +8563,22 @@ export default function App() {
                       <h2
                         className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
                       >
-                        Masks
+                        Details
                       </h2>
                     </div>
                     <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-	                      <JointMaskWidget
-	                        state={state}
-	                        setStateWithHistory={setStateWithHistory}
-	                        addConsoleLog={addConsoleLog}
-	                        maskJointId={maskJointId}
-	                        setMaskJointId={setMaskJointIdAndSelect}
-	                        maskEditArmed={maskEditArmed}
-	                        setMaskEditArmed={setMaskEditArmed}
-                        maskDragMode={maskDragMode}
-                        setMaskDragMode={setMaskDragMode}
-	                        uploadJointMaskFile={uploadJointMaskFile}
-	                        uploadMaskFile={uploadMaskFile}
-	                        copyJointMaskTo={copyJointMaskTo}
-	                        currentControlMode={state.controlMode}
-	                        onControlModeChange={(mode) => {
+                      <DetailsWidget
+                        state={state}
+                        setStateWithHistory={setStateWithHistory}
+                        selectedJointId={selectedJointId}
+                        setSelectedJointId={setSelectedJointId}
+                        selectedConnectionKey={selectedConnectionKey}
+                        setSelectedConnectionKey={setSelectedConnectionKey}
+                        maskJointId={maskJointId}
+                        setMaskJointId={setMaskJointIdAndSelect}
+                        setJointAngleDeg={setJointAngleDeg}
+                        currentControlMode={state.controlMode}
+                        onControlModeChange={(mode) => {
                           if (state.controlMode !== mode) {
                             armPoseReliefTransition({
                               reason: `mode:${state.controlMode}->${mode}`,
@@ -8540,46 +8595,13 @@ export default function App() {
                                 }),
                           );
                         }}
+                        uploadHeadMaskFile={uploadMaskFile}
+                        uploadJointMaskFile={uploadJointMaskFile}
+                        maskEditArmed={maskEditArmed}
+                        setMaskEditArmed={setMaskEditArmed}
+                        maskDragMode={maskDragMode}
+                        setMaskDragMode={setMaskDragMode}
                       />
-                    </div>
-                    
-                    {/* Joint Deactivation Controls */}
-                    <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Anchor size={14} />
-                        <h2
-                          className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}
-                        >
-                          Joint Lock
-                        </h2>
-                      </div>
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] text-white/70">Lock Bicep (Single Bone)</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setStateWithHistory('toggle_bicep_deactivation', (prev) => 
-                                toggleJointDeactivation(prev, 'l_bicep')
-                              );
-                              setStateWithHistory('toggle_bicep_deactivation_r', (prev) => 
-                                toggleJointDeactivation(prev, 'r_bicep')
-                              );
-                            }}
-                            className={`px-2 py-1 rounded text-[9px] font-bold uppercase tracking-widest transition-all ${
-                              (state.deactivatedJoints || new Set<string>()).has('l_bicep') && (state.deactivatedJoints || new Set<string>()).has('r_bicep')
-                                ? 'bg-red-600 text-white'
-                                : 'bg-white/10 text-white/60 hover:bg-white/20'
-                            }`}
-                            title="Lock both bicep joints to create single straight arm bones"
-                          >
-                            {(state.deactivatedJoints || new Set<string>()).has('l_bicep') && (state.deactivatedJoints || new Set<string>()).has('r_bicep') ? 'Locked' : 'Unlock'}
-                          </button>
-                        </div>
-                        <p className="text-[9px] text-white/50">
-                          Locked joints remain perfectly straight, effectively merging bicep and humerus into single bones.
-                        </p>
-                      </div>
                     </div>
                   </section>
                 </WidgetPortal>
@@ -8596,8 +8618,18 @@ export default function App() {
                     </div>
                     <div className="p-3 rounded-xl bg-white/5 border border-white/10">
                       <div className="space-y-3">
-	                        {(() => {
-	                          const connKey = selectedConnectionKey;
+                        <div className="text-[11px] text-[#bbb]">
+                          This widget is deprecated. Use <span className="text-white font-bold">Details</span> for Mask/Joint/Bone/Shape controls.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => activateWidget('joint_masks')}
+                          className="w-full py-2 rounded-lg bg-[#222] hover:bg-[#333] text-[10px] font-bold uppercase transition-all"
+                        >
+                          Open Details
+                        </button>
+                        {false && (() => {
+		                          const connKey = selectedConnectionKey as string;
 	                          if (!connKey) {
 	                            return (
 	                              <div className="text-[10px] text-[#444]">
@@ -8760,6 +8792,7 @@ export default function App() {
                                   <option value="capsule">Capsule</option>
                                   <option value="muscle">Muscle</option>
                                   <option value="tapered">Tapered</option>
+                                  <option value="trapezoid_inverted">Skull (Trapezoid)</option>
                                   <option value="cylinder">Cylinder</option>
                                   <option value="diamond">Diamond</option>
                                   <option value="ribbon">Ribbon</option>
@@ -9168,6 +9201,128 @@ export default function App() {
                         }))
                       }
                     />
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">TORSO</div>
+                      <div className="text-[10px] font-mono text-[#bbb] tabular-nums">
+                        {Math.round(clamp(state.torsoNavelScale ?? 1, 0.5, 2) * 100)}%
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.6}
+                      max={1.6}
+                      step={0.01}
+                      value={clamp(state.torsoNavelScale ?? 1, 0.6, 1.6)}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        beginHistoryAction('torso_navel_scale');
+                        const live = stateLiveRef.current;
+                        const n = live.joints.navel;
+                        const s = live.joints.sternum;
+                        if (!n || !s) return;
+                        const navelWorld = getWorldPosition('navel', live.joints, INITIAL_JOINTS, 'preview');
+                        const sternumWorld = getWorldPosition('sternum', live.joints, INITIAL_JOINTS, 'preview');
+                        const dx = navelWorld.x - sternumWorld.x;
+                        const dy = navelWorld.y - sternumWorld.y;
+                        const d = Math.hypot(dx, dy);
+                        if (!Number.isFinite(d) || d < 1e-6) return;
+                        torsoNavelScaleDragRef.current = {
+                          baseScale: clamp(live.torsoNavelScale ?? 1, 0.5, 2.0),
+                          baseLen: d,
+                          dir: { x: dx / d, y: dy / d },
+                          sternumWorld: { ...sternumWorld },
+                          navelWorld: { ...navelWorld },
+                          navelOffset: { ...n.previewOffset },
+                          sternumOffset: { ...s.previewOffset },
+                        };
+                      }}
+                      onPointerUp={(e) => {
+                        e.stopPropagation();
+                        torsoNavelScaleDragRef.current = null;
+                        commitHistoryAction();
+                      }}
+                      onPointerCancel={(e) => {
+                        e.stopPropagation();
+                        torsoNavelScaleDragRef.current = null;
+                        commitHistoryAction();
+                      }}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const desiredScale = clamp(parseFloat(e.target.value), 0.5, 2.0);
+                        const drag = torsoNavelScaleDragRef.current;
+
+                        const apply = (prev: SkeletonState, snap: typeof drag) => {
+                          const n = prev.joints.navel;
+                          const s = prev.joints.sternum;
+                          if (!n || !s) return prev;
+                          if (!snap) return { ...prev, torsoNavelScale: desiredScale };
+                          const relativeScale = snap.baseScale > 1e-6 ? desiredScale / snap.baseScale : desiredScale;
+                          const desiredLen = snap.baseLen * relativeScale;
+                          const desiredNavelWorld = {
+                            x: snap.sternumWorld.x + snap.dir.x * desiredLen,
+                            y: snap.sternumWorld.y + snap.dir.y * desiredLen,
+                          };
+                          const delta = {
+                            x: desiredNavelWorld.x - snap.navelWorld.x,
+                            y: desiredNavelWorld.y - snap.navelWorld.y,
+                          };
+                          const nextNavelOffset = { x: snap.navelOffset.x + delta.x, y: snap.navelOffset.y + delta.y };
+                          const nextSternumOffset = { x: snap.sternumOffset.x - delta.x, y: snap.sternumOffset.y - delta.y };
+                          const nextJoints = {
+                            ...prev.joints,
+                            navel: {
+                              ...n,
+                              baseOffset: nextNavelOffset,
+                              previewOffset: nextNavelOffset,
+                              targetOffset: nextNavelOffset,
+                              currentOffset: nextNavelOffset,
+                            },
+                            sternum: {
+                              ...s,
+                              baseOffset: nextSternumOffset,
+                              previewOffset: nextSternumOffset,
+                              targetOffset: nextSternumOffset,
+                              currentOffset: nextSternumOffset,
+                            },
+                          };
+                          return { ...prev, torsoNavelScale: desiredScale, joints: nextJoints };
+                        };
+
+                        if (drag) {
+                          setStateNoHistory((prev) => apply(prev, drag));
+                        } else {
+                          setStateWithHistory('torso_navel_scale', (prev) => {
+                            const live = prev;
+                            const navelWorld = getWorldPosition('navel', live.joints, INITIAL_JOINTS, 'preview');
+                            const sternumWorld = getWorldPosition('sternum', live.joints, INITIAL_JOINTS, 'preview');
+                            const dx = navelWorld.x - sternumWorld.x;
+                            const dy = navelWorld.y - sternumWorld.y;
+                            const d = Math.hypot(dx, dy);
+                            if (!Number.isFinite(d) || d < 1e-6) return { ...prev, torsoNavelScale: desiredScale };
+                            const n = live.joints.navel;
+                            const s = live.joints.sternum;
+                            if (!n || !s) return { ...prev, torsoNavelScale: desiredScale };
+                            const snap = {
+                              baseScale: clamp(live.torsoNavelScale ?? 1, 0.5, 2.0),
+                              baseLen: d,
+                              dir: { x: dx / d, y: dy / d },
+                              sternumWorld: { ...sternumWorld },
+                              navelWorld: { ...navelWorld },
+                              navelOffset: { ...n.previewOffset },
+                              sternumOffset: { ...s.previewOffset },
+                            };
+                            return apply(prev, snap);
+                          });
+                        }
+                      }}
+                      className="w-full accent-white bg-[#222] h-1 rounded-full appearance-none cursor-pointer"
+                      title="TORSO: scales the navel position (abdomen) while keeping the sternum/collar stack visually stable."
+                    />
+                    <div className="text-[10px] text-[#555]">
+                      Sets the navel↔sternum link length (affects the abdominal triangle in Backlight).
+                    </div>
                   </div>
 	                  <div className="mt-2 flex items-center justify-between gap-3">
 	                    <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Torso Diamond</div>
@@ -10114,28 +10269,18 @@ export default function App() {
                         </div>
                       </div>
 
-                <div className="space-y-2 mb-4">
-                  <Toggle
-                    label="Joints"
-                    active={state.showJoints}
-                    onClick={() =>
-                      applyEngineTransition('toggle_show_joints', (prev) => ({
-                        ...prev,
-                        showJoints: !prev.showJoints,
-                      }))
-                    }
-                  />
-                  <Toggle
-                    label="Joints Above Masks"
-                    active={state.jointsOverMasks}
-                    onClick={() =>
-                      applyEngineTransition('toggle_joints_over_masks', (prev) => ({
-                        ...prev,
-                        jointsOverMasks: !prev.jointsOverMasks,
-                      }))
-                    }
-                  />
-                </div>
+	                <div className="space-y-2 mb-4">
+	                  <Toggle
+	                    label="Joints"
+	                    active={state.showJoints}
+	                    onClick={() =>
+	                      applyEngineTransition('toggle_show_joints', (prev) => ({
+	                        ...prev,
+	                        showJoints: !prev.showJoints,
+	                      }))
+	                    }
+	                  />
+	                </div>
                       
                       {/* Background Layer */}
                       <div className="mb-4">
@@ -11213,14 +11358,7 @@ export default function App() {
                         )}
                       </div>
 
-                      <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
-                        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Masks</div>
-                        <div className="mt-2 text-[10px] text-[#444]">
-                          Mask uploads + adjustments live in the Joint/Mask widget.
-                        </div>
-                      </div>
-
-            </section>
+	            </section>
                 </WidgetPortal>
 
                 <WidgetPortal id="joint_hierarchy">
@@ -11719,26 +11857,32 @@ export default function App() {
                 transform={gridOverlayTransform}
                       />
 
-              {/* Backlight Effect */}
+              {/* Backlight / Manikin Overlay (Volumetric primitives) */}
               {backlightEnabled && (
-                <defs>
-                  <radialGradient id="backlight-gradient">
-                    <stop offset="0%" stopColor="rgba(255, 220, 100, 0.15)" />
-                    <stop offset="50%" stopColor="rgba(255, 200, 50, 0.08)" />
-                    <stop offset="100%" stopColor="rgba(255, 180, 0, 0.02)" />
-                  </radialGradient>
-                </defs>
-              )}
-              {backlightEnabled && (
-                <rect
-                  x={-canvasSize.width}
-                  y={-canvasSize.height}
-                  width={canvasSize.width * 3}
-                  height={canvasSize.height * 3}
-                  fill="url(#backlight-gradient)"
-                  style={{ mixBlendMode: 'screen' }}
-                  pointerEvents="none"
-                />
+                <>
+                  <defs>
+                    <radialGradient id="backlight-gradient">
+                      <stop offset="0%" stopColor="rgba(0, 255, 136, 0.10)" />
+                      <stop offset="55%" stopColor="rgba(170, 85, 255, 0.06)" />
+                      <stop offset="100%" stopColor="rgba(0, 0, 0, 0.00)" />
+                    </radialGradient>
+                  </defs>
+                  <rect
+                    x={-canvasSize.width}
+                    y={-canvasSize.height}
+                    width={canvasSize.width * 3}
+                    height={canvasSize.height * 3}
+                    fill="url(#backlight-gradient)"
+                    style={{ mixBlendMode: 'screen' }}
+                    pointerEvents="none"
+                  />
+                  <HumanoidBacklightOverlay
+                    state={state}
+                    canvasSize={canvasSize}
+                    backlightEnabled={backlightEnabled}
+                    onZoneMouseDown={handleMouseDown}
+                  />
+                </>
               )}
 
               {/* Engine Content */}

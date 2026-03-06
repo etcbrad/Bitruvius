@@ -119,6 +119,13 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 2026-03-03
 - Head drag smoothness:
 
+2026-03-06
+- Added humanoid volumetric Backlight overlay (head circle + jaw oval + shoulder trapezoid + ribcage + abdominal triangle + pelvic bowl) with green core + purple halo and per-shape blur (`/Users/bradleygeiser/Downloads/Bitruvius 2/client/src/components/HumanoidBacklightOverlay.tsx` + wiring in `/Users/bradleygeiser/Downloads/Bitruvius 2/client/src/App.tsx`).
+- Added `TORSO` proportion slider (`torsoNavelScale`) under Rig Controls → Shapeshifting; adjusts navel↔sternum separation while keeping sternum/collar visually stable (moves navel + counter-moves sternum offsets).
+- Backlight overlay primitives are clickable “influence zones” (head → `neck_base`, rib/shoulder → `sternum`, abdomen/pelvis → `navel`) to improve hit targets.
+- Typecheck/tests: `npm run check` + `npm test` pass.
+- Playwright capture: `output/web-game/backlight-humanoid-2026-03-06-v6/shot-0.png` shows Backlight ON with the new primitives.
+
 2026-03-05
 - COORD HUD: double-clicking the coordinate readout copies the current pose snapshot as code to clipboard (`client/src/App.tsx`).
 - Sidebar footer: added a persistent Export panel at the bottom of the side console with buttons for Code, File (state .json), PNG, SVG, Video (WebM), and GIF (PNG-frames ZIP) (`client/src/App.tsx`).
@@ -205,3 +212,11 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 - Added a ~1.6s "pose relief" transition after drops/mode switches: blends wire rest lengths toward the current pose and (for non-root drags) pins the dropped joint so it lands exactly with no post-drop swimming (`client/src/App.tsx`, `client/src/engine/physics/posePhysics.ts`).
 - Checks: `npm run check` + `npm test` pass.
 - Playwright smoke: `output/web-game/ik-fk-relief-2026-03-05/shot-0.png`, `output/web-game/ik-fk-relief-2026-03-05/state-0.json` (dev server needed escalated run; sandbox `npm run dev` hit `tsx` IPC pipe EPERM).
+
+2026-03-06
+- Fix: restore required state field `balancedNeck` (defaults + sanitizer) so `npm run check` is clean again (`client/src/engine/settings.ts`).
+- Physics: removed the old pose-physics neck_base pin that used the legacy balanced-neck target; neck_base stays centered via the new centering projection (`client/src/engine/physics/posePhysics.ts`).
+- Runtime: after applying `applyBalancedNeckConstraint`, immediately re-center neck_base so switching/physics preserves the clavicle-midpoint behavior (`client/src/App.tsx`).
+- Tests: updated model simplify expectations for the new `neck_base → skull → head` chain (`script/tests/modelSimplify.test.ts`).
+- Build/test: `npm run check` + `npm test` pass.
+- Saved standalone cutout-rigger prototype HTML for later engine integration (`docs/prototypes/pyxl.puppt-cutout-rigger.html`).

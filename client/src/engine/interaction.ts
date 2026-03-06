@@ -1,6 +1,10 @@
 import type { SkeletonState, Point } from './types';
 import { INITIAL_JOINTS } from './model';
-import { getWorldPosition } from './kinematics';
+import { getWorldPosition, unwrapAngleRad } from './kinematics';
+import { solveFabrikChainOffsets } from './ik/fabrik';
+import { clampClavicleTargetAngleRad } from './clavicleConstraint';
+import { applyManikinFkRotation } from './manikinFk';
+import { applyNeckBaseCenteredOffsets, computeNeckBaseCenteredWorld } from './neckBase';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -25,36 +29,6 @@ const isFinitePoint = (p: Point): boolean =>
 
 const vectorLength = (v: Point) => Math.hypot(v.x, v.y);
 
-// Helper function to center neck_base between clavicles
-const centerNeckBaseBetweenClavicles = (joints: SkeletonState['joints']): SkeletonState['joints'] => {
-  const updatedJoints = { ...joints };
-  
-  // Simple implementation: get world positions and calculate midpoint
-  const lClavicleWorld = getWorldPosition('l_clavicle', joints, INITIAL_JOINTS, 'preview');
-  const rClavicleWorld = getWorldPosition('r_clavicle', joints, INITIAL_JOINTS, 'preview');
-  const collarWorld = getWorldPosition('collar', joints, INITIAL_JOINTS, 'preview');
-  
-  if (lClavicleWorld && rClavicleWorld && collarWorld) {
-    // Calculate midpoint between clavicles
-    const midX = (lClavicleWorld.x + rClavicleWorld.x) / 2;
-    const midY = (lClavicleWorld.y + rClavicleWorld.y) / 2;
-    
-    // Calculate desired offset from collar to midpoint
-    const desiredOffsetX = midX - collarWorld.x;
-    const desiredOffsetY = midY - collarWorld.y;
-    
-    // Update neck_base joint offset
-    if (updatedJoints.neck_base) {
-      updatedJoints.neck_base = {
-        ...updatedJoints.neck_base,
-        previewOffset: { x: desiredOffsetX, y: desiredOffsetY }
-      };
-    }
-  }
-  
-  return updatedJoints;
-};
-
 const jointLength = (
   id: string,
   joints: SkeletonState['joints'],
@@ -73,10 +47,10 @@ const getIkRootForEffector = (effectorId: string): string | null => {
   // IMPORTANT: keep these in sync with the current rig in `src/engine/model.ts`.
   //
   // "Top → bottom" normalization:
-  // - Neck/head pulls the neck chain but does not translate the torso (root at collar).
+  // - Head pulls the skull/neck chain but does not translate the torso (root at collar).
   // - Arms solve from clavicle down (root at clavicle).
   // - Legs solve from hip down (root at hip).
-  if (effectorId === 'neck_base') return 'collar';
+  if (effectorId === 'head' || effectorId === 'skull') return 'collar';
   if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_clavicle';
   if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_clavicle';
   if (effectorId === 'l_ankle' || effectorId === 'l_toe') return 'l_hip';
@@ -157,6 +131,31 @@ export const applyDragToState = (
 
   const nextJoints = { ...prev.joints };
 
+  // Neck base is a centered slider on the clavicle-to-clavicle collar bar.
+  // Dragging it translates the whole collar bar (both clavicles) while keeping the handle centered.
+  if (draggingId === 'neck_base' && nextJoints.l_clavicle && nextJoints.r_clavicle) {
+    const mid = computeNeckBaseCenteredWorld(nextJoints, INITIAL_JOINTS);
+    if (!mid) return prev;
+    const dx = mouseWorld.x - mid.x;
+    const dy = mouseWorld.y - mid.y;
+
+    const translateClavicle = (id: 'l_clavicle' | 'r_clavicle') => {
+      const j = nextJoints[id];
+      if (!j?.parent) return;
+      const w = getWorldPosition(id, nextJoints, INITIAL_JOINTS, 'preview');
+      const pw = getWorldPosition(j.parent, nextJoints, INITIAL_JOINTS, 'preview');
+      if (!isFinitePoint(w) || !isFinitePoint(pw)) return;
+      const off = { x: (w.x + dx) - pw.x, y: (w.y + dy) - pw.y };
+      if (!isFinitePoint(off)) return;
+      nextJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
+    };
+
+    translateClavicle('l_clavicle');
+    translateClavicle('r_clavicle');
+
+    return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
+  }
+
   
   // Collar as shoulder socket: in FK/Cardboard, rotating the collar rotates its entire subtree (neck/head + arms)
   // according to per-bone `fkFollowDeg` settings in `connectionOverrides`.
@@ -197,7 +196,7 @@ export const applyDragToState = (
       next.collar = { ...collar, previewOffset: newPreview, targetOffset: newPreview, currentOffset: newPreview };
     }
 
-    return { ...prev, joints: next };
+    return { ...prev, joints: applyNeckBaseCenteredOffsets(next, INITIAL_JOINTS) };
   }
   
   // Special handling for sacrum: rotate everything above it instead of translating.
@@ -267,7 +266,7 @@ export const applyDragToState = (
       currentOffset: INITIAL_JOINTS.sacrum.baseOffset,
     };
     
-    return { ...prev, joints: nextJoints };
+    return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
   }
 
   let parentPos = { x: 0, y: 0 };
@@ -340,7 +339,7 @@ export const applyDragToState = (
         };
       }
     }
-    return { ...prev, joints: nextJoints };
+    return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
   }
 
   // 2. FK / Default Dragging Logic
@@ -410,7 +409,7 @@ export const applyDragToState = (
         }
       }
 
-      return { ...prev, joints: nextJoints };
+      return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
     }
   }
 
@@ -444,7 +443,7 @@ export const applyDragToState = (
     };
   }
 
-  return { ...prev, joints: nextJoints };
+  return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
 };
 
 export const applyBalanceDragToState = (
@@ -647,5 +646,5 @@ export const applyBalanceDragToState = (
     }
   }
 
-  return { ...prev, joints: nextJoints };
+  return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
 };

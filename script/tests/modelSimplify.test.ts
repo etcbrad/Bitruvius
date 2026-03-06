@@ -28,8 +28,8 @@ export const runModelSimplifyTests = () => {
   requireConn('navel', 'sternum');
   requireConn('sternum', 'collar');
   requireConn('collar', 'neck_base');
-  requireConn('neck_base', 'neck_upper');
-  requireConn('neck_upper', 'head');
+  requireConn('neck_base', 'skull');
+  requireConn('skull', 'head');
 
   // Left arm
   requireConn('collar', 'l_clavicle');
@@ -57,4 +57,3 @@ export const runModelSimplifyTests = () => {
   requireConn('r_knee', 'r_ankle');
   requireConn('r_ankle', 'r_toe');
 };
-

@@ -3,6 +3,7 @@ import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
 import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode } from './types';
+import { DEFAULT_BALANCED_NECK_CONFIG, type BalancedNeckConfig } from './balancedNeck';
 import {
   DEFAULT_PROCEDURAL_BITRUVIAN_GAIT,
   DEFAULT_PROCEDURAL_BITRUVIAN_IDLE,
@@ -24,7 +25,15 @@ const isFiniteVector = (value: unknown): value is Point =>
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
 const ALLOWED_SHAPES = new Set([
-  'bone', 'cylinder', 'diamond', 'muscle', 'tapered', 'wire', 'tendon', 'wireframe'
+  'bone',
+  'cylinder',
+  'diamond',
+  'muscle',
+  'tapered',
+  'trapezoid_inverted',
+  'wire',
+  'tendon',
+  'wireframe',
 ]);
 
 const CONTROL_MODE_SET = new Set<ControlMode>(['Cardboard', 'Rubberband', 'IK', 'JointDrag']);
@@ -366,6 +375,39 @@ const sanitizeCollarLock = (rawValue: unknown, base: SkeletonState['collarLock']
   };
 };
 
+const sanitizeBalancedNeck = (rawValue: unknown, base: BalancedNeckConfig): BalancedNeckConfig => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+
+  const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : base.enabled;
+  const clavicleInfluence = isFiniteNumber(raw.clavicleInfluence) ? clamp(raw.clavicleInfluence, 0, 1) : base.clavicleInfluence;
+  const torsoInfluence = isFiniteNumber(raw.torsoInfluence) ? clamp(raw.torsoInfluence, 0, 1) : base.torsoInfluence;
+  const followStrength = isFiniteNumber(raw.followStrength) ? clamp(raw.followStrength, 0, 1) : base.followStrength;
+  const smoothingFactor = isFiniteNumber(raw.smoothingFactor) ? clamp(raw.smoothingFactor, 0, 1) : base.smoothingFactor;
+
+  const rawRot =
+    raw.rotationInheritance && typeof raw.rotationInheritance === 'object'
+      ? (raw.rotationInheritance as Record<string, unknown>)
+      : null;
+
+  const rotationInheritance: BalancedNeckConfig['rotationInheritance'] = {
+    enabled: typeof rawRot?.enabled === 'boolean' ? (rawRot.enabled as boolean) : base.rotationInheritance.enabled,
+    torsoInfluence: isFiniteNumber(rawRot?.torsoInfluence)
+      ? clamp(rawRot!.torsoInfluence as number, 0, 1)
+      : base.rotationInheritance.torsoInfluence,
+    lagFactor: isFiniteNumber(rawRot?.lagFactor) ? clamp(rawRot!.lagFactor as number, 0, 1) : base.rotationInheritance.lagFactor,
+  };
+
+  return {
+    enabled,
+    clavicleInfluence,
+    torsoInfluence,
+    followStrength,
+    smoothingFactor,
+    rotationInheritance,
+  };
+};
+
 const sanitizeBoneStyle = (rawValue: unknown, base: SkeletonState['boneStyle']): SkeletonState['boneStyle'] => {
   if (!rawValue || typeof rawValue !== 'object') return base;
   const raw = rawValue as Record<string, unknown>;
@@ -536,6 +578,7 @@ export const makeDefaultState = (): SkeletonState => {
 	    hardStop: true, // Enable hard stops for rigid joint limits
       shapeshiftingEnabled: false,
       torsoDiamond: { enabled: false, dynamic: false },
+      torsoNavelScale: 1.0,
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
 	    // Default: FK-first with a single planted foot for stability.
 	    activeRoots: ['r_ankle'],
@@ -645,10 +688,10 @@ export const makeDefaultState = (): SkeletonState => {
     views: defaultViews,
     activeViewId: 'front',
     boneStyle: { hueT: 0, lightness: 0 },
-    hipLock: {
-      enabled: false,
-      extendCompressEnabled: false,
-      restLen: undefined,
+	    hipLock: {
+	      enabled: false,
+	      extendCompressEnabled: false,
+	      restLen: undefined,
       minScale: 1,
       maxScale: 1,
       fkEnabled: false,
@@ -658,11 +701,12 @@ export const makeDefaultState = (): SkeletonState => {
       pelvisBiasEnabled: false,
       pelvisBiasSide: 'below',
       pelvisBiasAmount: 1,
-    },
-    collarLock: { enabled: false, extendCompressEnabled: false, restLen: undefined, minScale: 1, maxScale: 1 },
-    connectionOverrides: defaultConnectionOverrides,
-  };
-};
+	    },
+	    collarLock: { enabled: false, extendCompressEnabled: false, restLen: undefined, minScale: 1, maxScale: 1 },
+	    balancedNeck: DEFAULT_BALANCED_NECK_CONFIG,
+	    connectionOverrides: defaultConnectionOverrides,
+	  };
+	};
 
 // Migration utilities for backward compatibility
 const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { assets: Record<string, CutoutAsset>, cutoutSlots: Record<string, CutoutSlot> } => {
@@ -894,6 +938,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
   const hipLock = sanitizeHipLock((raw as any).hipLock, base.hipLock);
   const collarLock = sanitizeCollarLock((raw as any).collarLock, base.collarLock);
   const torsoDiamond = sanitizeTorsoDiamond((raw as any).torsoDiamond, base.torsoDiamond);
+  const balancedNeck = sanitizeBalancedNeck((raw as any).balancedNeck, base.balancedNeck);
 
   const rawKeyframes = Array.isArray(rawClip?.keyframes) ? rawClip!.keyframes : [];
   const keyframeByFrame = new Map<number, { frame: number; pose: { joints: Record<string, Point> } }>();
@@ -1202,6 +1247,9 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
           ? (raw as any).shapeshiftingEnabled
           : base.shapeshiftingEnabled,
       torsoDiamond,
+      torsoNavelScale: isFiniteNumber((raw as any).torsoNavelScale)
+        ? clamp((raw as any).torsoNavelScale as number, 0.5, 2.0)
+        : base.torsoNavelScale,
 	    physicsRigidity: finalPhysicsRigidity,
 	    activeRoots,
 	    deactivatedJoints: raw.deactivatedJoints instanceof Set ? raw.deactivatedJoints : base.deactivatedJoints,
@@ -1241,13 +1289,14 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     cutoutRig,
     views,
     activeViewId,
-    boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),
-    hipLock,
-    collarLock,
-    connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
-    viewScale,
-    viewOffset,
-  };
+	    boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),
+	    hipLock,
+	    collarLock,
+	    balancedNeck,
+	    connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
+	    viewScale,
+	    viewOffset,
+	  };
   return { state, issues };
 };
 

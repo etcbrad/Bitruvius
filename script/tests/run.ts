@@ -8,6 +8,7 @@ import { runInvariantTests } from './invariants.test';
 import { runModelSimplifyTests } from './modelSimplify.test';
 import { runTimelineBakeTests } from './timelineBake.test';
 import { runManikinFkTests } from './manikin_fk.test';
+import { runWheelMathTests } from './wheel_math.test';
 
 const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'rigidity', fn: runRigidityTests },
@@ -18,6 +19,7 @@ const tests: Array<{ name: string; fn: () => void }> = [
   { name: 'model_simplify', fn: runModelSimplifyTests },
   { name: 'timeline_bake', fn: runTimelineBakeTests },
   { name: 'manikin_fk', fn: runManikinFkTests },
+  { name: 'wheel_math', fn: runWheelMathTests },
 ];
 
 let failed = 0;

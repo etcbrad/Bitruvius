@@ -1,0 +1,1482 @@
+<!--
+  Standalone prototype: pyxl.puppt — Cutout Rigger
+  Saved for future engine integration; not currently wired into the Bitruvius app build.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pyxl.puppt — Cutout Rigger</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=Courier+Prime:wght@400;700&display=swap');
+
+  :root {
+    --ink: #0a0a0a;
+    --paper: #f0ebe0;
+    --aged: #d4c9b0;
+    --shadow: #2a1a0a;
+    --accent: #8b1a1a;
+    --joint: #c4860a;
+    --faint: #b8ad98;
+    --panel: #e8e0d0;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'Courier Prime', monospace;
+    min-height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Grain overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.5;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 2px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+    flex-shrink: 0;
+  }
+
+  header h1 {
+    font-family: 'IM Fell English', serif;
+    font-size: 1.4rem;
+    letter-spacing: 0.05em;
+  }
+
+  header .subtitle {
+    font-size: 0.65rem;
+    opacity: 0.6;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .workflow-steps {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--faint);
+    background: var(--panel);
+    flex-shrink: 0;
+  }
+
+  .step {
+    padding: 6px 16px;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-right: 1px solid var(--faint);
+    opacity: 0.4;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .step.active {
+    opacity: 1;
+    background: var(--paper);
+    font-weight: 700;
+  }
+
+  .step.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .step.done { opacity: 0.7; }
+  .step.done::before { content: '✓ '; color: var(--accent); }
+
+  .app-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* LEFT PANEL - canvas */
+  .canvas-area {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background: var(--paper);
+    cursor: crosshair;
+  }
+
+  .canvas-area.mode-select { cursor: default; }
+  .canvas-area.mode-lasso { cursor: crosshair; }
+
+  #main-canvas {
+    position: absolute;
+    top: 0; left: 0;
+  }
+
+  #overlay-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+  }
+
+  .canvas-hint {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--paper);
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    padding: 4px 12px;
+    opacity: 0.7;
+    pointer-events: none;
+  }
+
+  /* RIGHT PANEL */
+  .right-panel {
+    width: 260px;
+    border-left: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    overflow: hidden;
+  }
+
+  .panel-section {
+    border-bottom: 1px solid var(--faint);
+    padding: 10px 12px;
+  }
+
+  .panel-section h3 {
+    font-family: 'IM Fell English', serif;
+    font-size: 0.8rem;
+    margin-bottom: 8px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    opacity: 0.6;
+  }
+
+  .upload-btn {
+    width: 100%;
+    padding: 10px;
+    background: var(--ink);
+    color: var(--paper);
+    border: none;
+    font-family: 'Courier Prime', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: background 0.2s;
+  }
+
+  .upload-btn:hover { background: var(--accent); }
+
+  #file-input { display: none; }
+
+  /* Part list */
+  .parts-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .part-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    margin-bottom: 4px;
+    background: var(--paper);
+    border: 1px solid var(--faint);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-size: 0.7rem;
+    position: relative;
+  }
+
+  .part-item:hover { border-color: var(--ink); }
+  .part-item.selected { border-color: var(--accent); background: #f8f0e8; }
+
+  .part-thumb {
+    width: 32px;
+    height: 32px;
+    background: var(--aged);
+    border: 1px solid var(--faint);
+    flex-shrink: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .part-thumb canvas { width: 100%; height: 100%; }
+
+  .part-info { flex: 1; min-width: 0; }
+
+  .part-name {
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .part-meta {
+    font-size: 0.6rem;
+    opacity: 0.5;
+  }
+
+  .part-delete {
+    opacity: 0;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--accent);
+    padding: 2px 4px;
+  }
+
+  .part-item:hover .part-delete { opacity: 1; }
+
+  /* Hierarchy tree */
+  .hierarchy-area {
+    padding: 8px 12px;
+    min-height: 80px;
+    font-size: 0.65rem;
+  }
+
+  .tree-node {
+    padding: 3px 6px;
+    cursor: pointer;
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tree-node:hover { background: var(--aged); }
+  .tree-node.selected { background: #f8e8e0; color: var(--accent); }
+
+  .tree-children { padding-left: 16px; border-left: 1px dashed var(--faint); margin-left: 8px; }
+
+  /* Property editor */
+  .props-area {
+    padding: 10px 12px;
+    font-size: 0.7rem;
+    border-top: 1px solid var(--faint);
+  }
+
+  .prop-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .prop-label {
+    width: 70px;
+    flex-shrink: 0;
+    opacity: 0.6;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .prop-input, .prop-select {
+    flex: 1;
+    background: var(--paper);
+    border: 1px solid var(--faint);
+    padding: 3px 6px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 0.7rem;
+    color: var(--ink);
+  }
+
+  .prop-input:focus, .prop-select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .joint-type-btns {
+    display: flex;
+    gap: 4px;
+    flex: 1;
+  }
+
+  .jbtn {
+    flex: 1;
+    padding: 3px;
+    border: 1px solid var(--faint);
+    background: var(--paper);
+    font-size: 0.6rem;
+    cursor: pointer;
+    font-family: 'Courier Prime', monospace;
+    text-align: center;
+    transition: all 0.15s;
+  }
+
+  .jbtn.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .jbtn:hover:not(.active) { border-color: var(--ink); }
+
+  /* Bottom toolbar */
+  .toolbar {
+    padding: 6px 12px;
+    border-top: 1px solid var(--faint);
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .tool-btn {
+    padding: 5px 10px;
+    border: 1px solid var(--ink);
+    background: transparent;
+    font-family: 'Courier Prime', monospace;
+    font-size: 0.65rem;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    transition: all 0.15s;
+  }
+
+  .tool-btn:hover, .tool-btn.active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+
+  .tool-btn.primary {
+    background: var(--accent);
+    color: var(--paper);
+    border-color: var(--accent);
+  }
+
+  .tool-btn.primary:hover { background: var(--shadow); border-color: var(--shadow); }
+
+  /* Mode indicators */
+  .mode-bar {
+    padding: 4px 12px;
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: var(--ink);
+    color: var(--paper);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .mode-indicator {
+    opacity: 0.5;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .mode-indicator.active { opacity: 1; color: var(--joint); }
+
+  /* Selection box */
+  .sel-box {
+    position: absolute;
+    border: 1px dashed var(--accent);
+    background: rgba(139,26,26,0.05);
+    pointer-events: none;
+  }
+
+  /* Joint dot */
+  .joint-dot {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--joint);
+    border: 2px solid var(--ink);
+    transform: translate(-50%, -50%);
+    cursor: move;
+    z-index: 10;
+  }
+
+  /* Floating label popup */
+  .name-popup {
+    position: fixed;
+    background: var(--ink);
+    color: var(--paper);
+    padding: 8px 12px;
+    font-size: 0.75rem;
+    z-index: 1000;
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 200px;
+    border: 1px solid var(--accent);
+  }
+
+  .name-popup input, .name-popup select {
+    background: var(--shadow);
+    border: 1px solid var(--faint);
+    color: var(--paper);
+    padding: 4px 8px;
+    font-family: 'Courier Prime', monospace;
+    font-size: 0.75rem;
+    width: 100%;
+  }
+
+  .name-popup .popup-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .name-popup label {
+    font-size: 0.6rem;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+
+  .name-popup button {
+    padding: 4px 10px;
+    background: var(--accent);
+    color: var(--paper);
+    border: none;
+    font-family: 'Courier Prime', monospace;
+    font-size: 0.7rem;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* Export overlay */
+  .export-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(10,10,10,0.85);
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .export-modal.open { display: flex; }
+
+  .export-box {
+    background: var(--paper);
+    border: 2px solid var(--ink);
+    padding: 24px;
+    max-width: 500px;
+    width: 90%;
+    font-size: 0.75rem;
+  }
+
+  .export-box h2 {
+    font-family: 'IM Fell English', serif;
+    margin-bottom: 12px;
+    font-size: 1.2rem;
+  }
+
+  .export-code {
+    background: var(--ink);
+    color: #9eff9e;
+    padding: 12px;
+    font-size: 0.65rem;
+    max-height: 300px;
+    overflow: auto;
+    white-space: pre;
+    margin-bottom: 12px;
+    font-family: 'Courier Prime', monospace;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--panel); }
+  ::-webkit-scrollbar-thumb { background: var(--faint); }
+
+  .empty-state {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  .empty-state .big-icon {
+    font-size: 4rem;
+    font-family: 'IM Fell English', serif;
+  }
+
+  .empty-state p {
+    font-size: 0.75rem;
+    text-align: center;
+    max-width: 200px;
+    line-height: 1.5;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* Part outline on canvas */
+  .part-outline-selected { outline: 2px solid var(--accent); }
+
+  .skeleton-link {
+    position: absolute;
+    pointer-events: none;
+    z-index: 5;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div style="display:flex;align-items:baseline;gap:10px">
+      <h1>pyxl.puppt</h1>
+      <span class="subtitle">Cutout Rigger — Prototype</span>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="tool-btn" onclick="showExport()">Export JSON</button>
+    <button class="tool-btn" onclick="exportDragonBones()">→ DragonBones</button>
+  </div>
+</header>
+
+<div class="workflow-steps" id="steps">
+  <div class="step active" data-step="1">1. Upload</div>
+  <div class="step" data-step="2">2. Pick Parts</div>
+  <div class="step" data-step="3">3. Label</div>
+  <div class="step" data-step="4">4. Hierarchy</div>
+  <div class="step" data-step="5">5. Properties</div>
+</div>
+
+<div class="mode-bar" id="mode-bar">
+  <span class="mode-indicator active" data-mode="select" onclick="setMode('select')">▶ Select</span>
+  <span class="mode-indicator" data-mode="lasso" onclick="setMode('lasso')">⬡ Lasso</span>
+  <span class="mode-indicator" data-mode="joint" onclick="setMode('joint')">◉ Set Joint</span>
+  <span class="mode-indicator" data-mode="hierarchy" onclick="setMode('hierarchy')">⇅ Link</span>
+  <span style="margin-left:auto;opacity:0.4;font-size:0.55rem" id="mode-hint">Click parts to select — drag to move</span>
+</div>
+
+<div class="app-body">
+
+  <div class="canvas-area mode-select" id="canvas-area">
+    <canvas id="main-canvas"></canvas>
+    <canvas id="overlay-canvas"></canvas>
+    <div class="empty-state" id="empty-state">
+      <div class="big-icon">✂</div>
+      <p>Upload a cutout sheet to begin</p>
+    </div>
+    <div class="canvas-hint" id="canvas-hint"></div>
+  </div>
+
+  <div class="right-panel">
+    <div class="panel-section">
+      <h3>Sheet</h3>
+      <button class="upload-btn" onclick="document.getElementById('file-input').click()">
+        ↑ Upload Cutout Sheet
+      </button>
+      <input type="file" id="file-input" accept="image/*,image/svg+xml" onchange="loadSheet(event)">
+      <div style="margin-top:6px;font-size:0.6rem;opacity:0.5;line-height:1.4">
+        PNG, JPG, or SVG.<br>White/light bg recommended.
+      </div>
+    </div>
+
+    <div class="panel-section" style="padding:8px 12px">
+      <h3>Parts <span id="part-count" style="opacity:0.4">(0)</span></h3>
+      <div style="display:flex;gap:4px;margin-bottom:6px">
+        <button class="tool-btn" style="flex:1;padding:3px" onclick="autoDetectParts()" title="Auto-detect dark shapes">Auto-Detect</button>
+        <button class="tool-btn" style="flex:1;padding:3px" onclick="clearAllParts()">Clear</button>
+      </div>
+    </div>
+
+    <div class="parts-list" id="parts-list">
+      <!-- parts appear here -->
+    </div>
+
+    <div class="props-area" id="props-area" style="display:none">
+      <h3 style="font-family:'IM Fell English',serif;font-size:0.8rem;margin-bottom:8px;opacity:0.6;text-transform:uppercase;letter-spacing:0.05em">Properties</h3>
+      <div class="prop-row">
+        <span class="prop-label">Name</span>
+        <input class="prop-input" id="prop-name" placeholder="torso" onchange="updateSelectedProp('name', this.value)">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Role</span>
+        <select class="prop-select" id="prop-role" onchange="updateSelectedProp('role', this.value)">
+          <option value="">— none —</option>
+          <option>head</option><option>torso</option><option>waist</option>
+          <option>shoulder_l</option><option>shoulder_r</option>
+          <option>bicep_l</option><option>bicep_r</option>
+          <option>fore_l</option><option>fore_r</option>
+          <option>hand_l</option><option>hand_r</option>
+          <option>thigh_l</option><option>thigh_r</option>
+          <option>shin_l</option><option>shin_r</option>
+          <option>foot_l</option><option>foot_r</option>
+          <option>prop</option><option>hair</option><option>tail</option>
+        </select>
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Motion</span>
+        <div class="joint-type-btns">
+          <button class="jbtn active" data-motion="rigid" onclick="setMotion('rigid', this)">Rigid</button>
+          <button class="jbtn" data-motion="flex" onclick="setMotion('flex', this)">Flex</button>
+          <button class="jbtn" data-motion="fluid" onclick="setMotion('fluid', this)">Fluid</button>
+        </div>
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Z-Layer</span>
+        <input class="prop-input" id="prop-z" type="number" value="0" style="width:60px" onchange="updateSelectedProp('z', parseInt(this.value))">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Parent</span>
+        <select class="prop-select" id="prop-parent" onchange="setParent(this.value)">
+          <option value="">— root —</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button class="tool-btn active" id="tool-select" onclick="setMode('select')">Select</button>
+      <button class="tool-btn" id="tool-lasso" onclick="setMode('lasso')">Lasso</button>
+      <button class="tool-btn" id="tool-joint" onclick="setMode('joint')">Joint ◉</button>
+      <button class="tool-btn primary" onclick="addSelectedRegionAsPart()">+ Add Part</button>
+    </div>
+  </div>
+</div>
+
+<!-- Name popup -->
+<div class="name-popup" id="name-popup">
+  <div class="popup-row">
+    <label>Name</label>
+    <input id="popup-name" placeholder="torso" onkeydown="if(event.key==='Enter')confirmNamePopup()">
+  </div>
+  <div class="popup-row">
+    <label>Role</label>
+    <select id="popup-role">
+      <option value="">— none —</option>
+      <option>head</option><option>torso</option><option>waist</option>
+      <option>shoulder_l</option><option>shoulder_r</option>
+      <option>bicep_l</option><option>bicep_r</option>
+      <option>fore_l</option><option>fore_r</option>
+      <option>hand_l</option><option>hand_r</option>
+      <option>thigh_l</option><option>thigh_r</option>
+      <option>shin_l</option><option>shin_r</option>
+      <option>foot_l</option><option>foot_r</option>
+      <option>prop</option><option>hair</option><option>tail</option>
+    </select>
+  </div>
+  <div style="display:flex;gap:6px">
+    <button onclick="confirmNamePopup()" style="flex:1">Confirm</button>
+    <button onclick="closeNamePopup()" style="flex:1;background:transparent;color:var(--paper);border:1px solid var(--faint)">Cancel</button>
+  </div>
+</div>
+
+<!-- Export modal -->
+<div class="export-modal" id="export-modal">
+  <div class="export-box">
+    <h2>Export Rig Data</h2>
+    <div class="export-code" id="export-code"></div>
+    <div style="display:flex;gap:8px">
+      <button class="tool-btn primary" onclick="copyExport()">Copy JSON</button>
+      <button class="tool-btn primary" onclick="downloadExport()">Download</button>
+      <button class="tool-btn" onclick="document.getElementById('export-modal').classList.remove('open')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ───────────────────────────────────────────────────────────────────
+const state = {
+  mode: 'select',         // select | lasso | joint | hierarchy
+  image: null,            // loaded HTMLImageElement
+  imageScale: 1,
+  imageOffset: { x: 0, y: 0 },
+  parts: [],              // [{id, name, role, motion, z, bbox, pivot, parent, jointPos}]
+  selectedId: null,
+  pendingLasso: [],       // lasso points
+  lassoActive: false,
+  dragState: null,        // {partId, startX, startY, origX, origY}
+  linkSource: null,       // for hierarchy linking
+  nextId: 1,
+  highlightId: null,
+};
+
+// ─── Canvas setup ─────────────────────────────────────────────────────────────
+const canvasArea = document.getElementById('canvas-area');
+const mc = document.getElementById('main-canvas');
+const oc = document.getElementById('overlay-canvas');
+const mctx = mc.getContext('2d');
+const octx = oc.getContext('2d');
+
+function resizeCanvases() {
+  const r = canvasArea.getBoundingClientRect();
+  mc.width = oc.width = r.width;
+  mc.height = oc.height = r.height;
+  redraw();
+}
+
+window.addEventListener('resize', resizeCanvases);
+resizeCanvases();
+
+// ─── Load image ───────────────────────────────────────────────────────────────
+function loadSheet(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('empty-state').style.display = 'none';
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    state.image = img;
+    // Fit to canvas
+    const cw = mc.width, ch = mc.height;
+    const scale = Math.min((cw * 0.9) / img.width, (ch * 0.9) / img.height);
+    state.imageScale = scale;
+    state.imageOffset.x = (cw - img.width * scale) / 2;
+    state.imageOffset.y = (ch - img.height * scale) / 2;
+    markStep(1);
+    setStep(2);
+    redraw();
+  };
+  img.src = url;
+}
+
+// ─── Drawing ─────────────────────────────────────────────────────────────────
+function redraw() {
+  const w = mc.width, h = mc.height;
+  mctx.clearRect(0, 0, w, h);
+
+  // Draw sheet
+  if (state.image) {
+    const { x, y } = state.imageOffset;
+    const s = state.imageScale;
+    mctx.drawImage(state.image, x, y, state.image.width * s, state.image.height * s);
+  }
+
+  // Draw parts
+  state.parts.forEach(p => {
+    const [bx, by, bw, bh] = p.bbox;
+    const isSelected = p.id === state.selectedId;
+    const isHighlit = p.id === state.highlightId;
+
+    // part highlight box
+    mctx.save();
+    if (isSelected) {
+      mctx.strokeStyle = '#8b1a1a';
+      mctx.lineWidth = 2;
+      mctx.setLineDash([]);
+    } else if (isHighlit) {
+      mctx.strokeStyle = '#c4860a';
+      mctx.lineWidth = 1.5;
+      mctx.setLineDash([3,3]);
+    } else {
+      mctx.strokeStyle = 'rgba(139,26,26,0.3)';
+      mctx.lineWidth = 1;
+      mctx.setLineDash([4,4]);
+    }
+    mctx.strokeRect(bx + state.imageOffset.x, by + state.imageOffset.y,
+                    bw * state.imageScale, bh * state.imageScale);
+
+    // Part label
+    if (p.name) {
+      mctx.fillStyle = isSelected ? '#8b1a1a' : 'rgba(10,10,10,0.5)';
+      mctx.font = `bold ${11}px "Courier Prime", monospace`;
+      mctx.fillText(p.name, bx * state.imageScale + state.imageOffset.x,
+                    by * state.imageScale + state.imageOffset.y - 3);
+    }
+
+    // Joint pivot
+    if (p.pivot) {
+      const px2 = p.pivot.x * state.imageScale + state.imageOffset.x;
+      const py2 = p.pivot.y * state.imageScale + state.imageOffset.y;
+      mctx.beginPath();
+      mctx.arc(px2, py2, 5, 0, Math.PI * 2);
+      mctx.fillStyle = '#c4860a';
+      mctx.fill();
+      mctx.strokeStyle = '#0a0a0a';
+      mctx.lineWidth = 1.5;
+      mctx.setLineDash([]);
+      mctx.stroke();
+      // crosshair
+      mctx.beginPath();
+      mctx.moveTo(px2 - 8, py2); mctx.lineTo(px2 + 8, py2);
+      mctx.moveTo(px2, py2 - 8); mctx.lineTo(px2, py2 + 8);
+      mctx.strokeStyle = '#c4860a';
+      mctx.lineWidth = 1;
+      mctx.stroke();
+    }
+
+    mctx.restore();
+  });
+
+  // Draw hierarchy links
+  mctx.save();
+  mctx.strokeStyle = 'rgba(196,134,10,0.5)';
+  mctx.lineWidth = 1.5;
+  mctx.setLineDash([5,5]);
+  state.parts.forEach(p => {
+    if (!p.parent) return;
+    const parent = state.parts.find(x => x.id === p.parent);
+    if (!parent) return;
+    const c1 = partCenter(p);
+    const c2 = partCenter(parent);
+    mctx.beginPath();
+    mctx.moveTo(c1.x, c1.y);
+    mctx.lineTo(c2.x, c2.y);
+    mctx.stroke();
+    // arrowhead
+    const angle = Math.atan2(c2.y - c1.y, c2.x - c1.x);
+    const mid = { x: (c1.x + c2.x) / 2, y: (c1.y + c2.y) / 2 };
+    mctx.beginPath();
+    mctx.moveTo(mid.x, mid.y);
+    mctx.lineTo(mid.x - 8 * Math.cos(angle - 0.4), mid.y - 8 * Math.sin(angle - 0.4));
+    mctx.lineTo(mid.x - 8 * Math.cos(angle + 0.4), mid.y - 8 * Math.sin(angle + 0.4));
+    mctx.closePath();
+    mctx.fillStyle = 'rgba(196,134,10,0.7)';
+    mctx.fill();
+  });
+  mctx.restore();
+
+  drawOverlay();
+}
+
+function partCenter(p) {
+  const [bx, by, bw, bh] = p.bbox;
+  return {
+    x: (bx + bw / 2) * state.imageScale + state.imageOffset.x,
+    y: (by + bh / 2) * state.imageScale + state.imageOffset.y,
+  };
+}
+
+function drawOverlay() {
+  octx.clearRect(0, 0, oc.width, oc.height);
+  if (state.lassoActive && state.pendingLasso.length > 1) {
+    octx.beginPath();
+    octx.moveTo(state.pendingLasso[0].x, state.pendingLasso[0].y);
+    state.pendingLasso.forEach(pt => octx.lineTo(pt.x, pt.y));
+    octx.closePath();
+    octx.strokeStyle = '#8b1a1a';
+    octx.lineWidth = 1.5;
+    octx.setLineDash([4, 3]);
+    octx.stroke();
+    octx.fillStyle = 'rgba(139,26,26,0.08)';
+    octx.fill();
+  }
+}
+
+// ─── Interaction ─────────────────────────────────────────────────────────────
+let mouseDown = false;
+
+canvasArea.addEventListener('mousedown', e => {
+  if (!state.image) return;
+  mouseDown = true;
+  const pt = evtToImageCoords(e);
+  const canvasPt = evtToCanvas(e);
+
+  if (state.mode === 'lasso') {
+    state.lassoActive = true;
+    state.pendingLasso = [canvasPt];
+  } else if (state.mode === 'select') {
+    const hit = hitTest(canvasPt);
+    if (hit) {
+      selectPart(hit.id);
+      state.dragState = {
+        partId: hit.id,
+        startX: canvasPt.x,
+        startY: canvasPt.y,
+        origBbox: [...hit.bbox],
+        origPivot: hit.pivot ? { ...hit.pivot } : null,
+      };
+    } else {
+      selectPart(null);
+    }
+  } else if (state.mode === 'joint') {
+    const hit = hitTest(canvasPt);
+    if (hit) {
+      hit.pivot = { x: pt.x, y: pt.y };
+      redraw();
+      renderParts();
+    }
+  } else if (state.mode === 'hierarchy') {
+    const hit = hitTest(canvasPt);
+    if (hit) {
+      if (!state.linkSource) {
+        state.linkSource = hit.id;
+        setHint('Now click the PARENT part');
+      } else {
+        // set parent
+        const child = state.parts.find(p => p.id === state.linkSource);
+        if (child && child.id !== hit.id) {
+          child.parent = hit.id;
+          renderParts();
+          renderHierarchyTree();
+        }
+        state.linkSource = null;
+        setHint('');
+      }
+      redraw();
+    }
+  }
+});
+
+canvasArea.addEventListener('mousemove', e => {
+  if (!mouseDown) {
+    // hover highlight
+    const pt = evtToCanvas(e);
+    const hit = hitTest(pt);
+    const newHl = hit ? hit.id : null;
+    if (newHl !== state.highlightId) {
+      state.highlightId = newHl;
+      redraw();
+    }
+    return;
+  }
+  const pt = evtToCanvas(e);
+  if (state.mode === 'lasso' && state.lassoActive) {
+    state.pendingLasso.push(pt);
+    drawOverlay();
+  } else if (state.mode === 'select' && state.dragState) {
+    const dx = (pt.x - state.dragState.startX) / state.imageScale;
+    const dy = (pt.y - state.dragState.startY) / state.imageScale;
+    const part = state.parts.find(p => p.id === state.dragState.partId);
+    if (part) {
+      part.bbox[0] = state.dragState.origBbox[0] + dx;
+      part.bbox[1] = state.dragState.origBbox[1] + dy;
+      if (state.dragState.origPivot && part.pivot) {
+        part.pivot.x = state.dragState.origPivot.x + dx;
+        part.pivot.y = state.dragState.origPivot.y + dy;
+      }
+      redraw();
+    }
+  }
+});
+
+canvasArea.addEventListener('mouseup', () => {
+  mouseDown = false;
+  if (state.mode === 'lasso' && state.lassoActive && state.pendingLasso.length > 3) {
+    state.lassoActive = false;
+    finalizeLasso();
+  }
+  state.dragState = null;
+  drawOverlay();
+});
+
+canvasArea.addEventListener('mouseleave', () => {
+  mouseDown = false;
+  if (state.lassoActive) { state.lassoActive = false; finalizeLasso(); }
+  state.highlightId = null;
+  redraw();
+});
+
+function evtToCanvas(e) {
+  const r = canvasArea.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function evtToImageCoords(e) {
+  const pt = evtToCanvas(e);
+  return {
+    x: (pt.x - state.imageOffset.x) / state.imageScale,
+    y: (pt.y - state.imageOffset.y) / state.imageScale,
+  };
+}
+
+function hitTest(canvasPt) {
+  // reverse order (top layer first)
+  for (let i = state.parts.length - 1; i >= 0; i--) {
+    const p = state.parts[i];
+    const [bx, by, bw, bh] = p.bbox;
+    const cx = bx * state.imageScale + state.imageOffset.x;
+    const cy = by * state.imageScale + state.imageOffset.y;
+    const cw = bw * state.imageScale;
+    const ch = bh * state.imageScale;
+    if (canvasPt.x >= cx && canvasPt.x <= cx + cw &&
+        canvasPt.y >= cy && canvasPt.y <= cy + ch) {
+      return p;
+    }
+  }
+  return null;
+}
+
+// ─── Lasso to Part ────────────────────────────────────────────────────────────
+function finalizeLasso() {
+  if (state.pendingLasso.length < 3) return;
+  // Compute bounding box of lasso in image coords
+  const pts = state.pendingLasso.map(pt => ({
+    x: (pt.x - state.imageOffset.x) / state.imageScale,
+    y: (pt.y - state.imageOffset.y) / state.imageScale,
+  }));
+  const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  state.pendingLasso = [];
+
+  showNamePopup(minX, minY, maxX - minX, maxY - minY);
+}
+
+// ─── Auto-detect ─────────────────────────────────────────────────────────────
+function autoDetectParts() {
+  if (!state.image) return;
+  // Render image to offscreen canvas, threshold, find blobs
+  const off = document.createElement('canvas');
+  off.width = state.image.width;
+  off.height = state.image.height;
+  const ctx = off.getContext('2d');
+  ctx.drawImage(state.image, 0, 0);
+  const imageData = ctx.getImageData(0, 0, off.width, off.height);
+  const { data, width, height } = imageData;
+
+  // Create mask of dark pixels
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i+1], b = data[i+2];
+    const brightness = (r + g + b) / 3;
+    mask[i/4] = brightness < 180 ? 1 : 0;
+  }
+
+  // Simple flood-fill based blob detection
+  const visited = new Uint8Array(width * height);
+  const blobs = [];
+  const MIN_AREA = 300;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (mask[idx] && !visited[idx]) {
+        // BFS
+        const queue = [idx];
+        visited[idx] = 1;
+        let minX = x, maxX = x, minY = y, maxY = y;
+        let count = 0;
+        while (queue.length) {
+          const ci = queue.pop();
+          count++;
+          const cx = ci % width, cy = Math.floor(ci / width);
+          if (cx < minX) minX = cx;
+          if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy;
+          if (cy > maxY) maxY = cy;
+          const neighbors = [ci-1, ci+1, ci-width, ci+width];
+          neighbors.forEach(ni => {
+            if (ni >= 0 && ni < mask.length && mask[ni] && !visited[ni]) {
+              visited[ni] = 1;
+              queue.push(ni);
+            }
+          });
+        }
+        if (count >= MIN_AREA) {
+          blobs.push({ minX, minY, maxX, maxY, area: count });
+        }
+      }
+    }
+  }
+
+  // Merge nearby blobs
+  const merged = mergeBlobs(blobs, 20);
+
+  // Create parts from blobs
+  merged.forEach((blob, i) => {
+    const part = {
+      id: state.nextId++,
+      name: `part_${i+1}`,
+      role: '',
+      motion: 'rigid',
+      z: i,
+      bbox: [blob.minX, blob.minY, blob.maxX - blob.minX, blob.maxY - blob.minY],
+      pivot: null,
+      parent: null,
+    };
+    // Auto-set pivot to top-center
+    part.pivot = {
+      x: blob.minX + (blob.maxX - blob.minX) / 2,
+      y: blob.minY + 5,
+    };
+    state.parts.push(part);
+  });
+
+  renderParts();
+  renderHierarchyTree();
+  redraw();
+  markStep(2);
+  setStep(3);
+}
+
+function mergeBlobs(blobs, padding) {
+  if (!blobs.length) return blobs;
+  const merged = [...blobs];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < merged.length; i++) {
+      for (let j = i + 1; j < merged.length; j++) {
+        const a = merged[i], b = merged[j];
+        // check overlap with padding
+        if (a.minX - padding < b.maxX && a.maxX + padding > b.minX &&
+            a.minY - padding < b.maxY && a.maxY + padding > b.minY) {
+          merged[i] = {
+            minX: Math.min(a.minX, b.minX),
+            minY: Math.min(a.minY, b.minY),
+            maxX: Math.max(a.maxX, b.maxX),
+            maxY: Math.max(a.maxY, b.maxY),
+            area: a.area + b.area,
+          };
+          merged.splice(j, 1);
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+  }
+  return merged;
+}
+
+// ─── Part management ─────────────────────────────────────────────────────────
+function showNamePopup(bx, by, bw, bh) {
+  const popup = document.getElementById('name-popup');
+  popup.style.display = 'flex';
+  // position near center of canvas
+  popup.style.left = (mc.width / 2 - 100) + canvasArea.getBoundingClientRect().left + 'px';
+  popup.style.top = (mc.height / 2 - 60) + canvasArea.getBoundingClientRect().top + 'px';
+  popup._pending = { bx, by, bw, bh };
+  document.getElementById('popup-name').value = '';
+  document.getElementById('popup-name').focus();
+}
+
+function confirmNamePopup() {
+  const popup = document.getElementById('name-popup');
+  const name = document.getElementById('popup-name').value || `part_${state.nextId}`;
+  const role = document.getElementById('popup-role').value;
+  const { bx, by, bw, bh } = popup._pending;
+  const part = {
+    id: state.nextId++,
+    name,
+    role,
+    motion: 'rigid',
+    z: state.parts.length,
+    bbox: [bx, by, bw, bh],
+    pivot: { x: bx + bw / 2, y: by + 5 },
+    parent: null,
+  };
+  state.parts.push(part);
+  closeNamePopup();
+  selectPart(part.id);
+  renderParts();
+  renderHierarchyTree();
+  redraw();
+  markStep(2);
+  markStep(3);
+}
+
+function closeNamePopup() {
+  document.getElementById('name-popup').style.display = 'none';
+}
+
+function addSelectedRegionAsPart() {
+  if (state.mode !== 'lasso') {
+    setMode('lasso');
+    setHint('Draw a lasso around a part');
+  }
+}
+
+function selectPart(id) {
+  state.selectedId = id;
+  const part = state.parts.find(p => p.id === id);
+  document.getElementById('props-area').style.display = part ? 'block' : 'none';
+  if (part) {
+    document.getElementById('prop-name').value = part.name;
+    document.getElementById('prop-role').value = part.role || '';
+    document.getElementById('prop-z').value = part.z;
+    // motion buttons
+    document.querySelectorAll('.jbtn').forEach(b => {
+      b.classList.toggle('active', b.dataset.motion === part.motion);
+    });
+    // parent select
+    const ps = document.getElementById('prop-parent');
+    ps.innerHTML = '<option value="">— root —</option>';
+    state.parts.filter(p => p.id !== id).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      if (p.id === part.parent) opt.selected = true;
+      ps.appendChild(opt);
+    });
+    markStep(4);
+    markStep(5);
+  }
+  renderParts();
+  redraw();
+}
+
+function updateSelectedProp(key, value) {
+  const part = state.parts.find(p => p.id === state.selectedId);
+  if (part) {
+    part[key] = value;
+    renderParts();
+    redraw();
+  }
+}
+
+function setMotion(val, btn) {
+  document.querySelectorAll('.jbtn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  updateSelectedProp('motion', val);
+}
+
+function setParent(parentId) {
+  const part = state.parts.find(p => p.id === state.selectedId);
+  if (part) {
+    part.parent = parentId ? parseInt(parentId) : null;
+    renderHierarchyTree();
+    redraw();
+  }
+}
+
+function clearAllParts() {
+  state.parts = [];
+  state.selectedId = null;
+  renderParts();
+  renderHierarchyTree();
+  redraw();
+}
+
+// ─── Render parts list ────────────────────────────────────────────────────────
+function renderParts() {
+  const list = document.getElementById('parts-list');
+  document.getElementById('part-count').textContent = `(${state.parts.length})`;
+  list.innerHTML = '';
+  state.parts.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'part-item' + (p.id === state.selectedId ? ' selected' : '');
+    item.innerHTML = `
+      <div class="part-thumb">
+        <canvas width="32" height="32" id="thumb-${p.id}"></canvas>
+      </div>
+      <div class="part-info">
+        <div class="part-name">${p.name}</div>
+        <div class="part-meta">${p.role || '—'} · ${p.motion}</div>
+      </div>
+      <span class="part-delete" onclick="deletePart(${p.id},event)">✕</span>
+    `;
+    item.onclick = () => selectPart(p.id);
+    item.onmouseenter = () => { state.highlightId = p.id; redraw(); };
+    item.onmouseleave = () => { state.highlightId = null; redraw(); };
+    list.appendChild(item);
+
+    // Render thumb
+    if (state.image) {
+      const tc = document.getElementById(`thumb-${p.id}`);
+      if (tc) {
+        const tctx = tc.getContext('2d');
+        const [bx, by, bw, bh] = p.bbox;
+        const s = Math.min(32/bw, 32/bh);
+        tctx.clearRect(0,0,32,32);
+        tctx.drawImage(state.image, bx, by, bw, bh, (32-bw*s)/2, (32-bh*s)/2, bw*s, bh*s);
+      }
+    }
+  });
+}
+
+// ─── Hierarchy tree ───────────────────────────────────────────────────────────
+function renderHierarchyTree() {
+  // build tree in right panel hierarchy area — using the props-area for simplicity
+  // We'll update the parent dropdown when part is selected
+}
+
+// ─── Mode ─────────────────────────────────────────────────────────────────────
+function setMode(mode) {
+  state.mode = mode;
+  canvasArea.className = 'canvas-area mode-' + mode;
+  document.querySelectorAll('.mode-indicator').forEach(el => {
+    el.classList.toggle('active', el.dataset.mode === mode);
+  });
+  document.querySelectorAll('.toolbar .tool-btn[id^=tool-]').forEach(el => {
+    el.classList.toggle('active', el.id === 'tool-' + mode);
+  });
+  const hints = {
+    select: 'Click to select · Drag to reposition',
+    lasso: 'Draw around a part to define it · Release to confirm',
+    joint: 'Click on a part to place its pivot joint',
+    hierarchy: 'Click CHILD first · then click PARENT to link',
+  };
+  setHint(hints[mode] || '');
+}
+
+function setHint(txt) {
+  document.getElementById('canvas-hint').textContent = txt;
+  document.getElementById('mode-hint').textContent = txt ||
+    { select: 'Click parts to select — drag to move', lasso: 'Draw around a part', joint: 'Click to set pivot', hierarchy: 'Click child → parent' }[state.mode];
+}
+
+// ─── Workflow steps ───────────────────────────────────────────────────────────
+function setStep(n) {
+  document.querySelectorAll('.step').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.step) === n);
+  });
+}
+
+function markStep(n) {
+  const el = document.querySelector(`.step[data-step="${n}"]`);
+  if (el) el.classList.add('done');
+}
+
+function deletePart(id, e) {
+  e.stopPropagation();
+  state.parts = state.parts.filter(p => p.id !== id);
+  // Remove as parent reference
+  state.parts.forEach(p => { if (p.parent === id) p.parent = null; });
+  if (state.selectedId === id) {
+    state.selectedId = null;
+    document.getElementById('props-area').style.display = 'none';
+  }
+  renderParts();
+  renderHierarchyTree();
+  redraw();
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
+function buildExportData() {
+  return {
+    version: '1.0',
+    created: new Date().toISOString(),
+    parts: state.parts.map(p => ({
+      id: p.id,
+      name: p.name,
+      role: p.role,
+      motion: p.motion,
+      zOrder: p.z,
+      bbox: { x: Math.round(p.bbox[0]), y: Math.round(p.bbox[1]), w: Math.round(p.bbox[2]), h: Math.round(p.bbox[3]) },
+      pivot: p.pivot ? { x: Math.round(p.pivot.x), y: Math.round(p.pivot.y) } : null,
+      parent: p.parent || null,
+    })),
+    hierarchy: buildHierarchy(),
+  };
+}
+
+function buildHierarchy() {
+  const roots = state.parts.filter(p => !p.parent);
+  function node(p) {
+    const children = state.parts.filter(c => c.parent === p.id);
+    return { id: p.id, name: p.name, children: children.map(node) };
+  }
+  return roots.map(node);
+}
+
+function exportDragonBones() {
+  // Simplified DragonBones-compatible structure
+  const db = {
+    frameRate: 24,
+    name: 'cutout_rig',
+    version: '5.5',
+    compatibleVersion: '5.5',
+    armature: [{
+      type: 'Armature',
+      frameRate: 24,
+      name: 'Armature',
+      bone: state.parts.map(p => ({
+        name: p.name,
+        parent: p.parent ? (state.parts.find(x => x.id === p.parent) || {}).name : undefined,
+        transform: {
+          x: (p.pivot ? p.pivot.x : p.bbox[0] + p.bbox[2]/2),
+          y: (p.pivot ? p.pivot.y : p.bbox[1] + p.bbox[3]/2),
+        }
+      })),
+      slot: state.parts.map((p,i) => ({
+        name: p.name + '_slot',
+        parent: p.name,
+        displayIndex: 0,
+        z: p.z || i,
+      })),
+    }]
+  };
+  showExportWith(JSON.stringify(db, null, 2), 'dragonbones');
+}
+
+function showExport() {
+  showExportWith(JSON.stringify(buildExportData(), null, 2), 'pyxl');
+}
+
+function showExportWith(json, type) {
+  document.getElementById('export-code').textContent = json;
+  document.getElementById('export-modal').classList.add('open');
+  document.getElementById('export-modal').dataset.exportType = type;
+  document.getElementById('export-modal').dataset.exportJson = json;
+}
+
+function copyExport() {
+  navigator.clipboard.writeText(document.getElementById('export-modal').dataset.exportJson);
+}
+
+function downloadExport() {
+  const json = document.getElementById('export-modal').dataset.exportJson;
+  const type = document.getElementById('export-modal').dataset.exportType;
+  const blob = new Blob([json], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = type === 'dragonbones' ? 'rig_dragonbones.json' : 'rig_pyxl.json';
+  a.click();
+}
+
+// ─── Keyboard shortcuts ───────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 's') setMode('select');
+  if (e.key === 'l') setMode('lasso');
+  if (e.key === 'j') setMode('joint');
+  if (e.key === 'h') setMode('hierarchy');
+  if (e.key === 'Delete' && state.selectedId) deletePart(state.selectedId, { stopPropagation: ()=>{} });
+  if (e.key === 'Escape') {
+    closeNamePopup();
+    document.getElementById('export-modal').classList.remove('open');
+    state.lassoActive = false;
+    state.pendingLasso = [];
+    drawOverlay();
+  }
+});
+
+// Wheel zoom
+canvasArea.addEventListener('wheel', e => {
+  if (!state.image) return;
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  const pt = evtToCanvas(e);
+  state.imageOffset.x = pt.x - (pt.x - state.imageOffset.x) * factor;
+  state.imageOffset.y = pt.y - (pt.y - state.imageOffset.y) * factor;
+  state.imageScale *= factor;
+  redraw();
+}, { passive: false });
+
+// Click steps
+document.querySelectorAll('.step').forEach(el => {
+  el.addEventListener('click', () => {
+    const n = parseInt(el.dataset.step);
+    const modeMap = { 2: 'select', 3: 'select', 4: 'hierarchy', 5: 'select' };
+    if (modeMap[n]) setMode(modeMap[n]);
+  });
+});
+
+// Init
+setMode('select');
+setHint('Upload a cutout sheet to begin');
+</script>
+</body>
+</html>
+

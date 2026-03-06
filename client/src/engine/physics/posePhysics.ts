@@ -9,7 +9,8 @@ import type {
   XpbdConfig,
   XpbdConstraint,
 } from './types';
-import { baseLength, buildWorldPoseFromJoints, solveXpbd, worldPoseToOffsets } from './xpbd';
+import { solveXpbd, buildWorldPoseFromJoints, worldPoseToOffsets, baseLength } from './xpbd';
+import { applyNeckBaseCenteredOffsets } from '../neckBase';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -356,7 +357,7 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   // Shoulder-driven collar balance: gently bias collar toward aiming at the shoulder midpoint.
   // Only active in bend/stretch contexts to avoid fighting rigid FK intent.
   // During head/neck direct manipulation, defer to interaction-driven constraints to avoid twitchy competing targets.
-  const draggingHeadOrNeck = input.drag?.id === 'neck_base';
+  const draggingHeadOrNeck = input.drag?.id === 'neck_base' || input.drag?.id === 'head';
   if (!draggingHeadOrNeck && rigidity !== 'cardboard' && (bendEnabled || stretchEnabled) && (invMass.collar ?? 1) > 0) {
     const sternumWorld = world0.sternum;
     const lShoulderWorld = world0.l_upper_arm;
@@ -398,13 +399,14 @@ const stepPosePhysicsInternal = (input: PosePhysicsInput): PosePhysicsOutput => 
   // Convert world positions to local offsets and write them back across preview/target/current
   // to avoid any ghost/delay artifacts.
   const offsets = worldPoseToOffsets(world, baseJoints);
-  const nextJoints: Record<string, Joint> = { ...joints };
+  let nextJoints: Record<string, Joint> = { ...joints };
   for (const id of Object.keys(baseJoints)) {
     const j = nextJoints[id] ?? baseJoints[id];
     const off = offsets[id] ?? j.previewOffset;
     nextJoints[id] = { ...j, previewOffset: off, targetOffset: off, currentOffset: off };
   }
 
+  nextJoints = applyNeckBaseCenteredOffsets(nextJoints, baseJoints);
   return { joints: nextJoints, hingeSigns, world };
 };
 
