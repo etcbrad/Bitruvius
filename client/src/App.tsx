@@ -2229,7 +2229,7 @@ export default function App() {
 
             const boneLenPx = Math.max(1, Math.hypot(jp.x - pp.x, jp.y - pp.y) * 20);
 
-            const neckBasePos = getWorldPosition('neck_base', prev.joints, INITIAL_JOINTS);
+            const collarPos = getWorldPosition('collar', prev.joints, INITIAL_JOINTS);
             const headLenPx = Math.max(1, 1.0 * 20); // Default head length
 
             const w = Math.max(1, processed.width);
@@ -2712,12 +2712,12 @@ export default function App() {
     const vmin = Math.min(canvasSize.width, canvasSize.height);
 
     // Calibrate against the *starting pose* so the grid stays static while the figure moves.
-    const neckBaseWorld = getWorldPosition('neck_base', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
+    const collarWorld = getWorldPosition('collar', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
     const lAnkleWorld = getWorldPosition('l_ankle', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
     const rAnkleWorld = getWorldPosition('r_ankle', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
 
-    const headX = neckBaseWorld.x * scale + centerX;
-    const headY = neckBaseWorld.y * scale + centerY;
+    const headX = collarWorld.x * scale + centerX;
+    const headY = collarWorld.y * scale + centerY;
     const lAnkleX = lAnkleWorld.x * scale + centerX;
     const lAnkleY = lAnkleWorld.y * scale + centerY;
     const rAnkleX = rAnkleWorld.x * scale + centerX;
@@ -5846,7 +5846,7 @@ export default function App() {
       return ov !== undefined ? ov : baseZ;
     };
 
-    const neckBasePos = getWorldPosition('neck_base', state.joints, INITIAL_JOINTS);
+    const neckBasePos = getWorldPosition('collar', state.joints, INITIAL_JOINTS);
     const headLenUnits = 1.0; // Default head length
     const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
 
@@ -6025,7 +6025,7 @@ export default function App() {
       if (item.kind === 'head') {
         const mask = item.mask;
 
-        const basePos = getWorldPosition('neck_base', state.joints, INITIAL_JOINTS);
+        const basePos = getWorldPosition('collar', state.joints, INITIAL_JOINTS);
         const secondaryCentroid = null;
 
         const headX = headPos.x * pxPerUnit + centerX;

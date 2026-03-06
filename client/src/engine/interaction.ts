@@ -1,9 +1,6 @@
+import type { SkeletonState, Point } from './types';
 import { INITIAL_JOINTS } from './model';
-import { getWorldPosition, unwrapAngleRad, vectorLength } from './kinematics';
-import { solveFabrikChainOffsets } from './ik/fabrik';
-import { clampClavicleTargetAngleRad } from './clavicleConstraint';
-import { applyManikinFkRotation } from './manikinFk';
-import type { Point, SkeletonState } from './types';
+import { getWorldPosition } from './kinematics';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -26,6 +23,38 @@ const mirroredOffset = (v: Point): Point => ({ x: -v.x, y: v.y });
 const isFinitePoint = (p: Point): boolean =>
   Number.isFinite(p.x) && Number.isFinite(p.y);
 
+const vectorLength = (v: Point) => Math.hypot(v.x, v.y);
+
+// Helper function to center neck_base between clavicles
+const centerNeckBaseBetweenClavicles = (joints: SkeletonState['joints']): SkeletonState['joints'] => {
+  const updatedJoints = { ...joints };
+  
+  // Simple implementation: get world positions and calculate midpoint
+  const lClavicleWorld = getWorldPosition('l_clavicle', joints, INITIAL_JOINTS, 'preview');
+  const rClavicleWorld = getWorldPosition('r_clavicle', joints, INITIAL_JOINTS, 'preview');
+  const collarWorld = getWorldPosition('collar', joints, INITIAL_JOINTS, 'preview');
+  
+  if (lClavicleWorld && rClavicleWorld && collarWorld) {
+    // Calculate midpoint between clavicles
+    const midX = (lClavicleWorld.x + rClavicleWorld.x) / 2;
+    const midY = (lClavicleWorld.y + rClavicleWorld.y) / 2;
+    
+    // Calculate desired offset from collar to midpoint
+    const desiredOffsetX = midX - collarWorld.x;
+    const desiredOffsetY = midY - collarWorld.y;
+    
+    // Update neck_base joint offset
+    if (updatedJoints.neck_base) {
+      updatedJoints.neck_base = {
+        ...updatedJoints.neck_base,
+        previewOffset: { x: desiredOffsetX, y: desiredOffsetY }
+      };
+    }
+  }
+  
+  return updatedJoints;
+};
+
 const jointLength = (
   id: string,
   joints: SkeletonState['joints'],
@@ -44,7 +73,7 @@ const getIkRootForEffector = (effectorId: string): string | null => {
   // IMPORTANT: keep these in sync with the current rig in `src/engine/model.ts`.
   //
   // "Top → bottom" normalization:
-  // - Head pulls the neck chain but does not translate the torso (root at collar).
+  // - Neck/head pulls the neck chain but does not translate the torso (root at collar).
   // - Arms solve from clavicle down (root at clavicle).
   // - Legs solve from hip down (root at hip).
   if (effectorId === 'neck_base') return 'collar';
@@ -189,7 +218,7 @@ export const applyDragToState = (
     
     // Rotate all joints in the nested kinematic chain above sacrum
     // This respects the hierarchy: Sacrum → Navel → Sternum → Collar (Branch Point)
-    const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 
+    const jointsToRotate = ['navel', 'sternum', 'collar', 
                           'l_rib', 'r_rib',
                           'l_clavicle', 'r_clavicle', 'l_upper_arm', 'r_upper_arm', 'l_elbow', 'r_elbow', 
                           'l_wrist', 'r_wrist', 'l_fingertip', 'r_fingertip'];

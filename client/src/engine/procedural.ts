@@ -99,7 +99,6 @@ export const generateProceduralPose = (args: {
     if (out.joints.navel) out.joints.navel = { x: out.joints.navel.x, y: out.joints.navel.y + breathe };
     if (out.joints.sternum) out.joints.sternum = rotateOffset(out.joints.sternum, s * 2.5 * strength);
     if (out.joints.collar) out.joints.collar = rotateOffset(out.joints.collar, -s * 2.0 * strength);
-    if (out.joints.neck_base) out.joints.neck_base = rotateOffset(out.joints.neck_base, s * 1.5 * strength);
     if (out.joints.l_clavicle) out.joints.l_clavicle = rotateOffset(out.joints.l_clavicle, s * 1.0 * strength);
     if (out.joints.r_clavicle) out.joints.r_clavicle = rotateOffset(out.joints.r_clavicle, -s * 1.0 * strength);
     if (out.joints.l_upper_arm) out.joints.l_upper_arm = rotateOffset(out.joints.l_upper_arm, s * 1.5 * strength);

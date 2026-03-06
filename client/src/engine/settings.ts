@@ -482,7 +482,6 @@ export const makeDefaultState = (): SkeletonState => {
   // Default FK follow: collar acts as shoulder socket. Rotating collar rotates neck/head and both arms.
   // Simplified shoulder mechanics - direct connections for accordion compression
   const COLLAR_SOCKET_FOLLOW_DEG = 90;
-  setFkFollowDeg('collar', 'neck_base', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
   setFkFollowDeg('l_clavicle', 'l_bicep', COLLAR_SOCKET_FOLLOW_DEG); // Direct: left clavicle -> left bicep
   setFkFollowDeg('l_bicep', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
@@ -691,8 +690,8 @@ const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { asse
       name: 'head',
       attachment: {
         type: 'bone',
-        fromJointId: 'neck_base',
-        toJointId: 'neck_base',
+        fromJointId: 'collar',
+        toJointId: 'collar',
       },
       assetId,
       visible: headMask.visible ?? true,

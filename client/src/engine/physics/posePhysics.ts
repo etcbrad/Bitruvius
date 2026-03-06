@@ -142,7 +142,6 @@ const HINGE_LIMITS_DEG: Record<
   r_elbow: { a: 'r_upper_arm', b: 'r_elbow', c: 'r_wrist', min: 5, max: 175 },
   l_knee: { a: 'l_hip', b: 'l_knee', c: 'l_ankle', min: 5, max: 175 },
   r_knee: { a: 'r_hip', b: 'r_knee', c: 'r_ankle', min: 5, max: 175 },
-  // Core joints (conservative; can be tuned later)
   neck_base: { a: 'collar', b: 'neck_base', c: 'collar', min: 20, max: 160 },
   sternum: { a: 'navel', b: 'sternum', c: 'collar', min: 30, max: 150 },
 };

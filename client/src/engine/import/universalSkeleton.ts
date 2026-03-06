@@ -116,8 +116,7 @@ export class UniversalSkeletonConverter {
     'spine': 'sternum',
     'chest': 'sternum',
     'torso': 'sternum',
-    'neck': 'neck_base',
-    'head': 'neck_base',
+    'neck': 'collar',
     
     // Left arm
     'left_shoulder': 'l_clavicle',
@@ -330,7 +329,7 @@ export class UniversalSkeletonConverter {
     return bone.metadata?.type === 'effector' || 
            bone.name?.toLowerCase().includes('hand') ||
            bone.name?.toLowerCase().includes('foot') ||
-           bone.name?.toLowerCase().includes('neck');
+           bone.name?.toLowerCase().includes('collar');
   }
   
   private static findMirrorId(jointId: string): string | undefined {
