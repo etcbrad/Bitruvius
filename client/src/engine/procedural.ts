@@ -100,7 +100,7 @@ export const generateProceduralPose = (args: {
     if (out.joints.sternum) out.joints.sternum = rotateOffset(out.joints.sternum, s * 2.5 * strength);
     if (out.joints.collar) out.joints.collar = rotateOffset(out.joints.collar, -s * 2.0 * strength);
     if (out.joints.neck_base) out.joints.neck_base = rotateOffset(out.joints.neck_base, s * 1.5 * strength);
-    if (out.joints.head) out.joints.head = rotateOffset(out.joints.head, -s * 1.0 * strength);
+    if (out.joints.nose) out.joints.nose = rotateOffset(out.joints.nose, -s * 1.0 * strength);
     if (out.joints.l_clavicle) out.joints.l_clavicle = rotateOffset(out.joints.l_clavicle, s * 1.0 * strength);
     if (out.joints.r_clavicle) out.joints.r_clavicle = rotateOffset(out.joints.r_clavicle, -s * 1.0 * strength);
     if (out.joints.l_upper_arm) out.joints.l_upper_arm = rotateOffset(out.joints.l_upper_arm, s * 1.5 * strength);
@@ -131,7 +131,7 @@ export const generateProceduralPose = (args: {
   if (out.joints.r_wrist) out.joints.r_wrist = rotateOffset(out.joints.r_wrist, -Math.sin(r) * (armSwingDeg * 0.6));
 
   if (out.joints.sternum) out.joints.sternum = rotateOffset(out.joints.sternum, -Math.sin(phase) * 2.0 * strength);
-  if (out.joints.head) out.joints.head = rotateOffset(out.joints.head, Math.sin(phase) * 1.5 * strength);
+  if (out.joints.nose) out.joints.nose = rotateOffset(out.joints.nose, Math.sin(phase) * 1.5 * strength);
 
   return out;
 };

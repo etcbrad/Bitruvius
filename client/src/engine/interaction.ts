@@ -47,7 +47,7 @@ const getIkRootForEffector = (effectorId: string): string | null => {
   // - Head pulls the neck chain but does not translate the torso (root at collar).
   // - Arms solve from clavicle down (root at clavicle).
   // - Legs solve from hip down (root at hip).
-  if (effectorId === 'head') return 'collar';
+  if (effectorId === 'nose') return 'collar';
   if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_clavicle';
   if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_clavicle';
   if (effectorId === 'l_ankle' || effectorId === 'l_toe') return 'l_hip';
@@ -189,7 +189,7 @@ export const applyDragToState = (
     
     // Rotate all joints in the nested kinematic chain above sacrum
     // This respects the hierarchy: Sacrum → Navel → Sternum → Collar (Branch Point)
-    const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 'head', 
+    const jointsToRotate = ['navel', 'sternum', 'collar', 'neck_base', 'nose', 
                           'l_rib', 'r_rib',
                           'l_clavicle', 'r_clavicle', 'l_upper_arm', 'r_upper_arm', 'l_elbow', 'r_elbow', 
                           'l_wrist', 'r_wrist', 'l_fingertip', 'r_fingertip'];
@@ -446,7 +446,7 @@ export const applyBalanceDragToState = (
   // vertical motion and let horizontal alignment "tension" center the body over the pins.
   // This mimics a paper puppet hanging under gravity: it rises smoothly and recenters
   // instead of shimmying side-to-side with the cursor.
-  const isLiftHandle = draggingId === 'head' || draggingId === 'neck_base';
+  const isLiftHandle = draggingId === 'nose' || draggingId === 'neck_base';
 
   type PinnedLeg = {
     ankleId: 'l_ankle' | 'r_ankle';
@@ -488,7 +488,7 @@ export const applyBalanceDragToState = (
   // This avoids "teleporty" balance shifts and produces a more rigid cutout presence.
   const extraPins = Math.max(0, pinnedCount - pinnedAnkles.length);
   // Default state should feel rigid: reduce lag/sway, especially for top handles.
-  const baseFollow = draggingId === 'head' || draggingId === 'neck_base' ? 0.985 : 1.0;
+  const baseFollow = draggingId === 'nose' || draggingId === 'neck_base' ? 0.985 : 1.0;
   const follow = clamp(baseFollow / (1 + extraPins * 0.14), 0.72, 1.0);
 
   const { delta, tension } = (() => {
