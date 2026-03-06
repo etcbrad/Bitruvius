@@ -7,7 +7,7 @@ export const SCALE_FACTOR = 3.5; // Doubled from 1.75
 export const HEAD_UNIT = 50 * SCALE_FACTOR;
 
 export const ANATOMY = {
-  HEAD: 1.0 * HEAD_UNIT,
+  NECK_BASE: 1.0 * HEAD_UNIT,
   HEAD_WIDTH: 0.8 * HEAD_UNIT,
   HEAD_NECK_GAP_OFFSET: 0.1 * HEAD_UNIT,
   COLLAR: 0.4 * HEAD_UNIT, 
@@ -63,7 +63,7 @@ export const BASE_ROTATIONS: RotationValues = {
   torso: 0,
   waist: 0,
   collar: 0,
-  head: 0,
+  neck_base: 0,
   lShoulder: 0, // Changed from -90 to 0 for horizontal arms
   lForearm: 0,
   lWrist: 0,
@@ -92,7 +92,7 @@ export const JOINT_LIMITS: JointLimits = {
   [PartName.Waist]: { min: -180, max: 180 }, 
   [PartName.Torso]: { min: -180, max: 180 },
   [PartName.Collar]: { min: -180, max: 180 },
-  [PartName.Head]: { min: -180, max: 180 },
+  [PartName.NeckBase]: { min: -180, max: 180 },
 
   // Right Arm (relative to parent)
   [PartName.RShoulder]: { min: -180, max: 180 }, 

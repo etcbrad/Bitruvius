@@ -437,9 +437,8 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
       }
     }
 
-    const headPos = getWorldPositionFromOffsets('head', pose.joints, baseJoints);
     const neckBasePos = getWorldPositionFromOffsets('neck_base', pose.joints, baseJoints);
-    const headLenPx = Math.max(1, Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y) * unitScale);
+    const headLenPx = Math.max(1, 1.0 * unitScale); // Default head length since nose joint was removed
 
     for (const ln of lines) {
       const a = getWorldPositionFromOffsets(ln.from, pose.joints, baseJoints);
@@ -562,8 +561,8 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
     if (headMaskImg && scene.headMask?.src && scene.headMask.visible) {
       const mask = scene.headMask;
       const basePos = getWorldPositionFromOffsets('neck_base', pose.joints, baseJoints);
-      const dx = headPos.x - basePos.x;
-      const dy = headPos.y - basePos.y;
+      const dx = 0; // No offset since nose joint was removed
+      const dy = -1.0; // Default head length
       const boneLenPx = Math.max(1, Math.hypot(dx, dy) * unitScale);
       const baseAngle = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
       const mode = mask.mode || 'cutout';
@@ -572,12 +571,12 @@ export const createTimeline2dRenderer = async (args: Timeline2dExportArgs): Prom
       const thicknessPx = headLenPx * Math.max(0.01, mask.scale);
       let widthPx = thicknessPx;
       let heightPx = thicknessPx;
-      let anchorWorldX = headPos.x * unitScale + centerX;
-      let anchorWorldY = headPos.y * unitScale + centerY;
+      let anchorWorldX = basePos.x * unitScale + centerX;
+      let anchorWorldY = basePos.y * unitScale + centerY;
       
       if (mode === 'rubberhose') {
-        anchorWorldX = ((headPos.x + basePos.x) / 2) * unitScale + centerX;
-        anchorWorldY = ((headPos.y + basePos.y) / 2) * unitScale + centerY;
+        anchorWorldX = ((basePos.x + basePos.x) / 2) * unitScale + centerX;
+        anchorWorldY = ((basePos.y + basePos.y) / 2) * unitScale + centerY;
         heightPx = Math.max(1, boneLenPx * Math.max(0.05, mask.lengthScale || 1));
         if (mask.volumePreserve) {
           widthPx = clamp((thicknessPx * thicknessPx) / heightPx, thicknessPx * 0.15, thicknessPx * 4);

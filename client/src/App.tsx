@@ -2229,9 +2229,8 @@ export default function App() {
 
             const boneLenPx = Math.max(1, Math.hypot(jp.x - pp.x, jp.y - pp.y) * 20);
 
-            const headPos = getWorldPosition('head', prev.joints, INITIAL_JOINTS);
             const neckBasePos = getWorldPosition('neck_base', prev.joints, INITIAL_JOINTS);
-            const headLenPx = Math.max(1, Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y) * 20);
+            const headLenPx = Math.max(1, 1.0 * 20); // Default head length
 
             const w = Math.max(1, processed.width);
             const h = Math.max(1, processed.height);
@@ -2713,12 +2712,12 @@ export default function App() {
     const vmin = Math.min(canvasSize.width, canvasSize.height);
 
     // Calibrate against the *starting pose* so the grid stays static while the figure moves.
-    const headWorld = getWorldPosition('head', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
+    const neckBaseWorld = getWorldPosition('neck_base', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
     const lAnkleWorld = getWorldPosition('l_ankle', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
     const rAnkleWorld = getWorldPosition('r_ankle', INITIAL_JOINTS, INITIAL_JOINTS, 'current');
 
-    const headX = headWorld.x * scale + centerX;
-    const headY = headWorld.y * scale + centerY;
+    const headX = neckBaseWorld.x * scale + centerX;
+    const headY = neckBaseWorld.y * scale + centerY;
     const lAnkleX = lAnkleWorld.x * scale + centerX;
     const lAnkleY = lAnkleWorld.y * scale + centerY;
     const rAnkleX = rAnkleWorld.x * scale + centerX;
@@ -3157,14 +3156,14 @@ export default function App() {
               // When dragging the head, keep the collar motion smooth and let shoulders follow with light momentum.
               // This avoids collar "twitch" from competing shoulder/collar constraints.
               const d = dragInput;
-              if (!d || (d.id !== 'head' && d.id !== 'neck_base')) {
+              if (!d || d.id !== 'neck_base') {
                 headDragMomentumRef.current = null;
                 return constraints.length ? constraints : undefined;
               }
 
               const alpha = 1 - Math.pow(1 - 0.35, dt * 60); // stable smoothing across FPS
-              const headWorld = getWorldPosition(d.id, jointsForFrame, INITIAL_JOINTS, 'preview');
-              const desiredDelta = { x: d.target.x - headWorld.x, y: d.target.y - headWorld.y };
+              const neckBaseWorld = getWorldPosition(d.id, jointsForFrame, INITIAL_JOINTS, 'preview');
+              const desiredDelta = { x: d.target.x - neckBaseWorld.x, y: d.target.y - neckBaseWorld.y };
               if (!Number.isFinite(desiredDelta.x) || !Number.isFinite(desiredDelta.y)) {
                 return constraints.length ? constraints : undefined;
               }
@@ -5847,9 +5846,8 @@ export default function App() {
       return ov !== undefined ? ov : baseZ;
     };
 
-    const headPos = getWorldPosition('head', state.joints, INITIAL_JOINTS);
     const neckBasePos = getWorldPosition('neck_base', state.joints, INITIAL_JOINTS);
-    const headLenUnits = Math.hypot(headPos.x - neckBasePos.x, headPos.y - neckBasePos.y);
+    const headLenUnits = 1.0; // Default head length
     const headLenPx = Math.max(1, headLenUnits * pxPerUnit);
 
     const buildMaskCssFilter = (mask: any): string | undefined => {

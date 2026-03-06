@@ -6,7 +6,7 @@ export enum PartName {
   Torso = 'torso',
   Waist = 'waist',
   Collar = 'collar',
-  Head = 'head',
+  NeckBase = 'neck_base',
   RShoulder = 'rShoulder',
   RElbow = 'rElbow',
   RWrist = 'rWrist',
@@ -27,7 +27,7 @@ export const partNameToPoseKey: { [key in PartName]: string } = {
   [PartName.Torso]: 'torso',
   [PartName.Waist]: 'waist',
   [PartName.Collar]: 'collar',
-  [PartName.Head]: 'head',
+  [PartName.NeckBase]: 'neck_base',
   [PartName.RShoulder]: 'rShoulder',
   [PartName.RElbow]: 'rForearm',
   [PartName.RWrist]: 'rWrist',
@@ -45,7 +45,7 @@ export const partNameToPoseKey: { [key in PartName]: string } = {
 export const PARENT_MAP: { [key in PartName]?: PartName } = {
   [PartName.Torso]: PartName.Waist,
   [PartName.Collar]: PartName.Torso,
-  [PartName.Head]: PartName.Collar,
+  [PartName.NeckBase]: PartName.Collar,
   [PartName.RShoulder]: PartName.Collar,
   [PartName.LShoulder]: PartName.Collar,
   [PartName.RThigh]: PartName.Waist,
@@ -523,7 +523,7 @@ export type Pose = {
   torso: number;
   waist: number;
   collar: number;
-  head: number;
+  neck_base: number;
   lShoulder: number;
   lForearm: number;
   lWrist: number;

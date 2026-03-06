@@ -7,7 +7,7 @@ export const SHORT_KEY_MAP: { [long: string]: string } = {
   waist: 'w',      // New short key for waist
   torso: 't',
   collar: 'c',     // New short key for collar
-  head: 'h',
+  neck_base: 'h',
   lShoulder: 'ls',
   lForearm: 'le',
   lWrist: 'lw',    // Now represents the hand
@@ -37,7 +37,7 @@ export const poseToString = (pose: Pose): string => {
   const parts: string[] = [];
   // Define an ordered list of keys for consistent serialization
   const orderedKeys: Array<keyof Pose | 'root'> = [
-    'root', 'bodyRotation', 'waist', 'torso', 'collar', 'head',
+    'root', 'bodyRotation', 'waist', 'torso', 'collar', 'neck_base',
     'rShoulder', 'rForearm', 'rWrist', 'lShoulder', 'lForearm', 'lWrist',
     'rThigh', 'rCalf', 'rAnkle', 'lThigh', 'lCalf', 'lAnkle'
   ];

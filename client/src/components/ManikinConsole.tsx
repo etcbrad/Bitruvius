@@ -224,9 +224,8 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
             const toPos = getWorldPosition(existingSlot.attachment.toJointId, prev.joints, INITIAL_JOINTS);
             const boneLenPx = Math.max(1, Math.hypot(toPos.x - fromPos.x, toPos.y - fromPos.y) * 20);
 
-            const headPos = getWorldPosition('head', prev.joints, INITIAL_JOINTS);
             const neckPos = getWorldPosition('neck_base', prev.joints, INITIAL_JOINTS);
-            const headLenPx = Math.max(1, Math.hypot(headPos.x - neckPos.x, headPos.y - neckPos.y) * 20);
+            const headLenPx = Math.max(1, 1.0 * 20); // Default head length
 
             const w = Math.max(1, processed.width);
             const h = Math.max(1, processed.height);
