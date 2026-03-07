@@ -1,0 +1,418 @@
+{
+  "id": "bitruvian_humanoid",
+  "name": "Bitruvian Humanoid",
+  "version": "1.0",
+  "width": 640,
+  "height": 960,
+  "originX": 320,
+  "originY": 480,
+  "bones": [
+    {
+      "name": "root",
+      "x": 0,
+      "y": 0,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "root"
+    },
+    {
+      "name": "navel",
+      "parent": "root",
+      "x": 0,
+      "y": 0,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "hip"
+    },
+    {
+      "name": "sternum",
+      "parent": "navel",
+      "x": 0,
+      "y": -4,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "spine"
+    },
+    {
+      "name": "collar",
+      "parent": "sternum",
+      "x": 0,
+      "y": -2,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "chest"
+    },
+    {
+      "name": "neck_base",
+      "parent": "collar",
+      "x": 0,
+      "y": -0.5,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "neck"
+    },
+    {
+      "name": "skull",
+      "parent": "neck_base",
+      "x": 0,
+      "y": -1,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "head"
+    },
+    {
+      "name": "head",
+      "parent": "neck_base",
+      "x": 0,
+      "y": -2,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "head"
+    },
+    {
+      "name": "l_clavicle",
+      "parent": "collar",
+      "x": -1.25,
+      "y": -0.5,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "l_upper_arm"
+    },
+    {
+      "name": "l_bicep",
+      "parent": "l_clavicle",
+      "x": -1.841,
+      "y": 0.65,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 5.5,
+      "locomotionRole": "l_forearm"
+    },
+    {
+      "name": "l_elbow",
+      "parent": "l_bicep",
+      "x": -4.711,
+      "y": 0.629,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 4.5,
+      "locomotionRole": "l_forearm"
+    },
+    {
+      "name": "l_wrist",
+      "parent": "l_elbow",
+      "x": -4,
+      "y": 0,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 2,
+      "locomotionRole": "l_hand"
+    },
+    {
+      "name": "l_fingertip",
+      "parent": "l_wrist",
+      "x": -1.5,
+      "y": 0,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 1.5,
+      "locomotionRole": "l_hand"
+    },
+    {
+      "name": "r_clavicle",
+      "parent": "collar",
+      "x": 1.25,
+      "y": -0.5,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "r_upper_arm"
+    },
+    {
+      "name": "r_bicep",
+      "parent": "r_clavicle",
+      "x": 1.841,
+      "y": 0.65,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 5.5,
+      "locomotionRole": "r_forearm"
+    },
+    {
+      "name": "r_elbow",
+      "parent": "r_bicep",
+      "x": 4.711,
+      "y": 0.629,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 4.5,
+      "locomotionRole": "r_forearm"
+    },
+    {
+      "name": "r_wrist",
+      "parent": "r_elbow",
+      "x": 4,
+      "y": 0,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 2,
+      "locomotionRole": "r_hand"
+    },
+    {
+      "name": "r_fingertip",
+      "parent": "r_wrist",
+      "x": 1.5,
+      "y": 0,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 1.5,
+      "locomotionRole": "r_hand"
+    },
+    {
+      "name": "l_hip",
+      "parent": "navel",
+      "x": -1.5,
+      "y": -1.75,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "l_thigh"
+    },
+    {
+      "name": "l_knee",
+      "parent": "l_hip",
+      "x": 0,
+      "y": 6,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 6,
+      "locomotionRole": "l_shin"
+    },
+    {
+      "name": "l_ankle",
+      "parent": "l_knee",
+      "x": 0,
+      "y": 6,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 6,
+      "locomotionRole": "l_foot"
+    },
+    {
+      "name": "l_toe",
+      "parent": "l_ankle",
+      "x": 0,
+      "y": 2,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 2,
+      "locomotionRole": "l_foot"
+    },
+    {
+      "name": "r_hip",
+      "parent": "navel",
+      "x": 1.5,
+      "y": -1.75,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "locomotionRole": "r_thigh"
+    },
+    {
+      "name": "r_knee",
+      "parent": "r_hip",
+      "x": 0,
+      "y": 6,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 6,
+      "locomotionRole": "r_shin"
+    },
+    {
+      "name": "r_ankle",
+      "parent": "r_knee",
+      "x": 0,
+      "y": 6,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 6,
+      "locomotionRole": "r_foot"
+    },
+    {
+      "name": "r_toe",
+      "parent": "r_ankle",
+      "x": 0,
+      "y": 2,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "length": 2,
+      "locomotionRole": "r_foot"
+    }
+  ],
+  "slots": [
+    {
+      "name": "torso_img",
+      "bone": "sternum",
+      "attachment": "torso",
+      "zOrder": 5
+    },
+    {
+      "name": "head_img",
+      "bone": "head",
+      "attachment": "head",
+      "zOrder": 10
+    },
+    {
+      "name": "l_upper_arm_img",
+      "bone": "l_bicep",
+      "attachment": "l_upper_arm",
+      "zOrder": 3
+    },
+    {
+      "name": "l_forearm_img",
+      "bone": "l_elbow",
+      "attachment": "l_forearm",
+      "zOrder": 3
+    },
+    {
+      "name": "l_hand_img",
+      "bone": "l_wrist",
+      "attachment": "l_hand",
+      "zOrder": 3
+    },
+    {
+      "name": "r_upper_arm_img",
+      "bone": "r_bicep",
+      "attachment": "r_upper_arm",
+      "zOrder": 3
+    },
+    {
+      "name": "r_forearm_img",
+      "bone": "r_elbow",
+      "attachment": "r_forearm",
+      "zOrder": 3
+    },
+    {
+      "name": "r_hand_img",
+      "bone": "r_wrist",
+      "attachment": "r_hand",
+      "zOrder": 3
+    },
+    {
+      "name": "l_thigh_img",
+      "bone": "l_thigh",
+      "attachment": "l_thigh",
+      "zOrder": 2
+    },
+    {
+      "name": "l_shin_img",
+      "bone": "l_knee",
+      "attachment": "l_shin",
+      "zOrder": 2
+    },
+    {
+      "name": "l_foot_img",
+      "bone": "l_ankle",
+      "attachment": "l_foot",
+      "zOrder": 2
+    },
+    {
+      "name": "r_thigh_img",
+      "bone": "r_thigh",
+      "attachment": "r_thigh",
+      "zOrder": 2
+    },
+    {
+      "name": "r_shin_img",
+      "bone": "r_knee",
+      "attachment": "r_shin",
+      "zOrder": 2
+    },
+    {
+      "name": "r_foot_img",
+      "bone": "r_ankle",
+      "attachment": "r_foot",
+      "zOrder": 2
+    }
+  ],
+  "ik": [
+    {
+      "name": "l_arm_ik",
+      "bones": ["l_bicep", "l_elbow"],
+      "target": "l_wrist",
+      "mix": 1.0,
+      "bendPositive": false,
+      "method": "two_bone"
+    },
+    {
+      "name": "r_arm_ik",
+      "bones": ["r_bicep", "r_elbow"],
+      "target": "r_wrist",
+      "mix": 1.0,
+      "bendPositive": false,
+      "method": "two_bone"
+    },
+    {
+      "name": "l_leg_ik",
+      "bones": ["l_thigh", "l_knee"],
+      "target": "l_ankle",
+      "mix": 1.0,
+      "bendPositive": false,
+      "method": "two_bone"
+    },
+    {
+      "name": "r_leg_ik",
+      "bones": ["r_thigh", "r_knee"],
+      "target": "r_ankle",
+      "mix": 1.0,
+      "bendPositive": false,
+      "method": "two_bone"
+    }
+  ],
+  "locomotionMap": {
+    "root": "root",
+    "hip": "navel",
+    "spine": "sternum",
+    "chest": "collar",
+    "neck": "neck_base",
+    "head": "head",
+    "l_upper_arm": "l_bicep",
+    "l_forearm": "l_elbow",
+    "l_hand": "l_wrist",
+    "l_thigh": "l_thigh",
+    "l_shin": "l_knee",
+    "l_foot": "l_ankle",
+    "r_upper_arm": "r_bicep",
+    "r_forearm": "r_elbow",
+    "r_hand": "r_wrist",
+    "r_thigh": "r_thigh",
+    "r_shin": "r_knee",
+    "r_foot": "r_ankle"
+  },
+  "physicsConfig": {
+    "gravity": { "x": 0, "y": -980 },
+    "timeScale": 1.0
+  }
+}
