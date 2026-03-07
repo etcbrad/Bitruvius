@@ -136,7 +136,7 @@ export class SkeletonPipeline {
   private getBoneByRole(role: LocomotionRole): string | null {
     // This would use the skeleton's locomotionMap
     // For now, provide hardcoded mapping for bitruvian skeleton
-    const roleMap: Record<LocomotionRole, string> = {
+    const roleMap: Record<string, string> = {
       "root": "root",
       "hip": "navel", 
       "spine": "sternum",
@@ -154,7 +154,11 @@ export class SkeletonPipeline {
       "r_hand": "r_wrist", 
       "r_thigh": "r_thigh",
       "r_shin": "r_knee",
-      "r_foot": "r_ankle"
+      "r_foot": "r_ankle",
+      "tail_root": "",
+      "tail_mid": "",
+      "tail_tip": "",
+      "secondary": ""
     };
 
     return roleMap[role] || null;

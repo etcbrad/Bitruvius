@@ -42,7 +42,7 @@ export class PhysicsEngine {
     const gravityToUse = gravity || this.globalConfig.gravity || { x: 0, y: -980 };
     const scaledDt = dt * (this.globalConfig.timeScale || 1.0);
 
-    for (const [boneName, state] of this.states) {
+    for (const [boneName, state] of Array.from(this.states.entries())) {
       const config = this.boneConfigs.get(boneName);
       if (!config || !config.enabled) continue;
 
@@ -110,7 +110,7 @@ export class PhysicsEngine {
 
   // Teleport all physics bones (useful for scene changes)
   teleportAll(): void {
-    for (const boneName of this.states.keys()) {
+    for (const boneName of Array.from(this.states.keys())) {
       this.teleport(boneName);
     }
   }
@@ -178,7 +178,7 @@ export class PhysicsEngine {
 
   // Reset all physics to rest pose
   reset(): void {
-    for (const [boneName, state] of this.states) {
+    for (const [boneName, state] of Array.from(this.states.entries())) {
       state.angle = state.restAngle;
       state.velocity = 0;
       
@@ -214,7 +214,7 @@ export class PhysicsEngine {
   getTotalEnergy(): number {
     let totalEnergy = 0;
     
-    for (const [boneName, state] of this.states) {
+    for (const [boneName, state] of Array.from(this.states.entries())) {
       const config = this.boneConfigs.get(boneName);
       if (!config) continue;
       
