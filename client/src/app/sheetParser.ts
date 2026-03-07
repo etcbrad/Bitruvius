@@ -221,7 +221,22 @@ const floodFill = (
     if (px > maxX) maxX = px;
     if (py > maxY) maxY = py;
 
-    const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+    const neighbors = [];
+    
+    // Left neighbor (skip if at row start)
+    if (idx % width !== 0) {
+      neighbors.push(idx - 1);
+    }
+    
+    // Right neighbor (skip if at row end)
+    if (idx % width !== width - 1) {
+      neighbors.push(idx + 1);
+    }
+    
+    // Top and bottom neighbors (always check)
+    neighbors.push(idx - width);
+    neighbors.push(idx + width);
+    
     for (const neighbor of neighbors) {
       const nx = neighbor % width;
       const ny = Math.floor(neighbor / width);

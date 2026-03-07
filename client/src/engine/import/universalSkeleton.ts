@@ -309,20 +309,13 @@ export class UniversalSkeletonConverter {
   ): string | null {
     if (!parentId) return null;
     
-    // First try direct mappings
-    if (mappings[parentId]) {
-      resolvedMapping[parentId] = mappings[parentId];
-      return mappings[parentId];
+    // First check if parentId was resolved in the first pass
+    if (resolvedMapping[parentId]) {
+      return resolvedMapping[parentId];
     }
     
-    // Then try resolved mappings (from findBestMatch)
-    for (const [key, value] of Object.entries(mappings)) {
-      if (resolvedMapping[value]) {
-        resolvedMapping[key] = value;
-      }
-    }
-    
-    return resolvedMapping[parentId] || null;
+    // Fall back to direct mapping lookup
+    return mappings[parentId] || null;
   }
   
   private static isEndEffector(bone: UniversalBone): boolean {

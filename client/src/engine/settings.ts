@@ -2,7 +2,7 @@ import { LOOK_MODE_ID_SET, type LookModeId } from './lookModes';
 import { INITIAL_JOINTS } from './model';
 import { createDefaultCutoutSlots } from './cutouts';
 import { computeFootTouchdownYWorld, computeGroundPivotWorld, computeTouchdownYWorld } from './rooting';
-import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode } from './types';
+import type { ControlMode, Joint, JointMask, Point, SkeletonState, ReferenceLayer, HeadMask, TextOverlay, CutoutAsset, CutoutSlot, ViewPreset, ArmViewMode, SheetPalette, SheetSegment } from './types';
 import { DEFAULT_BALANCED_NECK_CONFIG, type BalancedNeckConfig } from './balancedNeck';
 import {
   DEFAULT_PROCEDURAL_BITRUVIAN_GAIT,
@@ -300,7 +300,7 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
       next.hidden = v.hidden;
     }
     
-    out[key] = { ...next, ...(out[key] || {}) };
+    out[key] = { ...(out[key] || {}), ...next };
   }
   return out;
 };

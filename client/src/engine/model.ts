@@ -8,7 +8,7 @@ export const SLENDERBIT_JOINTS: Record<string, Joint> = {
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -0.5 }, currentOffset: { x: 0, y: -0.5 }, targetOffset: { x: 0, y: -0.5 }, previewOffset: { x: 0, y: -0.5 }, rotation: 0 },
   skull: { id: 'skull', label: 'Skull', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  head: { id: 'head', label: 'Head', parent: 'skull', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, isEndEffector: true, rotation: 0 },
+  head: { id: 'head', label: 'Head', parent: 'neck_base', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, isEndEffector: true, rotation: 0 },
   
   l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.25, y: -0.5 }, currentOffset: { x: -1.25, y: -0.5 }, targetOffset: { x: -1.25, y: -0.5 }, previewOffset: { x: -1.25, y: -0.5 }, mirrorId: 'r_clavicle', rotation: 0 },
   l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: -1.5, y: 3.75 }, currentOffset: { x: -1.5, y: 3.75 }, targetOffset: { x: -1.5, y: 3.75 }, previewOffset: { x: -1.5, y: 3.75 }, mirrorId: 'r_bicep', rotation: 0 },

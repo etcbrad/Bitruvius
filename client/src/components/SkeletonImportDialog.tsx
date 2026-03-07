@@ -42,6 +42,7 @@ export const SkeletonImportDialog: React.FC<SkeletonImportDialogProps> = ({
       setImportResult(result);
     } catch (error) {
       console.error('Import failed:', error);
+      setImportResult(null);
       setImportError(error instanceof Error ? error.message : 'Unknown error occurred');
     } finally {
       setIsLoading(false);

@@ -136,6 +136,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
   const [segmentLabels, setSegmentLabels] = useState<Record<string, string>>({});
   const [segmentFeather, setSegmentFeather] = useState(2);
   const [edgeTolerance, setEdgeTolerance] = useState(20);
+  const jointIdCounter = useRef(0);
 
   const selectedSegmentId = sheetPalette.selectedSegmentId;
   const selectedSegment = useMemo(
@@ -181,15 +182,22 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
 
   useEffect(() => {
     let isMounted = true;
+    const abortController = new AbortController();
+    const imageObjects: HTMLImageElement[] = [];
     const missingSegments = sheetPalette.segments.filter((segment) => !(segment.id in segmentBrightness));
     if (missingSegments.length === 0) return;
 
     const estimateBrightness = (segment: SheetSegment): Promise<number> =>
       new Promise((resolve) => {
         const img = new Image();
+        imageObjects.push(img);
         img.crossOrigin = 'anonymous';
         img.src = segment.thumbnail;
         const sample = () => {
+          if (abortController.signal.aborted) {
+            resolve(127);
+            return;
+          }
           const canvas = document.createElement('canvas');
           const size = 32;
           canvas.width = size;
@@ -220,13 +228,19 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
       });
 
     const hydrateBrightness = async () => {
-      const updates: Record<string, number> = {};
-      for (const segment of missingSegments) {
+      const brightnessPromises = missingSegments.map(async (segment) => {
+        if (abortController.signal.aborted || !isMounted) return null;
         const brightness = await estimateBrightness(segment);
-        if (!isMounted) return;
-        updates[segment.id] = brightness;
-      }
-      if (isMounted) {
+        if (!isMounted || abortController.signal.aborted) return null;
+        return { id: segment.id, brightness };
+      });
+
+      const results = await Promise.all(brightnessPromises);
+      if (isMounted && !abortController.signal.aborted) {
+        const updates = Object.fromEntries(
+          results.filter((result): result is { id: string; brightness: number } => result !== null)
+            .map(result => [result.id, result.brightness])
+        );
         setSegmentBrightness((prev) => ({ ...prev, ...updates }));
       }
     };
@@ -234,6 +248,20 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
     void hydrateBrightness();
     return () => {
       isMounted = false;
+      abortController.abort();
+      // Clean up Image objects to prevent memory leaks
+      imageObjects.forEach(img => {
+        img.onload = null;
+        img.onerror = null;
+        // Revoke object URLs if any
+        if (img.src.startsWith('blob:')) {
+          URL.revokeObjectURL(img.src);
+        }
+        img.src = '';
+        // Force remove from DOM if attached
+        img.remove?.();
+      });
+      imageObjects.length = 0;
     };
   }, [segmentBrightness, sheetPalette.segments]);
 
@@ -319,8 +347,9 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
       const scaleY = RIG_STAGE_SIZE / rect.height;
       const x = (event.clientX - rect.left) * scaleX;
       const y = (event.clientY - rect.top) * scaleY;
+      const jointId = `joint-${++jointIdCounter.current}`;
       const nextJoint: RigJoint = {
-        id: `joint-${Date.now()}-${Math.round(Math.random() * 1e6)}`,
+        id: jointId,
         name: `Joint ${rigJoints.length + 1}`,
         x,
         y,
@@ -329,10 +358,10 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
       if (activeJointId) {
         setRigBones((prev) => [
           ...prev,
-          { id: `bone-${nextJoint.id}`, startJointId: activeJointId, endJointId: nextJoint.id },
+          { id: `bone-${jointId}`, startJointId: activeJointId, endJointId: jointId },
         ]);
       }
-      setActiveJointId(nextJoint.id);
+      setActiveJointId(jointId);
     },
     [activeJointId, rigJoints.length],
   );
@@ -430,6 +459,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
                     ref={sheetInputRef}
                     accept="image/*,.svg"
                     className="hidden"
+                    data-testid="sheet-file-input"
                     onChange={handleFileChange}
                   />
                 </div>

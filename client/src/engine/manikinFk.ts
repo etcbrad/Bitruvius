@@ -15,7 +15,7 @@ export const applyManikinFkRotation = (args: {
   connectionOverrides: SkeletonState['connectionOverrides'];
   rotateBaseOffsets?: boolean;
 }): Record<string, Joint> => {
-  const { joints, rootRotateJointId, deltaRad, connectionOverrides } = args;
+  const { joints, baseJoints, rootRotateJointId, deltaRad, connectionOverrides, rotateBaseOffsets = false } = args;
   if (!Number.isFinite(deltaRad) || Math.abs(deltaRad) < 1e-12) return joints;
 
   const rootJoint = joints[rootRotateJointId];
@@ -77,7 +77,6 @@ export const applyManikinFkRotation = (args: {
   }
 
   const nextJoints: Record<string, Joint> = { ...joints };
-  const rotateBaseOffsets = args.rotateBaseOffsets !== false;
   rotateDeltaById.forEach((dr, id) => {
     const j = joints[id];
     if (!j) return;
