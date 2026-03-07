@@ -98,7 +98,7 @@ export const ValueWheelControl: React.FC<Props> = ({
   const onPointerMove = useCallback(
     (e: PointerEvent) => {
       if (!dragging || disabled) return;
-      fineRef.current = Boolean((e as any).shiftKey);
+      fineRef.current = e.shiftKey;
       const dx = e.clientX - wheelCenterRef.current.x;
       const dy = e.clientY - wheelCenterRef.current.y;
       const currentAngleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;

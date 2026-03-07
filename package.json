@@ -1,5 +1,5 @@
 {
-  "name": "Bitruvius",
+  "name": "bitruvius",
   "version": "1.0.0",
   "type": "module",
   "license": "MIT",
@@ -7,6 +7,7 @@
     "dev": "NODE_ENV=development tsx server/index.ts",
     "build": "tsx script/build.ts",
     "build:deploy": "tsx script/build-deploy.ts",
+    "deploy": "npm run build:deploy && cd deploy && netlify deploy --prod --dir=.",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "test": "node --import tsx script/tests/run.ts"

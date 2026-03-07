@@ -56,10 +56,18 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - TS check: imported missing `unwrapAngleRad`; disabled `tsconfig.json` incremental build-info output (was writing into `node_modules`).
 
 2026-03-03
-- Added joint-mask shape transform drag modes: `widen`, `expand`, `shrink` (in addition to existing move/rotate/scale/stretch/skew/anchor).
-- While mask placement/transform is armed, joints are forced above masks so FK rotation + IK dragging stays usable for locking poses.
+ - Added joint-mask shape transform drag modes: `widen`, `expand`, `shrink` (in addition to existing move/rotate/scale/stretch/skew/anchor).
+ - While mask placement/transform is armed, joints are forced above masks so FK rotation + IK dragging stays usable for locking poses.
+
+2026-03-07
+- Manikin console now receives `sheetPalette`, `updateSheetPalette`, and `assignSegmentToSlot` before any UI interaction, so slot selection no longer throws a ReferenceError.
+- Details widget now receives the same palette helpers from the App-level `Details` portal, ensuring `updateSheetPalette` is defined for every render (the Manikin console already wired them).
+- Removed the “Random PNG” palette button and its builder helper so sheet uploads/imports stay explicit.
+- Unified selection sync: mask and joint focus now listen to each other (`setMaskJointId` ↔ `setSelectedJointId`), so choosing either control immediately updates the global “active” joint/mask everywhere.
+- Cutout Rig Builder overlay (upload → segment → arrange → rig) now lives behind the Manikin header: upload a sheet, extract segments, drag them onto slot drop targets, and hit “Build Rigid Bone Model” to lock the rig into the cardboard preset with the mask-driven joints.
 - Split FK vs IK-ish simulation toggles by caching `Auto-Bend`, `Elasticity`, `Lead`, `Hard Stop`, and `Snappiness` per mode-group (Cardboard vs everything else) via localStorage.
 - Build: `npm run check` + `npm run build` pass (server build still warns about `import.meta` under CJS).
+- Playwright smoke: `node "$WEB_GAME_CLIENT" --url http://localhost:5001 --actions-file "$WEB_GAME_ACTIONS" --iterations 3 --pause-ms 250`. Latest artifacts: `output/web-game/shot-0.png`, `shot-1.png`, `shot-2.png`, `state-0.json`, `state-1.json`, `state-2.json`; no `output/web-game/errors-0.json` was produced after the rerun (console errors cleared).
 
 2026-03-03
 - Fix attempt for navel 180° flip on activation: when `navel` proxies manipulation to `sternum`, we now apply a drag target offset so the sternum doesn’t snap to the mouse-down world position.
@@ -118,6 +126,10 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 
 2026-03-03
 - Head drag smoothness:
+
+2026-03-07
+- Added DragonBones-inspired Skeleton Builder to the Global (Manikin) panel: select a base rig, edit the JSON blueprint, load/export skeletons, and reapply the joints/mask-ready cutout map (`client/src/App.tsx`).
+- Added JSON download/import helpers plus file input so blueprints can be saved/loaded and the new builder state now syncs with the current rig through `setStateWithHistory` (`client/src/App.tsx`).
 
 2026-03-06
 - Added humanoid volumetric Backlight overlay (head circle + jaw oval + shoulder trapezoid + ribcage + abdominal triangle + pelvic bowl) with green core + purple halo and per-shape blur (`/Users/bradleygeiser/Downloads/Bitruvius 2/client/src/components/HumanoidBacklightOverlay.tsx` + wiring in `/Users/bradleygeiser/Downloads/Bitruvius 2/client/src/App.tsx`).

@@ -1,6 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 
-import type { ControlMode, SkeletonState } from '../engine/types';
+import type { ControlMode, SkeletonState, SheetPalette, SheetSegment } from '../engine/types';
 import { canonicalConnKey } from '../app/connectionKey';
 import { INITIAL_JOINTS } from '../engine/model';
 import { applyPoseSnapshotToJoints, capturePoseSnapshot, interpolatePoseSnapshots } from '../engine/timeline';
@@ -8,7 +8,7 @@ import { applyPoseSnapshotToJoints, capturePoseSnapshot, interpolatePoseSnapshot
 import { CollapsibleSection } from './CollapsibleSection';
 import { DetailsWidget } from './DetailsWidget';
 
-const MANIKIN_SLOT_ORDER = [
+export const MANIKIN_SLOT_ORDER = [
   'head',
   'collar',
   'torso',
@@ -57,6 +57,10 @@ type ManikinConsoleProps = {
   onAddPose: () => void;
   onUpdatePose: (index: number) => void;
   onApplyPose: (index: number) => void;
+  sheetPalette: SheetPalette;
+  updateSheetPalette: (patch: Partial<SheetPalette>) => void;
+  assignSegmentToSlot: (segment: SheetSegment, slotId?: string) => void;
+  onOpenCutoutBuilder: () => void;
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -82,6 +86,10 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
   onAddPose,
   onUpdatePose,
   onApplyPose,
+  sheetPalette,
+  updateSheetPalette,
+  assignSegmentToSlot,
+  onOpenCutoutBuilder,
 }) => {
   const [selectedSlotId, setSelectedSlotId] = useState<ManikinSlotId>('torso');
   const [poseToPoseEnabled, setPoseToPoseEnabled] = useState(false);
@@ -100,15 +108,35 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
       setSelectedJointId(toJointId);
       setSelectedConnectionKey(canonicalConnKey(fromJointId, toJointId));
       setMaskJointId(toJointId);
+      updateSheetPalette({ targetSlotId: slotId });
     },
-    [setMaskJointId, setSelectedConnectionKey, setSelectedJointId, slotsById],
+    [setMaskJointId, setSelectedConnectionKey, setSelectedJointId, slotsById, updateSheetPalette],
   );
+
+  const selectedSheetSegment = useMemo(
+    () => sheetPalette.segments.find((segment) => segment.id === sheetPalette.selectedSegmentId) ?? null,
+    [sheetPalette.segments, sheetPalette.selectedSegmentId],
+  );
+
+  const assignSelectedSegment = useCallback(() => {
+    if (!selectedSheetSegment) return;
+    assignSegmentToSlot(selectedSheetSegment, selectedSlotId);
+  }, [assignSegmentToSlot, selectedSheetSegment, selectedSlotId]);
 
   return (
     <div className="flex flex-col min-h-0">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Manikin</div>
-        <div className="text-[10px] text-[#444]">FK</div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenCutoutBuilder}
+            className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border border-white/10 hover:border-white/50 hover:text-white transition"
+          >
+            Cutout Builder
+          </button>
+          <div className="text-[10px] text-[#444]">FK</div>
+        </div>
       </div>
 
       <div className="space-y-3">
@@ -163,6 +191,65 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
               );
             })}
           </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection title="Sheet Assignments" storageKey="btv:manikin:section:sheets">
+          {sheetPalette.segments.length > 0 ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.3em] text-white/50">
+                <span>{sheetPalette.name || 'Current Cutout Sheet'}</span>
+                <span className="text-[9px] text-white/30">
+                  {sheetPalette.dims ? `${sheetPalette.dims.width}×${sheetPalette.dims.height}` : 'dims unknown'}
+                </span>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-2">
+                {sheetPalette.previewSrc ? (
+                  <img
+                    src={sheetPalette.previewSrc}
+                    alt={sheetPalette.name || 'Cutout sheet'}
+                    className="h-36 w-full rounded-lg object-contain"
+                  />
+                ) : (
+                  <div className="flex h-36 w-full items-center justify-center text-[10px] text-white/40">
+                    Sheet preview unavailable
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between text-[9px] uppercase tracking-[0.3em] text-white/40">
+                <span>Segments</span>
+                <span className="text-white/30">{sheetPalette.segments.length}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 max-h-[160px] overflow-y-auto pr-1">
+                {sheetPalette.segments.map((segment) => {
+                  const isSelected = sheetPalette.selectedSegmentId === segment.id;
+                  return (
+                    <button
+                      key={segment.id}
+                      type="button"
+                      onClick={() => updateSheetPalette({ selectedSegmentId: segment.id })}
+                      className={`h-16 rounded-lg border transition-colors focus:outline-none ${
+                        isSelected ? 'border-[#F27D26]' : 'border-white/10 hover:border-white/40'
+                      }`}
+                    >
+                      <img src={segment.thumbnail} alt={segment.id} className="h-full w-full object-contain" />
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={assignSelectedSegment}
+                disabled={!selectedSheetSegment}
+                className="w-full rounded-full bg-[#F27D26] px-3 py-2 text-[10px] font-black uppercase tracking-[0.3em] text-black disabled:opacity-40"
+              >
+                Pre-assign to {selectedSlotId.replace(/_/g, ' ')}
+              </button>
+            </div>
+          ) : (
+            <div className="text-[10px] text-white/40">
+              Load a sheet in the Cutout Builder to preview segments and pre-assign them to joints here.
+            </div>
+          )}
         </CollapsibleSection>
 
         <CollapsibleSection
@@ -324,26 +411,29 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
 
         <CollapsibleSection title="Details" storageKey="btv:manikin:section:details" defaultOpen>
           <div className="mt-2 p-2 rounded-lg bg-[#111]/40 border border-white/10">
-            <DetailsWidget
-              state={state}
-              setStateWithHistory={setStateWithHistory}
-              selectedJointId={selectedJointId}
-              setSelectedJointId={setSelectedJointId}
-              selectedConnectionKey={selectedConnectionKey}
-              setSelectedConnectionKey={setSelectedConnectionKey}
-              maskJointId={maskJointId}
-              setMaskJointId={setMaskJointId}
-              setJointAngleDeg={setManikinJointAngleDeg}
-              currentControlMode={currentControlMode}
-              onControlModeChange={onControlModeChange}
-              uploadHeadMaskFile={uploadHeadMaskFile}
-              uploadJointMaskFile={uploadJointMaskFile}
-              pieceOrder={MANIKIN_SLOT_ORDER as unknown as string[]}
-              selectedPieceId={selectedSlotId}
-              setSelectedPieceId={(id) => {
-                if ((MANIKIN_SLOT_ORDER as readonly string[]).includes(id)) selectSlot(id as ManikinSlotId);
-              }}
-            />
+              <DetailsWidget
+                state={state}
+                setStateWithHistory={setStateWithHistory}
+                selectedJointId={selectedJointId}
+                setSelectedJointId={setSelectedJointId}
+                selectedConnectionKey={selectedConnectionKey}
+                setSelectedConnectionKey={setSelectedConnectionKey}
+                maskJointId={maskJointId}
+                setMaskJointId={setMaskJointId}
+                setJointAngleDeg={setManikinJointAngleDeg}
+                currentControlMode={currentControlMode}
+                onControlModeChange={onControlModeChange}
+                uploadHeadMaskFile={uploadHeadMaskFile}
+                uploadJointMaskFile={uploadJointMaskFile}
+                pieceOrder={MANIKIN_SLOT_ORDER as unknown as string[]}
+                selectedPieceId={selectedSlotId}
+                setSelectedPieceId={(id) => {
+                  if ((MANIKIN_SLOT_ORDER as readonly string[]).includes(id)) selectSlot(id as ManikinSlotId);
+                }}
+                sheetPalette={sheetPalette}
+                updateSheetPalette={updateSheetPalette}
+                assignSegmentToSlot={assignSegmentToSlot}
+              />
           </div>
         </CollapsibleSection>
       </div>
@@ -359,4 +449,3 @@ export const ManikinGlobalPanel: React.FC = () => {
     </div>
   );
 };
-

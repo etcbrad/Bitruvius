@@ -126,9 +126,13 @@ export const WIDGETS: Record<
     title: 'Rig Inspector',
     tabGroup: 'character',
     isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Deprecated. Use Details for Mask/Joint/Bone/Shape controls.</div>,
-    defaultFloatSize: { w: 360, h: 300 },
-    minFloatSize: { w: 240, h: 180 },
+    docs: (
+      <div className="text-[11px] text-[#bbb]">
+        Legacy inspector stub. Use <span className="font-bold text-white">Details</span> for joint/mask controls.
+      </div>
+    ),
+    defaultFloatSize: { w: 360, h: 360 },
+    minFloatSize: { w: 240, h: 200 },
   },
   rig_controls: {
     title: 'Rig Controls',

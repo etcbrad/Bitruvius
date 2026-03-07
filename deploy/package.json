@@ -1,0 +1,11 @@
+{
+  "name": "bitruvius-deploy",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "npx serve -s . -l 3000"
+  },
+  "devDependencies": {
+    "serve": "^14.2.1"
+  }
+}

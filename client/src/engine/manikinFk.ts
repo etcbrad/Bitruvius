@@ -19,7 +19,7 @@ export const applyManikinFkRotation = (args: {
   if (!Number.isFinite(deltaRad) || Math.abs(deltaRad) < 1e-12) return joints;
 
   const rootJoint = joints[rootRotateJointId];
-  if (!rootJoint?.parent) return joints;
+  if (!rootJoint) return joints;
 
   const childrenByParent: Record<string, string[]> = {};
   for (const [id, joint] of Object.entries(joints)) {
@@ -28,7 +28,19 @@ export const applyManikinFkRotation = (args: {
   }
 
   const rotateDeltaById = new Map<string, number>();
-  rotateDeltaById.set(rootRotateJointId, deltaRad);
+  
+  // Special case: if rotating around root joint, include the root itself
+  if (!rootJoint.parent) {
+    rotateDeltaById.set(rootRotateJointId, deltaRad);
+    // Add all children of root for full skeleton rotation
+    const rootChildren = childrenByParent[rootRotateJointId] || [];
+    for (const child of rootChildren) {
+      rotateDeltaById.set(child, deltaRad);
+    }
+  } else {
+    rotateDeltaById.set(rootRotateJointId, deltaRad);
+  }
+  
   const q: string[] = [rootRotateJointId];
   while (q.length && rotateDeltaById.size < 2048) {
     const parent = q.shift()!;
@@ -68,17 +80,31 @@ export const applyManikinFkRotation = (args: {
   const rotateBaseOffsets = args.rotateBaseOffsets !== false;
   rotateDeltaById.forEach((dr, id) => {
     const j = joints[id];
-    if (!j?.parent) return;
-    const c = Math.cos(dr);
-    const s = Math.sin(dr);
-    const rot = (p: Point) => rotatePoint(p, c, s);
-    nextJoints[id] = {
-      ...j,
-      ...(rotateBaseOffsets ? { baseOffset: rot(j.baseOffset) } : {}),
-      currentOffset: rot(j.currentOffset),
-      targetOffset: rot(j.targetOffset),
-      previewOffset: rot(j.previewOffset),
-    };
+    if (!j) return;
+    
+    // For root joint (no parent), only rotate the current position around origin
+    if (!j.parent) {
+      const c = Math.cos(dr);
+      const s = Math.sin(dr);
+      const rot = (p: Point) => rotatePoint(p, c, s);
+      nextJoints[id] = {
+        ...j,
+        currentOffset: rot(j.currentOffset),
+        targetOffset: rot(j.targetOffset),
+        previewOffset: rot(j.previewOffset),
+      };
+    } else {
+      const c = Math.cos(dr);
+      const s = Math.sin(dr);
+      const rot = (p: Point) => rotatePoint(p, c, s);
+      nextJoints[id] = {
+        ...j,
+        ...(rotateBaseOffsets ? { baseOffset: rot(j.baseOffset) } : {}),
+        currentOffset: rot(j.currentOffset),
+        targetOffset: rot(j.targetOffset),
+        previewOffset: rot(j.previewOffset),
+      };
+    }
   });
 
   return nextJoints;

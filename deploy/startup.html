@@ -1,0 +1,1176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0f14" />
+    <title>Bitruvius Startup (FK Rotation)</title>
+    <style>
+      :root {
+        --bg0: #0b0f14;
+        --bg1: #0f1620;
+        --fg0: #e6edf3;
+        --fg1: #9aa7b2;
+        --grid-minor: rgba(255, 255, 255, 0.06);
+        --grid-major: rgba(255, 255, 255, 0.11);
+        --accent: #6ee7b7;
+        --warn: #fca5a5;
+        --bone: rgba(230, 237, 243, 0.92);
+        --bone-dim: rgba(230, 237, 243, 0.32);
+        --joint: rgba(110, 231, 183, 0.95);
+        --joint-dim: rgba(110, 231, 183, 0.35);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: radial-gradient(1200px 800px at 30% 20%, #162334 0%, var(--bg0) 60%);
+        color: var(--fg0);
+        font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      }
+
+      #app {
+        height: 100%;
+        display: flex;
+        overflow: hidden;
+      }
+
+      #stage {
+        flex: 1;
+        position: relative;
+        background: linear-gradient(180deg, var(--bg0), var(--bg1));
+      }
+
+      #hud {
+        position: absolute;
+        left: 12px;
+        top: 10px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.25);
+        backdrop-filter: blur(6px);
+        user-select: none;
+      }
+
+      #hud .pill {
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: var(--fg1);
+      }
+
+      #hud button {
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        padding: 5px 8px;
+        background: rgba(0, 0, 0, 0.28);
+        color: var(--fg0);
+      }
+
+      #hud button:hover {
+        border-color: rgba(110, 231, 183, 0.5);
+      }
+
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        touch-action: none;
+      }
+
+      #console {
+        width: 360px;
+        max-width: 44vw;
+        border-left: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(8, 12, 18, 0.85);
+        backdrop-filter: blur(10px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      #consoleHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        user-select: none;
+      }
+
+      #consoleHeader h1 {
+        font-size: 12px;
+        margin: 0;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--fg1);
+      }
+
+      #consoleBody {
+        flex: 1;
+        overflow: auto;
+        padding: 10px 12px 14px;
+      }
+
+      .section {
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        overflow: hidden;
+        margin-bottom: 10px;
+      }
+
+      .section > header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.18);
+      }
+
+      .section > header .title {
+        font-size: 11px;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        color: var(--fg1);
+      }
+
+      .section > header button {
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 10px;
+        padding: 4px 8px;
+        background: rgba(0, 0, 0, 0.25);
+        color: var(--fg0);
+      }
+
+      .section > header button:hover {
+        border-color: rgba(110, 231, 183, 0.5);
+      }
+
+      .section .content {
+        padding: 10px;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 6px 0;
+      }
+
+      .row label {
+        flex: 0 0 92px;
+        color: var(--fg1);
+      }
+
+      .row input[type="range"] {
+        flex: 1;
+        width: 100%;
+      }
+
+      .row output {
+        flex: 0 0 52px;
+        text-align: right;
+        color: var(--fg1);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 6px 8px;
+        margin-top: 4px;
+      }
+
+      .kv div:nth-child(odd) {
+        color: var(--fg1);
+      }
+
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+      }
+
+      #log {
+        height: 180px;
+        overflow: auto;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.22);
+        padding: 8px;
+        white-space: pre-wrap;
+      }
+
+      .hint {
+        color: var(--fg1);
+      }
+
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <div id="hud">
+          <span class="pill" id="modePill">FK</span>
+          <span class="pill" id="selPill">Selected: —</span>
+          <button id="resetBtn" title="Reset pose">Reset</button>
+          <button id="centerBtn" title="Center view">Center</button>
+          <button id="fsBtn" title="Toggle fullscreen (f)">Fullscreen</button>
+        </div>
+        <canvas id="canvas" width="1200" height="800"></canvas>
+      </div>
+
+      <aside id="console">
+        <div id="consoleHeader">
+          <h1>Startup Console</h1>
+          <div class="mono" id="fpsLabel">— fps</div>
+        </div>
+        <div id="consoleBody">
+          <div class="section">
+            <header>
+              <div class="title">Selected</div>
+              <button id="advToggleBtn" title="Show advanced controls (Ctrl+Shift+A)">Advanced</button>
+            </header>
+            <div class="content">
+              <div class="kv mono">
+                <div>joint</div>
+                <div id="selName">—</div>
+                <div>parent</div>
+                <div id="selParent">—</div>
+                <div>angle</div>
+                <div id="selAngle">—</div>
+              </div>
+              <div class="row">
+                <label for="angleSlider">rotate</label>
+                <input id="angleSlider" type="range" min="-180" max="180" step="1" value="0" />
+                <output id="angleOut">0°</output>
+              </div>
+              <div class="row">
+                <label></label>
+                <button id="zeroBtn">Zero</button>
+                <button id="mirrorBtn" title="Mirror selected joint angle (Advanced)">Mirror</button>
+              </div>
+              <div class="hint">
+                Click a joint to select. Drag near a joint to rotate about its parent. On-canvas +/− buttons rotate in 5° steps (Shift: 15°).
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <header>
+              <div class="title">Joints</div>
+              <button id="collapseJointsBtn">Hide</button>
+            </header>
+            <div class="content" id="jointsList"></div>
+          </div>
+
+          <div class="section hidden" id="advancedSection">
+            <header>
+              <div class="title">Advanced (Hidden)</div>
+              <button id="advHideBtn">Hide</button>
+            </header>
+            <div class="content">
+              <div class="row">
+                <label for="showIds">show ids</label>
+                <input id="showIds" type="checkbox" />
+              </div>
+              <div class="row">
+                <label for="showBounds">hit bounds</label>
+                <input id="showBounds" type="checkbox" />
+              </div>
+              <div class="row">
+                <label for="showConstraints">constraints</label>
+                <input id="showConstraints" type="checkbox" />
+              </div>
+              <div class="row">
+                <label for="snapDeg">snap</label>
+                <input id="snapDeg" type="range" min="0" max="30" step="1" value="0" />
+                <output id="snapOut">0°</output>
+              </div>
+              <div class="row">
+                <label></label>
+                <button id="exportBtn">Export JSON</button>
+                <button id="importBtn">Import JSON</button>
+              </div>
+              <div class="hint">
+                Other features are present but dormant; this page intentionally stays FK-only unless you wire more controls into the advanced panel.
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <header>
+              <div class="title">Log</div>
+              <button id="clearLogBtn">Clear</button>
+            </header>
+            <div class="content">
+              <div id="log" class="mono"></div>
+            </div>
+          </div>
+
+          <div class="hint mono">
+            Keys: <b>f</b> fullscreen · <b>c</b> center · <b>r</b> reset · <b>Esc</b> cancel drag · <b>Ctrl+Shift+A</b> advanced
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <script>
+      (() => {
+        "use strict";
+
+        const $ = (id) => {
+          const el = document.getElementById(id);
+          if (!el) throw new Error("Missing element: " + id);
+          return el;
+        };
+
+        const canvas = $("canvas");
+        const ctx = canvas.getContext("2d", { alpha: false });
+        if (!ctx) throw new Error("2D canvas not supported");
+
+        const dom = {
+          modePill: $("modePill"),
+          selPill: $("selPill"),
+          resetBtn: $("resetBtn"),
+          centerBtn: $("centerBtn"),
+          fsBtn: $("fsBtn"),
+          fpsLabel: $("fpsLabel"),
+          selName: $("selName"),
+          selParent: $("selParent"),
+          selAngle: $("selAngle"),
+          angleSlider: $("angleSlider"),
+          angleOut: $("angleOut"),
+          zeroBtn: $("zeroBtn"),
+          mirrorBtn: $("mirrorBtn"),
+          advToggleBtn: $("advToggleBtn"),
+          collapseJointsBtn: $("collapseJointsBtn"),
+          jointsList: $("jointsList"),
+          advancedSection: $("advancedSection"),
+          advHideBtn: $("advHideBtn"),
+          showIds: $("showIds"),
+          showBounds: $("showBounds"),
+          showConstraints: $("showConstraints"),
+          snapDeg: $("snapDeg"),
+          snapOut: $("snapOut"),
+          exportBtn: $("exportBtn"),
+          importBtn: $("importBtn"),
+          clearLogBtn: $("clearLogBtn"),
+          log: $("log"),
+        };
+
+        // --- Math helpers
+        const TAU = Math.PI * 2;
+        const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+        const degToRad = (d) => (d * Math.PI) / 180;
+        const radToDeg = (r) => (r * 180) / Math.PI;
+        const normRad = (r) => {
+          let x = r % TAU;
+          if (x > Math.PI) x -= TAU;
+          if (x < -Math.PI) x += TAU;
+          return x;
+        };
+        const snapRad = (r, snapDeg) => {
+          if (!snapDeg) return r;
+          const step = degToRad(snapDeg);
+          return Math.round(r / step) * step;
+        };
+        const dist2 = (ax, ay, bx, by) => {
+          const dx = ax - bx;
+          const dy = ay - by;
+          return dx * dx + dy * dy;
+        };
+
+        // --- Feature flags (kept hidden until activated)
+        const FEATURES = {
+          advanced: false,
+          showIds: false,
+          showBounds: false,
+          showConstraints: false,
+          snapDeg: 0,
+          dormant: {
+            ik: false,
+            physics: false,
+            cutouts: false,
+            exportVideo: false,
+          },
+        };
+
+        const advFromUrl = new URLSearchParams(location.search).get("dev") === "1";
+        const advFromStorage = localStorage.getItem("bitruvius_startup_advanced") === "1";
+        FEATURES.advanced = advFromUrl || advFromStorage;
+
+        // --- Minimal FK rig model (pure rotation at each joint)
+        const makeStarterRig = () => {
+          // Convention: each joint stores a local angle that rotates the bone from its parent to itself.
+          // Root has a localAngle that rotates the entire tree.
+          const joints = [
+            { id: "root", name: "root", parentId: null, length: 0, localAngle: 0, minDeg: -180, maxDeg: 180 },
+            { id: "pelvis", name: "pelvis", parentId: "root", length: 60, localAngle: 90, minDeg: -180, maxDeg: 180 },
+            { id: "spine", name: "spine", parentId: "pelvis", length: 80, localAngle: 0, minDeg: -90, maxDeg: 90 },
+            { id: "neck", name: "neck", parentId: "spine", length: 45, localAngle: 0, minDeg: -90, maxDeg: 90 },
+            { id: "head", name: "head", parentId: "neck", length: 45, localAngle: 0, minDeg: -90, maxDeg: 90 },
+
+            { id: "l_shoulder", name: "l_shoulder", parentId: "spine", length: 55, localAngle: 160, minDeg: -180, maxDeg: 180 },
+            { id: "l_elbow", name: "l_elbow", parentId: "l_shoulder", length: 65, localAngle: -10, minDeg: -180, maxDeg: 180 },
+            { id: "l_wrist", name: "l_wrist", parentId: "l_elbow", length: 55, localAngle: -10, minDeg: -180, maxDeg: 180 },
+
+            { id: "r_shoulder", name: "r_shoulder", parentId: "spine", length: 55, localAngle: 20, minDeg: -180, maxDeg: 180 },
+            { id: "r_elbow", name: "r_elbow", parentId: "r_shoulder", length: 65, localAngle: 10, minDeg: -180, maxDeg: 180 },
+            { id: "r_wrist", name: "r_wrist", parentId: "r_elbow", length: 55, localAngle: 10, minDeg: -180, maxDeg: 180 },
+
+            { id: "l_hip", name: "l_hip", parentId: "pelvis", length: 55, localAngle: 230, minDeg: -180, maxDeg: 180 },
+            { id: "l_knee", name: "l_knee", parentId: "l_hip", length: 80, localAngle: -10, minDeg: -180, maxDeg: 180 },
+            { id: "l_ankle", name: "l_ankle", parentId: "l_knee", length: 70, localAngle: 5, minDeg: -180, maxDeg: 180 },
+
+            { id: "r_hip", name: "r_hip", parentId: "pelvis", length: 55, localAngle: -50, minDeg: -180, maxDeg: 180 },
+            { id: "r_knee", name: "r_knee", parentId: "r_hip", length: 80, localAngle: 10, minDeg: -180, maxDeg: 180 },
+            { id: "r_ankle", name: "r_ankle", parentId: "r_knee", length: 70, localAngle: -5, minDeg: -180, maxDeg: 180 },
+          ];
+
+          /** @type {Record<string, any>} */
+          const byId = Object.fromEntries(joints.map((j) => [j.id, j]));
+          /** @type {Record<string, string[]>} */
+          const children = {};
+          for (const j of joints) children[j.id] = [];
+          for (const j of joints) if (j.parentId) children[j.parentId].push(j.id);
+
+          return { joints, byId, children };
+        };
+
+        const rig = makeStarterRig();
+        const basePose = rig.joints.map((j) => ({ id: j.id, localAngle: j.localAngle }));
+
+        const state = {
+          view: {
+            panX: 0,
+            panY: 0,
+            zoom: 1,
+          },
+          rig,
+          jointAngles: Object.fromEntries(rig.joints.map((j) => [j.id, degToRad(j.localAngle)])),
+          selectedId: "spine",
+          dragging: null, // { id, anchorParentId, mode: "rotate" }
+          pointers: {
+            x: 0,
+            y: 0,
+            down: false,
+          },
+          worldCache: {
+            dirty: true,
+            // id -> {x,y,angle}
+            world: {},
+          },
+          logLines: [],
+          frame: {
+            lastT: performance.now(),
+            fps: 0,
+            fpsSmoothed: 0,
+          },
+        };
+
+        const log = (msg) => {
+          const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
+          state.logLines.push(line);
+          if (state.logLines.length > 200) state.logLines.splice(0, state.logLines.length - 200);
+          dom.log.textContent = state.logLines.slice(-80).join("\n");
+          dom.log.scrollTop = dom.log.scrollHeight;
+        };
+
+        const getWorld = () => {
+          if (!state.worldCache.dirty) return state.worldCache.world;
+          /** @type {Record<string, {x:number,y:number,angle:number,parentId:string|null}>} */
+          const out = {};
+
+          const root = state.rig.byId["root"];
+          const rootAngle = state.jointAngles[root.id] || 0;
+          const origin = worldFromScreen(canvas.width * 0.5, canvas.height * 0.5);
+          out[root.id] = { x: origin.x, y: origin.y, angle: rootAngle, parentId: null };
+
+          const walk = (id) => {
+            const parent = out[id];
+            const childIds = state.rig.children[id] || [];
+            for (const childId of childIds) {
+              const child = state.rig.byId[childId];
+              const local = state.jointAngles[childId] || 0;
+              const boneAngle = parent.angle + local;
+              const x = parent.x + Math.cos(boneAngle) * child.length;
+              const y = parent.y + Math.sin(boneAngle) * child.length;
+              out[childId] = { x, y, angle: boneAngle, parentId: id };
+              walk(childId);
+            }
+          };
+          walk(root.id);
+
+          state.worldCache.world = out;
+          state.worldCache.dirty = false;
+          return out;
+        };
+
+        const setSelected = (id) => {
+          if (!state.rig.byId[id]) return;
+          state.selectedId = id;
+          dom.selPill.textContent = `Selected: ${id}`;
+          updateSelectedUI();
+          log(`select ${id}`);
+          requestRender();
+        };
+
+        const setJointAngleRad = (id, rad) => {
+          const j = state.rig.byId[id];
+          if (!j) return;
+          const min = degToRad(j.minDeg ?? -180);
+          const max = degToRad(j.maxDeg ?? 180);
+          let v = normRad(rad);
+          if (FEATURES.showConstraints) v = clamp(v, min, max);
+          if (FEATURES.snapDeg) v = snapRad(v, FEATURES.snapDeg);
+          state.jointAngles[id] = v;
+          state.worldCache.dirty = true;
+        };
+
+        const resetPose = () => {
+          for (const p of basePose) setJointAngleRad(p.id, degToRad(p.localAngle));
+          log("reset pose");
+          requestRender();
+        };
+
+        // --- View transforms
+        const resizeCanvas = () => {
+          const rect = canvas.getBoundingClientRect();
+          const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+          canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+          canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+          requestRender();
+        };
+
+        const screenFromWorld = (wx, wy) => {
+          const z = state.view.zoom;
+          const sx = (wx + state.view.panX) * z + canvas.width * 0.5;
+          const sy = (wy + state.view.panY) * z + canvas.height * 0.5;
+          return { x: sx, y: sy };
+        };
+
+        const worldFromScreen = (sx, sy) => {
+          const z = state.view.zoom;
+          const wx = (sx - canvas.width * 0.5) / z - state.view.panX;
+          const wy = (sy - canvas.height * 0.5) / z - state.view.panY;
+          return { x: wx, y: wy };
+        };
+
+        const centerView = () => {
+          state.view.panX = 0;
+          state.view.panY = 0;
+          state.view.zoom = 1;
+          log("center view");
+          requestRender();
+        };
+
+	        // --- Hit testing
+	        const hitTestJoint = (sx, sy) => {
+	          const w = getWorld();
+	          const wp = worldFromScreen(sx, sy);
+	          const z = state.view.zoom;
+	          const pickR = 12 * Math.max(1, (window.devicePixelRatio || 1)) / z;
+	          const pickR2 = pickR * pickR;
+
+	          let best = null;
+	          let bestD2 = Infinity;
+	          for (const j of state.rig.joints) {
+	            const p = w[j.id];
+	            if (!p) continue;
+	            const d2 = dist2(p.x, p.y, wp.x, wp.y);
+	            if (d2 <= pickR2 && d2 < bestD2) {
+	              best = j.id;
+	              bestD2 = d2;
+	            }
+	          }
+	          return best;
+	        };
+
+        // --- Canvas gizmo buttons (pure click rotation)
+        const gizmo = {
+          // computed each render for selected joint
+          minus: null,
+          plus: null,
+        };
+
+        const pointInRect = (x, y, r) =>
+          r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+        const tryClickGizmo = (sx, sy, shiftKey) => {
+          const step = degToRad(shiftKey ? 15 : 5);
+          if (pointInRect(sx, sy, gizmo.minus)) {
+            setJointAngleRad(state.selectedId, (state.jointAngles[state.selectedId] || 0) - step);
+            log(`angle ${state.selectedId} -= ${shiftKey ? 15 : 5}deg`);
+            updateSelectedUI();
+            requestRender();
+            return true;
+          }
+          if (pointInRect(sx, sy, gizmo.plus)) {
+            setJointAngleRad(state.selectedId, (state.jointAngles[state.selectedId] || 0) + step);
+            log(`angle ${state.selectedId} += ${shiftKey ? 15 : 5}deg`);
+            updateSelectedUI();
+            requestRender();
+            return true;
+          }
+          return false;
+        };
+
+        // --- UI wiring
+        const updateSelectedUI = () => {
+          const id = state.selectedId;
+          const j = state.rig.byId[id];
+          dom.selName.textContent = j ? j.name : "—";
+          dom.selParent.textContent = j && j.parentId ? j.parentId : "—";
+
+          const a = state.jointAngles[id] || 0;
+          const deg = Math.round(radToDeg(a));
+          dom.selAngle.textContent = `${deg}°`;
+          dom.angleSlider.value = String(clamp(deg, -180, 180));
+          dom.angleOut.textContent = `${dom.angleSlider.value}°`;
+        };
+
+        const rebuildJointList = () => {
+          dom.jointsList.textContent = "";
+          for (const j of state.rig.joints) {
+            const row = document.createElement("div");
+            row.className = "row";
+
+            const label = document.createElement("label");
+            label.textContent = j.id;
+            label.className = "mono";
+
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.min = "-180";
+            slider.max = "180";
+            slider.step = "1";
+            slider.value = String(Math.round(radToDeg(state.jointAngles[j.id] || 0)));
+            slider.addEventListener("input", () => {
+              setJointAngleRad(j.id, degToRad(Number(slider.value)));
+              if (state.selectedId === j.id) updateSelectedUI();
+              requestRender();
+            });
+
+            const out = document.createElement("output");
+            out.className = "mono";
+            out.textContent = `${slider.value}°`;
+
+            slider.addEventListener("input", () => {
+              out.textContent = `${slider.value}°`;
+            });
+
+            row.addEventListener("pointerdown", (e) => {
+              if (e.target === slider) return;
+              setSelected(j.id);
+            });
+
+            row.appendChild(label);
+            row.appendChild(slider);
+            row.appendChild(out);
+            dom.jointsList.appendChild(row);
+          }
+        };
+
+        const setAdvanced = (on) => {
+          FEATURES.advanced = !!on;
+          localStorage.setItem("bitruvius_startup_advanced", on ? "1" : "0");
+          dom.advancedSection.classList.toggle("hidden", !FEATURES.advanced);
+          dom.mirrorBtn.classList.toggle("hidden", !FEATURES.advanced);
+          log(on ? "advanced on" : "advanced off");
+          requestRender();
+        };
+
+        dom.resetBtn.addEventListener("click", resetPose);
+        dom.centerBtn.addEventListener("click", centerView);
+        dom.fsBtn.addEventListener("click", () => toggleFullscreen());
+
+        dom.angleSlider.addEventListener("input", () => {
+          const deg = Number(dom.angleSlider.value);
+          dom.angleOut.textContent = `${deg}°`;
+          setJointAngleRad(state.selectedId, degToRad(deg));
+          updateSelectedUI();
+          requestRender();
+        });
+
+        dom.zeroBtn.addEventListener("click", () => {
+          setJointAngleRad(state.selectedId, 0);
+          updateSelectedUI();
+          log(`zero ${state.selectedId}`);
+          requestRender();
+        });
+
+        dom.mirrorBtn.addEventListener("click", () => {
+          if (!FEATURES.advanced) return;
+          const a = state.jointAngles[state.selectedId] || 0;
+          setJointAngleRad(state.selectedId, -a);
+          updateSelectedUI();
+          log(`mirror ${state.selectedId}`);
+          requestRender();
+        });
+
+        dom.advToggleBtn.addEventListener("click", () => setAdvanced(!FEATURES.advanced));
+        dom.advHideBtn.addEventListener("click", () => setAdvanced(false));
+
+        dom.collapseJointsBtn.addEventListener("click", () => {
+          const isHidden = dom.jointsList.classList.toggle("hidden");
+          dom.collapseJointsBtn.textContent = isHidden ? "Show" : "Hide";
+        });
+
+        dom.showIds.addEventListener("change", () => {
+          FEATURES.showIds = !!dom.showIds.checked;
+          requestRender();
+        });
+        dom.showBounds.addEventListener("change", () => {
+          FEATURES.showBounds = !!dom.showBounds.checked;
+          requestRender();
+        });
+        dom.showConstraints.addEventListener("change", () => {
+          FEATURES.showConstraints = !!dom.showConstraints.checked;
+          requestRender();
+        });
+        dom.snapDeg.addEventListener("input", () => {
+          FEATURES.snapDeg = Number(dom.snapDeg.value) || 0;
+          dom.snapOut.textContent = `${FEATURES.snapDeg}°`;
+        });
+
+	        dom.exportBtn.addEventListener("click", async () => {
+	          if (!FEATURES.advanced) return;
+	          const payload = exportPose();
+	          try {
+	            await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+	            log("export copied to clipboard");
+	          } catch (e) {
+	            log("export failed: " + String(e && e.message ? e.message : e));
+	          }
+	        });
+        dom.importBtn.addEventListener("click", async () => {
+          if (!FEATURES.advanced) return;
+          const text = prompt("Paste pose JSON:");
+          if (!text) return;
+          try {
+            const obj = JSON.parse(text);
+            importPose(obj);
+            log("import ok");
+          } catch (e) {
+            log("import failed: " + String(e && e.message ? e.message : e));
+          }
+        });
+
+        dom.clearLogBtn.addEventListener("click", () => {
+          state.logLines = [];
+          dom.log.textContent = "";
+        });
+
+        // --- Input
+        const getPointer = (e) => {
+          const rect = canvas.getBoundingClientRect();
+          const dpr = canvas.width / Math.max(1, rect.width);
+          return {
+            x: (e.clientX - rect.left) * dpr,
+            y: (e.clientY - rect.top) * dpr,
+          };
+        };
+
+        const beginRotateDrag = (jointId, sx, sy) => {
+          const j = state.rig.byId[jointId];
+          if (!j) return;
+          if (!j.parentId && jointId !== "root") return;
+          if (jointId === "root") {
+            state.dragging = { id: "root", anchorParentId: null, mode: "rotate_root" };
+            return;
+          }
+          state.dragging = { id: jointId, anchorParentId: j.parentId, mode: "rotate" };
+          updateDragAngleFromPointer(sx, sy);
+        };
+
+        const updateDragAngleFromPointer = (sx, sy) => {
+          if (!state.dragging) return;
+          const w = getWorld();
+          const drag = state.dragging;
+          const pointerW = worldFromScreen(sx, sy);
+
+          if (drag.mode === "rotate_root") {
+            const root = w["root"];
+            const abs = Math.atan2(pointerW.y - root.y, pointerW.x - root.x);
+            setJointAngleRad("root", abs);
+            updateSelectedUI();
+            requestRender();
+            return;
+          }
+
+          const parentId = drag.anchorParentId;
+          if (!parentId) return;
+          const parent = w[parentId];
+          if (!parent) return;
+          const abs = Math.atan2(pointerW.y - parent.y, pointerW.x - parent.x);
+          const local = normRad(abs - parent.angle);
+          setJointAngleRad(drag.id, local);
+          if (state.selectedId === drag.id) updateSelectedUI();
+          requestRender();
+        };
+
+        canvas.addEventListener("pointerdown", (e) => {
+          canvas.setPointerCapture(e.pointerId);
+          const p = getPointer(e);
+          state.pointers.down = true;
+          state.pointers.x = p.x;
+          state.pointers.y = p.y;
+
+          if (tryClickGizmo(p.x, p.y, e.shiftKey)) return;
+
+          const hit = hitTestJoint(p.x, p.y);
+          if (hit) {
+            setSelected(hit);
+            beginRotateDrag(hit, p.x, p.y);
+            return;
+          }
+
+          // background drag rotates the root
+          beginRotateDrag("root", p.x, p.y);
+        });
+
+        canvas.addEventListener("pointermove", (e) => {
+          const p = getPointer(e);
+          state.pointers.x = p.x;
+          state.pointers.y = p.y;
+          if (!state.pointers.down) return;
+          if (!state.dragging) return;
+          updateDragAngleFromPointer(p.x, p.y);
+        });
+
+        const endDrag = () => {
+          if (state.dragging) log(`drag end (${state.dragging.id})`);
+          state.dragging = null;
+          state.pointers.down = false;
+        };
+
+        canvas.addEventListener("pointerup", endDrag);
+        canvas.addEventListener("pointercancel", endDrag);
+
+        window.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            endDrag();
+          } else if (e.key === "f" || e.key === "F") {
+            toggleFullscreen();
+          } else if (e.key === "c" || e.key === "C") {
+            centerView();
+          } else if (e.key === "r" || e.key === "R") {
+            resetPose();
+          } else if (e.key === "A" && e.ctrlKey && e.shiftKey) {
+            setAdvanced(!FEATURES.advanced);
+          }
+        });
+
+        // --- Fullscreen
+        const toggleFullscreen = async () => {
+          try {
+            if (!document.fullscreenElement) {
+              await document.documentElement.requestFullscreen();
+              log("fullscreen on");
+            } else {
+              await document.exitFullscreen();
+              log("fullscreen off");
+            }
+          } catch (e) {
+            log("fullscreen failed: " + String(e && e.message ? e.message : e));
+          }
+          setTimeout(resizeCanvas, 0);
+        };
+
+        // --- Render
+        let renderQueued = false;
+        const requestRender = () => {
+          if (renderQueued) return;
+          renderQueued = true;
+          requestAnimationFrame(() => {
+            renderQueued = false;
+            render();
+          });
+        };
+
+        const drawGrid = () => {
+          ctx.save();
+          ctx.fillStyle = "#0b0f14";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          const z = state.view.zoom;
+          const minor = 25 * z;
+          const major = 100 * z;
+          const cx = canvas.width * 0.5 + state.view.panX * z;
+          const cy = canvas.height * 0.5 + state.view.panY * z;
+
+          const drawLines = (step, color, width) => {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            const startX = ((0 - cx) / step) | 0;
+            const endX = ((canvas.width - cx) / step) | 0;
+            const startY = ((0 - cy) / step) | 0;
+            const endY = ((canvas.height - cy) / step) | 0;
+
+            for (let ix = startX - 1; ix <= endX + 1; ix++) {
+              const x = cx + ix * step;
+              ctx.moveTo(x, 0);
+              ctx.lineTo(x, canvas.height);
+            }
+            for (let iy = startY - 1; iy <= endY + 1; iy++) {
+              const y = cy + iy * step;
+              ctx.moveTo(0, y);
+              ctx.lineTo(canvas.width, y);
+            }
+            ctx.stroke();
+          };
+
+          drawLines(minor, getCssVar("--grid-minor"), 1);
+          drawLines(major, getCssVar("--grid-major"), 1.2);
+
+          // Rings (skeleton-ish grid)
+          ctx.strokeStyle = "rgba(110, 231, 183, 0.08)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          const rings = [100, 200, 300, 400];
+          for (const r of rings) {
+            ctx.moveTo(cx + r * z, cy);
+            ctx.arc(cx, cy, r * z, 0, TAU);
+          }
+          ctx.stroke();
+
+          // Axes
+          ctx.strokeStyle = "rgba(110, 231, 183, 0.18)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(0, cy);
+          ctx.lineTo(canvas.width, cy);
+          ctx.moveTo(cx, 0);
+          ctx.lineTo(cx, canvas.height);
+          ctx.stroke();
+
+          ctx.restore();
+        };
+
+        const getCssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+        const drawSkeleton = () => {
+          const w = getWorld();
+
+          // bones
+          ctx.save();
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          for (const j of state.rig.joints) {
+            if (!j.parentId) continue;
+            const a = w[j.parentId];
+            const b = w[j.id];
+            if (!a || !b) continue;
+
+            const isSelected = state.selectedId === j.id;
+            const isAncestor =
+              state.selectedId !== "root" && isInSubtree(j.id, state.selectedId);
+
+            ctx.strokeStyle = isSelected ? "rgba(110,231,183,0.95)" : isAncestor ? "rgba(230,237,243,0.8)" : getCssVar("--bone-dim");
+            ctx.lineWidth = isSelected ? 6 : 4;
+            ctx.beginPath();
+            const sa = screenFromWorld(a.x, a.y);
+            const sb = screenFromWorld(b.x, b.y);
+            ctx.moveTo(sa.x, sa.y);
+            ctx.lineTo(sb.x, sb.y);
+            ctx.stroke();
+          }
+
+          // joints
+          for (const j of state.rig.joints) {
+            const p = w[j.id];
+            if (!p) continue;
+            const s = screenFromWorld(p.x, p.y);
+            const r = j.id === state.selectedId ? 8 : 6;
+            ctx.fillStyle = j.id === state.selectedId ? getCssVar("--joint") : getCssVar("--joint-dim");
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, r, 0, TAU);
+            ctx.fill();
+
+            if (FEATURES.showIds) {
+              ctx.fillStyle = "rgba(230,237,243,0.75)";
+              ctx.font = "12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+              ctx.fillText(j.id, s.x + 10, s.y - 10);
+            }
+
+            if (FEATURES.showBounds) {
+              ctx.strokeStyle = "rgba(252,165,165,0.4)";
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.arc(s.x, s.y, 12, 0, TAU);
+              ctx.stroke();
+            }
+          }
+
+          ctx.restore();
+        };
+
+        const isInSubtree = (nodeId, maybeDescendantId) => {
+          // true if maybeDescendantId is in subtree of nodeId (inclusive)
+          if (nodeId === maybeDescendantId) return true;
+          const stack = [...(state.rig.children[nodeId] || [])];
+          while (stack.length) {
+            const id = stack.pop();
+            if (id === maybeDescendantId) return true;
+            const kids = state.rig.children[id];
+            if (kids) for (const k of kids) stack.push(k);
+          }
+          return false;
+        };
+
+        const drawGizmo = () => {
+          const w = getWorld();
+          const p = w[state.selectedId];
+          if (!p) return;
+          const s = screenFromWorld(p.x, p.y);
+          const size = 24;
+          const gap = 8;
+          const y = s.y + 18;
+          gizmo.minus = { x: s.x - size - gap * 0.5, y, w: size, h: size };
+          gizmo.plus = { x: s.x + gap * 0.5, y, w: size, h: size };
+
+          const drawBtn = (r, text) => {
+            ctx.save();
+            ctx.fillStyle = "rgba(0,0,0,0.35)";
+            ctx.strokeStyle = "rgba(255,255,255,0.16)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            roundRect(ctx, r.x, r.y, r.w, r.h, 8);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = "rgba(230,237,243,0.9)";
+            ctx.font = "16px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(text, r.x + r.w / 2, r.y + r.h / 2 + 1);
+            ctx.restore();
+          };
+
+          drawBtn(gizmo.minus, "−");
+          drawBtn(gizmo.plus, "+");
+        };
+
+        const roundRect = (c, x, y, w, h, r) => {
+          const rr = Math.min(r, w * 0.5, h * 0.5);
+          c.moveTo(x + rr, y);
+          c.arcTo(x + w, y, x + w, y + h, rr);
+          c.arcTo(x + w, y + h, x, y + h, rr);
+          c.arcTo(x, y + h, x, y, rr);
+          c.arcTo(x, y, x + w, y, rr);
+          c.closePath();
+        };
+
+        const render = () => {
+          const now = performance.now();
+          const dt = Math.max(1, now - state.frame.lastT);
+          state.frame.lastT = now;
+          state.frame.fps = 1000 / dt;
+          state.frame.fpsSmoothed = state.frame.fpsSmoothed
+            ? state.frame.fpsSmoothed * 0.9 + state.frame.fps * 0.1
+            : state.frame.fps;
+          dom.fpsLabel.textContent = `${Math.round(state.frame.fpsSmoothed)} fps`;
+
+          drawGrid();
+          drawSkeleton();
+          drawGizmo();
+
+          // keep joint list outputs in sync occasionally
+          // (still lightweight; no framework)
+        };
+
+        // --- Import / Export (hidden by default)
+        const exportPose = () => {
+          return {
+            version: 1,
+            selectedId: state.selectedId,
+            snapDeg: FEATURES.snapDeg,
+            anglesDeg: Object.fromEntries(
+              Object.entries(state.jointAngles).map(([id, r]) => [id, Math.round(radToDeg(r))]),
+            ),
+          };
+        };
+
+        const importPose = (obj) => {
+          if (!obj || typeof obj !== "object") throw new Error("invalid payload");
+          const anglesDeg = obj.anglesDeg || {};
+          for (const j of state.rig.joints) {
+            if (anglesDeg[j.id] == null) continue;
+            setJointAngleRad(j.id, degToRad(Number(anglesDeg[j.id]) || 0));
+          }
+          FEATURES.snapDeg = Number(obj.snapDeg) || 0;
+          dom.snapDeg.value = String(FEATURES.snapDeg);
+          dom.snapOut.textContent = `${FEATURES.snapDeg}°`;
+          if (typeof obj.selectedId === "string") setSelected(obj.selectedId);
+          rebuildJointList();
+          updateSelectedUI();
+          requestRender();
+        };
+
+        // --- Integration hooks for automated testing / external control
+        window.render_game_to_text = () => {
+          const w = getWorld();
+          const selected = w[state.selectedId] || null;
+          return JSON.stringify({
+            mode: "fk_rotation_only",
+            note: "origin at canvas center; +x right, +y down",
+            selectedId: state.selectedId,
+            selectedWorld: selected ? { x: selected.x, y: selected.y, angleDeg: Math.round(radToDeg(selected.angle)) } : null,
+            anglesDeg: Object.fromEntries(Object.entries(state.jointAngles).map(([id, r]) => [id, Math.round(radToDeg(r))])),
+            advanced: FEATURES.advanced,
+          });
+        };
+
+        window.advanceTime = (ms) => {
+          // No simulation yet; keep deterministic stepping hook for tooling.
+          // Treat ms as "request a render".
+          requestRender();
+        };
+
+        window.__bitruvius_startup = {
+          exportPose,
+          importPose,
+          setSelected,
+          setJointAngleDeg: (id, deg) => {
+            setJointAngleRad(id, degToRad(deg));
+            if (state.selectedId === id) updateSelectedUI();
+            requestRender();
+          },
+          getState: () => JSON.parse(window.render_game_to_text()),
+        };
+
+        // --- Boot
+        const boot = () => {
+          setAdvanced(FEATURES.advanced);
+          dom.snapOut.textContent = `${FEATURES.snapDeg}°`;
+          dom.snapDeg.value = String(FEATURES.snapDeg);
+          rebuildJointList();
+          setSelected(state.selectedId);
+          resizeCanvas();
+          window.addEventListener("resize", resizeCanvas);
+          log("startup ready: /startup.html");
+          requestRender();
+        };
+
+        boot();
+      })();
+    </script>
+  </body>
+</html>

@@ -9,12 +9,37 @@ export type WheelMathArgs = {
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 const quantize = (v: number, min: number, step: number) => {
-  if (!Number.isFinite(step) || step <= 0) return v;
+  // Input validation
+  if (!Number.isFinite(v) || !Number.isFinite(min) || !Number.isFinite(step)) {
+    return v;
+  }
+  
+  // Handle edge cases for step
+  if (step <= 0) {
+    // If step is invalid or zero, return the value clamped to reasonable bounds
+    return v;
+  }
+  
+  // Handle very small steps to prevent floating point precision issues
+  if (step < 1e-10) {
+    return v;
+  }
+  
   const q = Math.round((v - min) / step) * step + min;
+  
   // Avoid floating noise in UI readouts (e.g. 0.30000000004)
-  const digits = Math.max(0, Math.min(8, Math.ceil(-Math.log10(step)) + 1));
+  // Calculate appropriate precision based on step size
+  const stepLog10 = Math.log10(Math.abs(step));
+  const digits = Math.max(0, Math.min(12, Math.ceil(-stepLog10) + 2));
   const m = Math.pow(10, digits);
-  return Math.round(q * m) / m;
+  const quantized = Math.round(q * m) / m;
+  
+  // Final validation to ensure we didn't create NaN or Infinity
+  if (!Number.isFinite(quantized)) {
+    return v;
+  }
+  
+  return quantized;
 };
 
 export function applyWheelDeltaLinear(value: number, deltaDeg: number, args: WheelMathArgs): number {

@@ -2,6 +2,8 @@ import type { Point, Joint, SkeletonState } from './types';
 import { getWorldPosition } from './kinematics';
 import { INITIAL_JOINTS } from './model';
 
+const isFinitePoint = (p: Point): boolean => Number.isFinite(p.x) && Number.isFinite(p.y);
+
 export interface BalancedNeckConfig {
   enabled: boolean;
   clavicleInfluence: number; // 0-1, how much clavicles influence neck position
@@ -52,6 +54,15 @@ export const computeBalancedNeckPosition = (
   if (!config.enabled) return null;
 
   try {
+    // Validate required joints exist
+    const requiredJoints = ['l_clavicle', 'r_clavicle', 'collar', 'sternum'];
+    for (const jointId of requiredJoints) {
+      if (!joints[jointId]) {
+        console.warn(`Missing required joint for balanced neck calculation: ${jointId}`);
+        return null;
+      }
+    }
+
     // Get world positions of clavicles and collar
     const lClavicleWorld = getWorldPosition('l_clavicle', joints, INITIAL_JOINTS, 'preview');
     const rClavicleWorld = getWorldPosition('r_clavicle', joints, INITIAL_JOINTS, 'preview');
@@ -59,6 +70,14 @@ export const computeBalancedNeckPosition = (
     const sternumWorld = getWorldPosition('sternum', joints, INITIAL_JOINTS, 'preview');
 
     if (!lClavicleWorld || !rClavicleWorld || !collarWorld || !sternumWorld) {
+      console.warn('Failed to get world positions for balanced neck calculation');
+      return null;
+    }
+
+    // Validate world positions are finite
+    if (!isFinitePoint(lClavicleWorld) || !isFinitePoint(rClavicleWorld) || 
+        !isFinitePoint(collarWorld) || !isFinitePoint(sternumWorld)) {
+      console.warn('Non-finite world positions detected in balanced neck calculation');
       return null;
     }
 
@@ -75,23 +94,45 @@ export const computeBalancedNeckPosition = (
     };
     const torsoLength = Math.hypot(torsoDirection.x, torsoDirection.y);
     
-    if (torsoLength < 1e-6) return null;
+    if (torsoLength < 1e-6) {
+      console.warn('Torso length too small for balanced neck calculation');
+      return null;
+    }
     
     const normalizedTorsoDirection = {
       x: torsoDirection.x / torsoLength,
       y: torsoDirection.y / torsoLength,
     };
 
-    // Get default neck length from initial joints
+    // Validate normalized direction
+    if (!isFinitePoint(normalizedTorsoDirection)) {
+      console.warn('Invalid normalized torso direction in balanced neck calculation');
+      return null;
+    }
+
+    // Get default neck length from initial joints with validation
     const neckBaseInitial = getWorldPosition('neck_base', INITIAL_JOINTS, INITIAL_JOINTS);
     const collarInitial = getWorldPosition('collar', INITIAL_JOINTS, INITIAL_JOINTS);
     
-    if (!neckBaseInitial || !collarInitial) return null;
+    if (!neckBaseInitial || !collarInitial) {
+      console.warn('Failed to get initial joint positions for balanced neck calculation');
+      return null;
+    }
+
+    if (!isFinitePoint(neckBaseInitial) || !isFinitePoint(collarInitial)) {
+      console.warn('Non-finite initial positions detected in balanced neck calculation');
+      return null;
+    }
     
     const defaultNeckLength = Math.hypot(
       neckBaseInitial.x - collarInitial.x,
       neckBaseInitial.y - collarInitial.y
     );
+
+    if (defaultNeckLength < 1e-6) {
+      console.warn('Default neck length too small for balanced neck calculation');
+      return null;
+    }
 
     // Calculate the target neck position
     const clavicleInfluencePoint = {
@@ -104,6 +145,12 @@ export const computeBalancedNeckPosition = (
       y: collarWorld.y + normalizedTorsoDirection.y * defaultNeckLength,
     };
 
+    // Validate influence points
+    if (!isFinitePoint(clavicleInfluencePoint) || !isFinitePoint(torsoInfluencePoint)) {
+      console.warn('Invalid influence points in balanced neck calculation');
+      return null;
+    }
+
     // Blend between clavicle midpoint and torso direction
     const targetPosition = {
       x: clavicleInfluencePoint.x * config.clavicleInfluence + 
@@ -112,14 +159,34 @@ export const computeBalancedNeckPosition = (
          torsoInfluencePoint.y * config.torsoInfluence,
     };
 
+    // Validate target position
+    if (!isFinitePoint(targetPosition)) {
+      console.warn('Invalid target position in balanced neck calculation');
+      return null;
+    }
+
     // Apply follow strength (how strongly to move toward target)
     const currentNeckWorld = getWorldPosition('neck_base', joints, INITIAL_JOINTS, 'preview');
-    if (!currentNeckWorld) return targetPosition;
+    if (!currentNeckWorld) {
+      console.warn('Failed to get current neck world position');
+      return targetPosition; // Return target as fallback
+    }
+
+    if (!isFinitePoint(currentNeckWorld)) {
+      console.warn('Non-finite current neck world position detected');
+      return targetPosition; // Return target as fallback
+    }
 
     const finalPosition = {
       x: currentNeckWorld.x + (targetPosition.x - currentNeckWorld.x) * config.followStrength,
       y: currentNeckWorld.y + (targetPosition.y - currentNeckWorld.y) * config.followStrength,
     };
+
+    // Final validation
+    if (!isFinitePoint(finalPosition)) {
+      console.warn('Invalid final position in balanced neck calculation');
+      return targetPosition; // Return target as fallback
+    }
 
     return finalPosition;
 

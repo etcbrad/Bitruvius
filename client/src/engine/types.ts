@@ -8,18 +8,18 @@ export enum PartName {
   Waist = 'waist',
   Collar = 'collar',
   NeckBase = 'neck_base',
-  RShoulder = 'rShoulder',
-  RElbow = 'rElbow',
-  RWrist = 'rWrist',
-  LShoulder = 'lShoulder',
-  LElbow = 'lElbow',
-  LWrist = 'lWrist',
-  RThigh = 'rThigh',
-  RSkin = 'rSkin',
-  RAnkle = 'rAnkle',
-  LThigh = 'lThigh',
-  LSkin = 'lSkin',
-  LAnkle = 'lAnkle',
+  RShoulder = 'r_clavicle',
+  RElbow = 'r_elbow',
+  RWrist = 'r_wrist',
+  LShoulder = 'l_clavicle',
+  LElbow = 'l_elbow',
+  LWrist = 'l_wrist',
+  RThigh = 'r_hip',
+  RSkin = 'r_knee',
+  RAnkle = 'r_ankle',
+  LThigh = 'l_hip',
+  LSkin = 'l_knee',
+  LAnkle = 'l_ankle',
 }
 
 export const PART_NAMES: PartName[] = Object.values(PartName);
@@ -29,18 +29,18 @@ export const partNameToPoseKey: { [key in PartName]: string } = {
   [PartName.Waist]: 'waist',
   [PartName.Collar]: 'collar',
   [PartName.NeckBase]: 'neck_base',
-  [PartName.RShoulder]: 'rShoulder',
-  [PartName.RElbow]: 'rForearm',
-  [PartName.RWrist]: 'rWrist',
-  [PartName.LShoulder]: 'lShoulder',
-  [PartName.LElbow]: 'lForearm',
-  [PartName.LWrist]: 'lWrist',
-  [PartName.RThigh]: 'rThigh',
-  [PartName.RSkin]: 'rCalf',
-  [PartName.RAnkle]: 'rAnkle',
-  [PartName.LThigh]: 'lThigh',
-  [PartName.LSkin]: 'lCalf',
-  [PartName.LAnkle]: 'lAnkle',
+  [PartName.RShoulder]: 'r_clavicle',
+  [PartName.RElbow]: 'r_elbow',
+  [PartName.RWrist]: 'r_wrist',
+  [PartName.LShoulder]: 'l_clavicle',
+  [PartName.LElbow]: 'l_elbow',
+  [PartName.LWrist]: 'l_wrist',
+  [PartName.RThigh]: 'r_hip',
+  [PartName.RSkin]: 'r_knee',
+  [PartName.RAnkle]: 'r_ankle',
+  [PartName.LThigh]: 'l_hip',
+  [PartName.LSkin]: 'l_knee',
+  [PartName.LAnkle]: 'l_ankle',
 };
 
 export const PARENT_MAP: { [key in PartName]?: PartName } = {
@@ -197,6 +197,23 @@ export type CutoutSlot = {
   anchorX: number;
   anchorY: number;
   tint?: string | null;
+};
+
+export type SheetSegment = {
+  id: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  area: number;
+  thumbnail: string;
+};
+
+export type SheetPalette = {
+  sheetId: string | null;
+  name: string;
+  dims: { width: number; height: number } | null;
+  segments: SheetSegment[];
+  selectedSegmentId: string | null;
+  targetSlotId: string | null;
+  previewSrc?: string | null;
 };
 
 export type JointMask = {
@@ -467,12 +484,18 @@ export type SkeletonState = {
   scene: SceneState;
   assets: Record<string, CutoutAsset>;
   cutoutSlots: Record<string, CutoutSlot>;
+  sheetPalette: SheetPalette;
   cutoutRig: {
     /**
      * Whether the waist cutout should be linked to the torso cutout's transform.
      * When true, moving the torso also moves the waist cutout.
      */
     linkWaistToTorso: boolean;
+    /**
+     * Whether joints should be linked to mask pieces for rigid behavior.
+     * When true, mask pieces stay rigid and joints follow their transform.
+     */
+    linkJointsToMasks: boolean;
   };
   views: ViewPreset[];
   activeViewId: string;

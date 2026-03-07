@@ -8,15 +8,15 @@ export const SLENDERBIT_JOINTS: Record<string, Joint> = {
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -0.5 }, currentOffset: { x: 0, y: -0.5 }, targetOffset: { x: 0, y: -0.5 }, previewOffset: { x: 0, y: -0.5 }, rotation: 0 },
   skull: { id: 'skull', label: 'Skull', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  head: { id: 'head', label: 'Head', parent: 'skull', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
+  head: { id: 'head', label: 'Head', parent: 'skull', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, isEndEffector: true, rotation: 0 },
   
-  l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -2.5, y: -0.5 }, currentOffset: { x: -2.5, y: -0.5 }, targetOffset: { x: -2.5, y: -0.5 }, previewOffset: { x: -2.5, y: -0.5 }, mirrorId: 'r_clavicle', rotation: 0 },
+  l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.25, y: -0.5 }, currentOffset: { x: -1.25, y: -0.5 }, targetOffset: { x: -1.25, y: -0.5 }, previewOffset: { x: -1.25, y: -0.5 }, mirrorId: 'r_clavicle', rotation: 0 },
   l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: -1.5, y: 3.75 }, currentOffset: { x: -1.5, y: 3.75 }, targetOffset: { x: -1.5, y: 3.75 }, previewOffset: { x: -1.5, y: 3.75 }, mirrorId: 'r_bicep', rotation: 0 },
   l_elbow: { id: 'l_elbow', label: 'L Elbow', parent: 'l_bicep', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, rotation: 0 },
   l_wrist: { id: 'l_wrist', label: 'L Wrist', parent: 'l_elbow', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, isEndEffector: true, mirrorId: 'r_wrist', rotation: 0 },
   l_fingertip: { id: 'l_fingertip', label: 'L Fingertip', parent: 'l_wrist', baseOffset: { x: -1, y: 1 }, currentOffset: { x: -1, y: 1 }, targetOffset: { x: -1, y: 1 }, previewOffset: { x: -1, y: 1 }, mirrorId: 'r_fingertip', rotation: 0 },
 
-  r_clavicle: { id: 'r_clavicle', label: 'R Clavicle', parent: 'collar', baseOffset: { x: 2.5, y: -0.5 }, currentOffset: { x: 2.5, y: -0.5 }, targetOffset: { x: 2.5, y: -0.5 }, previewOffset: { x: 2.5, y: -0.5 }, mirrorId: 'l_clavicle', rotation: 0 },
+  r_clavicle: { id: 'r_clavicle', label: 'R Clavicle', parent: 'collar', baseOffset: { x: 1.25, y: -0.5 }, currentOffset: { x: 1.25, y: -0.5 }, targetOffset: { x: 1.25, y: -0.5 }, previewOffset: { x: 1.25, y: -0.5 }, mirrorId: 'l_clavicle', rotation: 0 },
   r_bicep: { id: 'r_bicep', label: 'R Bicep', parent: 'r_clavicle', baseOffset: { x: 1.5, y: 3.75 }, currentOffset: { x: 1.5, y: 3.75 }, targetOffset: { x: 1.5, y: 3.75 }, previewOffset: { x: 1.5, y: 3.75 }, mirrorId: 'l_bicep', rotation: 0 },
   r_elbow: { id: 'r_elbow', label: 'R Elbow', parent: 'r_bicep', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, rotation: 0 },
   r_wrist: { id: 'r_wrist', label: 'R Wrist', parent: 'r_elbow', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, isEndEffector: true, mirrorId: 'l_wrist', rotation: 0 },
@@ -41,16 +41,16 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
   collar: { id: 'collar', label: 'Collar', parent: 'sternum', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, rotation: 0 },
   neck_base: { id: 'neck_base', label: 'Neck Base', parent: 'collar', baseOffset: { x: 0, y: -0.5 }, currentOffset: { x: 0, y: -0.5 }, targetOffset: { x: 0, y: -0.5 }, previewOffset: { x: 0, y: -0.5 }, rotation: 0 },
   skull: { id: 'skull', label: 'Skull', parent: 'neck_base', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, rotation: 0 },
-  head: { id: 'head', label: 'Head', parent: 'skull', baseOffset: { x: 0, y: -1 }, currentOffset: { x: 0, y: -1 }, targetOffset: { x: 0, y: -1 }, previewOffset: { x: 0, y: -1 }, isEndEffector: true, rotation: 0 },
+  head: { id: 'head', label: 'Head', parent: 'skull', baseOffset: { x: 0, y: -2 }, currentOffset: { x: 0, y: -2 }, targetOffset: { x: 0, y: -2 }, previewOffset: { x: 0, y: -2 }, isEndEffector: true, rotation: 0 },
     
-  l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -2.5, y: -0.5 }, currentOffset: { x: -2.5, y: -0.5 }, targetOffset: { x: -2.5, y: -0.5 }, previewOffset: { x: -2.5, y: -0.5 }, mirrorId: 'r_clavicle', rotation: 0 },
+  l_clavicle: { id: 'l_clavicle', label: 'L Clavicle', parent: 'collar', baseOffset: { x: -1.25, y: -0.5 }, currentOffset: { x: -1.25, y: -0.5 }, targetOffset: { x: -1.25, y: -0.5 }, previewOffset: { x: -1.25, y: -0.5 }, mirrorId: 'r_clavicle', rotation: 0 },
   // Humerus length matches clavicle; remaining reach is allocated to the upper arm.
   l_bicep: { id: 'l_bicep', label: 'L Bicep', parent: 'l_clavicle', baseOffset: { x: -1.841, y: 0.65 }, currentOffset: { x: -1.841, y: 0.65 }, targetOffset: { x: -1.841, y: 0.65 }, previewOffset: { x: -1.841, y: 0.65 }, mirrorId: 'r_bicep', rotation: 0 },
   l_elbow: { id: 'l_elbow', label: 'L Elbow', parent: 'l_bicep', baseOffset: { x: -4.711, y: 0.629 }, currentOffset: { x: -4.711, y: 0.629 }, targetOffset: { x: -4.711, y: 0.629 }, previewOffset: { x: -4.711, y: 0.629 }, rotation: 0 },
   l_wrist: { id: 'l_wrist', label: 'L Wrist', parent: 'l_elbow', baseOffset: { x: -4, y: 0 }, currentOffset: { x: -4, y: 0 }, targetOffset: { x: -4, y: 0 }, previewOffset: { x: -4, y: 0 }, isEndEffector: true, mirrorId: 'r_wrist', rotation: 0 },
   l_fingertip: { id: 'l_fingertip', label: 'L Fingertip', parent: 'l_wrist', baseOffset: { x: -1.5, y: 0 }, currentOffset: { x: -1.5, y: 0 }, targetOffset: { x: -1.5, y: 0 }, previewOffset: { x: -1.5, y: 0 }, mirrorId: 'r_fingertip', rotation: 0 },
 
-  r_clavicle: { id: 'r_clavicle', label: 'R Clavicle', parent: 'collar', baseOffset: { x: 2.5, y: -0.5 }, currentOffset: { x: 2.5, y: -0.5 }, targetOffset: { x: 2.5, y: -0.5 }, previewOffset: { x: 2.5, y: -0.5 }, mirrorId: 'l_clavicle', rotation: 0 },
+  r_clavicle: { id: 'r_clavicle', label: 'R Clavicle', parent: 'collar', baseOffset: { x: 1.25, y: -0.5 }, currentOffset: { x: 1.25, y: -0.5 }, targetOffset: { x: 1.25, y: -0.5 }, previewOffset: { x: 1.25, y: -0.5 }, mirrorId: 'l_clavicle', rotation: 0 },
   // Humerus length matches clavicle; remaining reach is allocated to the upper arm.
   r_bicep: { id: 'r_bicep', label: 'R Bicep', parent: 'r_clavicle', baseOffset: { x: 1.841, y: 0.65 }, currentOffset: { x: 1.841, y: 0.65 }, targetOffset: { x: 1.841, y: 0.65 }, previewOffset: { x: 1.841, y: 0.65 }, mirrorId: 'l_bicep', rotation: 0 },
   r_elbow: { id: 'r_elbow', label: 'R Elbow', parent: 'r_bicep', baseOffset: { x: 4.711, y: 0.629 }, currentOffset: { x: 4.711, y: 0.629 }, targetOffset: { x: 4.711, y: 0.629 }, previewOffset: { x: 4.711, y: 0.629 }, rotation: 0 },

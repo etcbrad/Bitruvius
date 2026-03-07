@@ -1,4 +1,5 @@
 import type { RigidityPreset, SkeletonState } from './types';
+import { UnifiedPhysicsMode, PHYSICS_PROFILES, getOptimalMode, applyPhysicsProfile } from './unifiedPhysics';
 
 export type PhysicsBlendMode = 'lotte' | 'hybrid' | 'fluid';
 
@@ -21,57 +22,33 @@ export const loadStarterPose = (state: SkeletonState): SkeletonState => {
 };
 
 export const getPhysicsBlendMode = (state: SkeletonState): PhysicsBlendMode => {
+  // Use unified system to determine blend mode
+  const optimalMode = getOptimalMode(state);
   const v = state.physicsRigidity ?? 0;
-  if (v <= 0.1) return 'lotte';
-  if (v >= 0.9) return 'fluid';
+  
+  if (optimalMode === 'rigid' || optimalMode === 'fk') return 'lotte';
+  if (optimalMode === 'fluid') return 'fluid';
   return 'hybrid';
 };
 
 export const applyPhysicsMode = (state: SkeletonState, rigidityValue: number): SkeletonState => {
+  // Use unified physics profiles for consistent behavior
   const v = Math.max(0, Math.min(1, rigidityValue));
-  const isFullyRigid = v <= 0.1;
-  const isFullyFluid = v >= 0.9;
+  
+  let targetMode: UnifiedPhysicsMode;
+  if (v <= 0.1) targetMode = 'rigid';
+  else if (v >= 0.9) targetMode = 'fluid';
+  else if (v < 0.5) targetMode = 'rigid';
+  else targetMode = 'balanced';
+  
+  return applyPhysicsProfile(state, targetMode);
+};
 
-  let rigidity: RigidityPreset = state.rigidity;
-  let bendEnabled = state.bendEnabled;
-  let stretchEnabled = state.stretchEnabled;
-  let hardStop = state.hardStop;
-  let controlMode = state.controlMode;
+// Legacy compatibility - these functions now delegate to the unified system
+export const getOptimalPhysicsMode = (state: SkeletonState): UnifiedPhysicsMode => {
+  return getOptimalMode(state);
+};
 
-  if (isFullyRigid) {
-    rigidity = 'cardboard';
-    bendEnabled = false;
-    stretchEnabled = false;
-    hardStop = true;
-    // Keep controlMode as-is so users can do rigid IK posing (planted feet) without the dial forcing FK.
-  } else if (isFullyFluid) {
-    rigidity = 'rubberhose';
-    bendEnabled = true;
-    stretchEnabled = true;
-    hardStop = false;
-    controlMode = 'IK';
-  } else {
-    if (v < 0.5) {
-      rigidity = 'cardboard';
-      bendEnabled = v > 0.25;
-      stretchEnabled = false;
-      hardStop = v < 0.3;
-      // preserve user-selected controlMode in the middle band
-    } else {
-      rigidity = 'realistic';
-      bendEnabled = true;
-      stretchEnabled = v > 0.7;
-      hardStop = false;
-    }
-  }
-
-  return {
-    ...state,
-    rigidity,
-    bendEnabled,
-    stretchEnabled,
-    hardStop,
-    controlMode,
-    physicsRigidity: v,
-  };
+export const applyUnifiedPhysicsMode = (state: SkeletonState, mode: UnifiedPhysicsMode): SkeletonState => {
+  return applyPhysicsProfile(state, mode);
 };

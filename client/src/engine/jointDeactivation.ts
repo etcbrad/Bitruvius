@@ -31,53 +31,21 @@ export const applyDeactivationConstraints = (state: SkeletonState): SkeletonStat
     const joint = nextJoints[jointId];
     if (!joint || !joint.parent) continue;
 
-    const parentJoint = nextJoints[joint.parent];
-    if (!parentJoint) continue;
+    // For completely rigid joints, maintain their initial relative transformation
+    // but don't allow any manipulation - they just get dragged by parent movement
+    const initialJoint = INITIAL_JOINTS[jointId];
+    const initialParent = INITIAL_JOINTS[joint.parent];
+    
+    if (!initialJoint || !initialParent) continue;
 
-    // Get the initial straight direction from INITIAL_JOINTS
-    const initialPos = getWorldPosition(jointId, INITIAL_JOINTS, INITIAL_JOINTS);
-    const initialParentPos = getWorldPosition(joint.parent, INITIAL_JOINTS, INITIAL_JOINTS);
-    
-    // Get current parent position
-    const currentParentPos = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS);
-    
-    // Calculate the straight direction vector
-    const initialDirection = {
-      x: initialPos.x - initialParentPos.x,
-      y: initialPos.y - initialParentPos.y,
-    };
-    
-    // Normalize the direction
-    const length = Math.sqrt(initialDirection.x * initialDirection.x + initialDirection.y * initialDirection.y);
-    if (length === 0) continue;
-    
-    const normalizedDirection = {
-      x: initialDirection.x / length,
-      y: initialDirection.y / length,
-    };
-    
-    // Calculate the expected position (parent position + direction * original length)
-    const expectedPos = {
-      x: currentParentPos.x + normalizedDirection.x * length,
-      y: currentParentPos.y + normalizedDirection.y * length,
-    };
-    
-    // Calculate the offset needed to maintain straight line
-    const currentPos = getWorldPosition(jointId, state.joints, INITIAL_JOINTS);
-    const currentParentPosForOffset = getWorldPosition(joint.parent, state.joints, INITIAL_JOINTS);
-    
-    const requiredOffset = {
-      x: expectedPos.x - currentParentPosForOffset.x,
-      y: expectedPos.y - currentParentPosForOffset.y,
-    };
-    
-    // Update the joint to maintain straight line
+    // Use the initial relative offset and rotation from the INITIAL_JOINTS
+    // This makes the joint completely rigid - it maintains initial pose
     nextJoints[jointId] = {
       ...joint,
-      currentOffset: requiredOffset,
-      targetOffset: requiredOffset,
-      previewOffset: requiredOffset,
-      rotation: 0, // Keep rotation at 0 for straight joints
+      currentOffset: initialJoint.currentOffset,
+      targetOffset: initialJoint.currentOffset,
+      previewOffset: initialJoint.currentOffset,
+      rotation: initialJoint.rotation,
     };
   }
 

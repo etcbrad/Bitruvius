@@ -1,7 +1,15 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Eye, EyeOff, Upload, X } from 'lucide-react';
 
-import type { ControlMode, CutoutAsset, CutoutSlot, JointMask, SkeletonState } from '@/engine/types';
+import type {
+  ControlMode,
+  CutoutAsset,
+  CutoutSlot,
+  JointMask,
+  SkeletonState,
+  SheetPalette,
+  SheetSegment,
+} from '@/engine/types';
 import { canonicalConnKey } from '@/app/connectionKey';
 import { CONNECTIONS, INITIAL_JOINTS } from '@/engine/model';
 import { getWorldPosition, toAngleDeg } from '@/engine/kinematics';
@@ -9,12 +17,18 @@ import { processMaskImageFileToDataUrl } from '@/app/maskImageProcessing';
 import { toggleJointDeactivation } from '@/engine/jointDeactivation';
 import { clamp } from '@/utils';
 
+import { DEFAULT_SHEETS } from '@/app/sheetLibrary';
+import {
+  segmentSheetFromDataUrl,
+  segmentSheetFromFile,
+  segmentSheetFromUrl,
+} from '@/app/sheetParser';
 import { ValueWheelControl } from '@/components/ValueWheelControl';
 
 type DetailsTab = 'mask' | 'joint' | 'bone' | 'shape';
 type MaskTargetType = 'piece' | 'joint' | 'head';
 
-type MaskWheelParam = 'scale' | 'opacity' | 'stretchX' | 'stretchY' | 'skewX' | 'skewY' | 'anchorX' | 'anchorY';
+type MaskWheelParam = 'scale' | 'opacity' | 'stretchX' | 'stretchY' | 'skewX' | 'skewY' | 'anchorX' | 'anchorY' | 'volumePreserve';
 
 type Props = {
   state: SkeletonState;
@@ -36,7 +50,7 @@ type Props = {
   uploadHeadMaskFile: (file: File) => Promise<void>;
   uploadJointMaskFile: (file: File, jointId: string) => Promise<void>;
 
-  // Optional: force a stable piece order in Build mode.
+  // Optional: force a stable piece order in FK mode.
   pieceOrder?: string[];
   selectedPieceId?: string;
   setSelectedPieceId?: (id: string) => void;
@@ -55,6 +69,9 @@ type Props = {
     | 'skew'
     | 'anchor';
   setMaskDragMode?: (next: NonNullable<Props['maskDragMode']>) => void;
+  sheetPalette: SheetPalette;
+  updateSheetPalette: (patch: Partial<SheetPalette>) => void;
+  assignSegmentToSlot: (segment: SheetSegment, slotId?: string) => void;
 };
 
 const CONTROL_MODES: ControlMode[] = ['Cardboard', 'Rubberband', 'IK', 'JointDrag'];
@@ -74,6 +91,44 @@ const MASK_PARAM_LABELS: Record<MaskWheelParam, string> = {
   skewY: 'SkewY',
   anchorX: 'AnchorX',
   anchorY: 'AnchorY',
+  volumePreserve: 'Auto Size',
+};
+
+const SLIDER_STEPS = 1200;
+
+type WheelMeta = {
+  min: number;
+  max: number;
+  step: number;
+  mode: 'linear' | 'log';
+  fmt: (v: number) => string;
+  disabled: boolean;
+};
+
+const valueToNormalized = (value: number, meta: WheelMeta) => {
+  if (meta.max <= meta.min) return 0;
+  const clamped = clamp(value, meta.min, meta.max);
+  if (meta.mode === 'log') {
+    const logMin = Math.log(meta.min);
+    const logMax = Math.log(meta.max);
+    if (!Number.isFinite(logMin) || !Number.isFinite(logMax) || logMax <= logMin) return 0;
+    const logVal = Math.log(Math.max(clamped, meta.min));
+    return (logVal - logMin) / (logMax - logMin);
+  }
+  return (clamped - meta.min) / (meta.max - meta.min);
+};
+
+const normalizedToValue = (normalized: number, meta: WheelMeta) => {
+  const t = clamp(normalized, 0, 1);
+  if (meta.mode === 'log') {
+    const logMin = Math.log(meta.min);
+    const logMax = Math.log(meta.max);
+    if (!Number.isFinite(logMin) || !Number.isFinite(logMax) || logMax <= logMin) {
+      return meta.min;
+    }
+    return Math.exp(logMin + (logMax - logMin) * t);
+  }
+  return meta.min + (meta.max - meta.min) * t;
 };
 
 const toDeg180 = (deg: number) => ((deg % 360) + 540) % 360 - 180;
@@ -99,6 +154,9 @@ export const DetailsWidget: React.FC<Props> = ({
   setMaskEditArmed,
   maskDragMode,
   setMaskDragMode,
+  sheetPalette,
+  updateSheetPalette,
+  assignSegmentToSlot,
 }) => {
   const [tab, setTab] = useState<DetailsTab>('mask');
   const [maskTargetType, setMaskTargetType] = useState<MaskTargetType>('piece');
@@ -112,6 +170,9 @@ export const DetailsWidget: React.FC<Props> = ({
   const pieceInputRef = useRef<HTMLInputElement | null>(null);
   const jointInputRef = useRef<HTMLInputElement | null>(null);
   const headInputRef = useRef<HTMLInputElement | null>(null);
+  const sheetFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [sheetLoading, setSheetLoading] = useState(false);
+  const [sheetError, setSheetError] = useState<string | null>(null);
 
   const pieces = useMemo(() => {
     const ids = pieceOrder?.length ? pieceOrder : Object.keys(state.cutoutSlots);
@@ -164,8 +225,62 @@ export const DetailsWidget: React.FC<Props> = ({
       else setPieceIdInternal(id);
       const slot = state.cutoutSlots[id];
       if (slot) setSelectionFromPiece(slot);
+      updateSheetPalette({ targetSlotId: id });
     },
-    [setSelectedPieceId, setSelectionFromPiece, state.cutoutSlots],
+    [setSelectedPieceId, setSelectionFromPiece, state.cutoutSlots, updateSheetPalette],
+  );
+
+  const setPaletteFromResult = useCallback(
+    (
+      result: { segments: SheetSegment[]; width: number; height: number },
+      info: { id: string; name: string },
+    ) => {
+      updateSheetPalette({
+        sheetId: info.id,
+        name: info.name,
+        dims: { width: result.width, height: result.height },
+        segments: result.segments,
+        selectedSegmentId: null,
+      });
+    },
+    [updateSheetPalette],
+  );
+
+  const handleLoadDefaultSheet = useCallback(
+    async (sheet: (typeof DEFAULT_SHEETS)[number]) => {
+      setSheetLoading(true);
+      setSheetError(null);
+      try {
+        const result = await segmentSheetFromUrl(sheet.src);
+        setPaletteFromResult(result, { id: sheet.id, name: sheet.name });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to load sheet';
+        setSheetError(message);
+      } finally {
+        setSheetLoading(false);
+      }
+    },
+    [setPaletteFromResult],
+  );
+
+  const handleSheetFileInput = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      setSheetLoading(true);
+      setSheetError(null);
+      try {
+        const result = await segmentSheetFromFile(file);
+        setPaletteFromResult(result, { id: file.name, name: file.name });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to parse sheet file';
+        setSheetError(message);
+      } finally {
+        setSheetLoading(false);
+        if (event.target) event.target.value = '';
+      }
+    },
+    [setPaletteFromResult],
   );
 
   const maskWheelParam = wheelParamByTarget[maskTargetType];
@@ -344,6 +459,7 @@ export const DetailsWidget: React.FC<Props> = ({
           else if (param === 'stretchY') updates.lengthScale = next;
           else if (param === 'anchorX') updates.anchorX = next;
           else if (param === 'anchorY') updates.anchorY = next;
+          else if (param === 'volumePreserve') updates.volumePreserve = Boolean(next);
           // Skew params not supported on CutoutSlot (disabled in UI).
           return { ...prev, cutoutSlots: { ...prev.cutoutSlots, [selectedPiece.id]: { ...slot, ...updates } } };
         });
@@ -382,6 +498,7 @@ export const DetailsWidget: React.FC<Props> = ({
         if (param === 'stretchY') return piece.lengthScale ?? 1;
         if (param === 'anchorX') return piece.anchorX ?? 0.5;
         if (param === 'anchorY') return piece.anchorY ?? 0.5;
+        if (param === 'volumePreserve') return piece.volumePreserve ? 1 : 0;
         if (param === 'skewX' || param === 'skewY') return 0;
         return 0;
       }
@@ -395,13 +512,14 @@ export const DetailsWidget: React.FC<Props> = ({
       if (param === 'stretchY') return 1;
       if (param === 'anchorX') return 0.5;
       if (param === 'anchorY') return 0.5;
+      if (param === 'volumePreserve') return 0;
       return 0;
     };
   }, [maskJointId, maskTargetType, selectedPiece, state.scene.headMask, state.scene.jointMasks]);
 
   const maskParamValue = getMaskParamValue(maskWheelParam);
 
-  const paramMeta = useMemo(() => {
+  const baseParamMeta = useMemo<WheelMeta>(() => {
     const disabledSkew = maskTargetType === 'piece';
     const isSkew = maskWheelParam === 'skewX' || maskWheelParam === 'skewY';
     const disabled = disabledSkew && isSkew;
@@ -424,6 +542,8 @@ export const DetailsWidget: React.FC<Props> = ({
           return { min: 0, max: 1, step: 0.01, mode: 'linear' as const, fmt: (v: number) => v.toFixed(2) };
         case 'anchorY':
           return { min: 0, max: 1, step: 0.01, mode: 'linear' as const, fmt: (v: number) => v.toFixed(2) };
+        case 'volumePreserve':
+          return { min: 0, max: 1, step: 1, mode: 'linear' as const, fmt: (v: number) => v ? 'ON' : 'OFF' };
         default:
           return { min: 0, max: 1, step: 0.01, mode: 'linear' as const, fmt: (v: number) => String(v) };
       }
@@ -431,6 +551,93 @@ export const DetailsWidget: React.FC<Props> = ({
 
     return { ...meta, disabled };
   }, [maskTargetType, maskWheelParam]);
+
+  const [paramRangeOverrides, setParamRangeOverrides] = useState<
+    Record<MaskWheelParam, { min?: number; max?: number }>
+  >({});
+
+  const activeParamMeta = useMemo<WheelMeta>(() => {
+    const overrides = paramRangeOverrides[maskWheelParam];
+    let min = typeof overrides?.min === 'number' && Number.isFinite(overrides.min) ? overrides.min : baseParamMeta.min;
+    let max = typeof overrides?.max === 'number' && Number.isFinite(overrides.max) ? overrides.max : baseParamMeta.max;
+
+    if (max <= min) {
+      max = min + Math.max(baseParamMeta.step, 1e-4);
+    }
+
+    if (baseParamMeta.mode === 'log') {
+      if (min <= 0) min = Math.max(baseParamMeta.step, 1e-4);
+      if (max <= min) max = min * 2;
+    }
+
+    return { ...baseParamMeta, min, max };
+  }, [baseParamMeta, maskWheelParam, paramRangeOverrides]);
+
+  const [valueField, setValueField] = useState(() => String(maskParamValue));
+  useEffect(() => {
+    setValueField(String(maskParamValue));
+  }, [maskParamValue]);
+
+  const [rangeFieldStrings, setRangeFieldStrings] = useState<Record<MaskWheelParam, { min: string; max: string }>>(
+    {},
+  );
+
+  useEffect(() => {
+    setRangeFieldStrings((prev) => {
+      const target = { min: String(activeParamMeta.min), max: String(activeParamMeta.max) };
+      const current = prev[maskWheelParam];
+      if (current?.min === target.min && current?.max === target.max) return prev;
+      return { ...prev, [maskWheelParam]: target };
+    });
+  }, [maskWheelParam, activeParamMeta.max, activeParamMeta.min]);
+
+  const handleValueFieldChange = useCallback((raw: string) => {
+    setValueField(raw);
+  }, []);
+
+  const commitValueField = useCallback(() => {
+    const parsed = Number(valueField);
+    if (Number.isFinite(parsed)) {
+      setMaskParam(maskWheelParam, parsed);
+      return;
+    }
+    setValueField(String(maskParamValue));
+  }, [maskParamValue, maskWheelParam, setMaskParam, valueField]);
+
+  const handleRangeFieldChange = useCallback(
+    (field: 'min' | 'max', raw: string) => {
+      setRangeFieldStrings((prev) => {
+        const entry = prev[maskWheelParam] ?? { min: '', max: '' };
+        return { ...prev, [maskWheelParam]: { ...entry, [field]: raw } };
+      });
+    },
+    [maskWheelParam],
+  );
+
+  const commitRangeField = useCallback(
+    (field: 'min' | 'max') => {
+      const raw = rangeFieldStrings[maskWheelParam]?.[field] ?? String(activeParamMeta[field]);
+      const trimmed = raw.trim();
+      const parsedValue = trimmed === '' ? undefined : Number(trimmed);
+      setParamRangeOverrides((prev) => {
+        const existing = prev[maskWheelParam] ?? {};
+        const next = { ...existing };
+        if (parsedValue === undefined || !Number.isFinite(parsedValue)) {
+          delete next[field];
+        } else {
+          next[field] = parsedValue;
+        }
+
+        if (next.min === undefined && next.max === undefined) {
+          const copy = { ...prev };
+          delete copy[maskWheelParam];
+          return copy;
+        }
+        return { ...prev, [maskWheelParam]: next };
+      });
+    },
+    [activeParamMeta, maskWheelParam, rangeFieldStrings],
+  );
 
   const setMaskOffset = useCallback(
     (axis: 'x' | 'y', next: number) => {
@@ -516,7 +723,18 @@ export const DetailsWidget: React.FC<Props> = ({
       const next = !Boolean(prev.cutoutRig?.linkWaistToTorso);
       return {
         ...prev,
-        cutoutRig: { ...(prev.cutoutRig ?? { linkWaistToTorso: false }), linkWaistToTorso: next },
+        cutoutRig: { ...(prev.cutoutRig ?? { linkWaistToTorso: false, linkJointsToMasks: false }), linkWaistToTorso: next },
+      };
+    });
+  }, [setStateWithHistory]);
+
+  const linkJointsToMasks = useMemo(() => Boolean(state.cutoutRig?.linkJointsToMasks), [state.cutoutRig]);
+  const toggleLinkJointsToMasks = useCallback(() => {
+    setStateWithHistory('cutout_rig:link_joints_to_masks', (prev) => {
+      const next = !Boolean(prev.cutoutRig?.linkJointsToMasks);
+      return {
+        ...prev,
+        cutoutRig: { ...(prev.cutoutRig ?? { linkWaistToTorso: false, linkJointsToMasks: false }), linkJointsToMasks: next },
       };
     });
   }, [setStateWithHistory]);
@@ -823,6 +1041,19 @@ export const DetailsWidget: React.FC<Props> = ({
             </label>
           )}
 
+          {maskTargetType === 'piece' && (
+            <label className="text-[10px] text-[#bbb] flex items-center justify-between gap-2">
+              <span className="uppercase tracking-widest">Link Joints→Masks</span>
+              <input
+                type="checkbox"
+                checked={linkJointsToMasks}
+                onChange={toggleLinkJointsToMasks}
+                className="accent-white"
+                title="When enabled, mask pieces stay rigid and joints follow their transform instead of deforming the mask."
+              />
+            </label>
+          )}
+
           {typeof maskEditArmed === 'boolean' && setMaskEditArmed && (
             <label className="text-[10px] text-[#bbb] flex items-center justify-between gap-2">
               <span className="uppercase tracking-widest">Mask Edit</span>
@@ -855,70 +1086,135 @@ export const DetailsWidget: React.FC<Props> = ({
 
           <div className="p-2 rounded-lg bg-[#111]/40 border border-white/10">
             <div className="text-[10px] font-bold uppercase tracking-widest text-[#666] mb-2">Transform</div>
-            <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="flex flex-col items-center gap-2">
               <ValueWheelControl
-                label="Rotation"
-                value={rotationDeg}
-                min={-180}
-                max={180}
-                step={1}
-                mode="linear"
+                label={MASK_PARAM_LABELS[maskWheelParam]}
+                value={maskParamValue}
+                min={activeParamMeta.min}
+                max={activeParamMeta.max}
+                step={activeParamMeta.step}
+                mode={activeParamMeta.mode}
                 sensitivity={1}
-                onChange={(v) => setMaskRotationDeg(v)}
-                disabled={!maskTarget.hasSrc}
-                formatValue={(v) => `${Math.round(v)}°`}
+                onChange={(v) => setMaskParam(maskWheelParam, v)}
+                disabled={!maskTarget.hasSrc || activeParamMeta.disabled}
+                formatValue={activeParamMeta.fmt}
               />
-              <div className="flex flex-col items-center gap-2">
-                <div className="flex flex-wrap gap-1 justify-center max-w-[190px]">
-                  {(
-                    [
-                      'scale',
-                      'opacity',
-                      'stretchX',
-                      'stretchY',
-                      'skewX',
-                      'skewY',
-                      'anchorX',
-                      'anchorY',
-                    ] as const
-                  ).map((p) => {
-                    const isSkew = p === 'skewX' || p === 'skewY';
-                    const disabled = maskTargetType === 'piece' && isSkew;
-                    const active = maskWheelParam === p;
-                    return (
-                      <button
-                        key={p}
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => setMaskWheelParam(p)}
-                        className={`px-2 py-1 rounded text-[9px] font-bold uppercase transition-all ${
-                          disabled
-                            ? 'bg-[#181818] text-[#444] cursor-not-allowed'
-                            : active
-                              ? 'bg-white text-black'
-                              : 'bg-[#222] hover:bg-[#333] text-[#666]'
-                        }`}
-                        title={disabled ? 'Not supported on Piece masks yet' : MASK_PARAM_LABELS[p]}
-                      >
-                        {MASK_PARAM_LABELS[p]}
-                      </button>
-                    );
-                  })}
-                </div>
-                <ValueWheelControl
-                  label={MASK_PARAM_LABELS[maskWheelParam]}
-                  value={maskParamValue}
-                  min={paramMeta.min}
-                  max={paramMeta.max}
-                  step={paramMeta.step}
-                  mode={paramMeta.mode}
-                  sensitivity={1}
-                  onChange={(v) => setMaskParam(maskWheelParam, v)}
-                  disabled={!maskTarget.hasSrc || paramMeta.disabled}
-                  formatValue={paramMeta.fmt}
+              <div className="text-[9px] text-[#555]">Shift = fine</div>
+            </div>
+            <div className="flex-1 space-y-3">
+              <div className="flex flex-wrap gap-1 justify-center max-w-[190px]">
+                {(
+                  [
+                    'scale',
+                    'opacity',
+                    'stretchX',
+                    'stretchY',
+                    'skewX',
+                    'skewY',
+                    'anchorX',
+                    'anchorY',
+                    'volumePreserve',
+                  ] as const
+                ).map((p) => {
+                  const isSkew = p === 'skewX' || p === 'skewY';
+                  const disabled = maskTargetType === 'piece' && isSkew;
+                  const active = maskWheelParam === p;
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => setMaskWheelParam(p)}
+                      className={`px-2 py-1 rounded text-[9px] font-bold uppercase transition-all ${
+                        disabled
+                          ? 'bg-[#181818] text-[#444] cursor-not-allowed'
+                          : active
+                            ? 'bg-white text-black'
+                            : 'bg-[#222] hover:bg-[#333] text-[#666]'
+                      }`}
+                      title={disabled ? 'Not supported on Piece masks yet' : MASK_PARAM_LABELS[p]}
+                    >
+                      {MASK_PARAM_LABELS[p]}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="space-y-3 rounded-xl border border-white/10 bg-[#111]/40 p-3">
+                <input
+                  type="range"
+                  min={0}
+                  max={SLIDER_STEPS}
+                  step={1}
+                  value={Math.round(valueToNormalized(maskParamValue, activeParamMeta) * SLIDER_STEPS)}
+                  onChange={(e) => {
+                    const normalized = Number(e.target.value) / SLIDER_STEPS;
+                    const next = normalizedToValue(normalized, activeParamMeta);
+                    setMaskParam(maskWheelParam, next);
+                  }}
+                  className="w-full h-2 cursor-pointer appearance-none rounded-full bg-[#333] accent-white disabled:opacity-40"
+                  disabled={!maskTarget.hasSrc || activeParamMeta.disabled}
+                  aria-label={`${MASK_PARAM_LABELS[maskWheelParam]} slider`}
                 />
+                <div className="flex flex-wrap gap-2 text-[10px] font-semibold uppercase tracking-widest text-[#999]">
+                  <label className="flex flex-col min-w-[80px] text-[9px] uppercase tracking-normal text-[#bbb]">
+                    Value
+                    <input
+                      type="number"
+                      value={valueField}
+                      onChange={(e) => handleValueFieldChange(e.target.value)}
+                      onBlur={commitValueField}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          commitValueField();
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      disabled={!maskTarget.hasSrc || activeParamMeta.disabled}
+                      className="h-9 rounded bg-[#222] px-2 text-[11px] font-mono text-white outline-none transition focus:border focus:border-white/30 disabled:cursor-not-allowed"
+                      step={activeParamMeta.step}
+                    />
+                  </label>
+                  <label className="flex flex-col min-w-[80px] text-[9px] uppercase tracking-normal text-[#bbb]">
+                    Min
+                    <input
+                      type="number"
+                      value={rangeFieldStrings[maskWheelParam]?.min ?? String(activeParamMeta.min)}
+                      onChange={(e) => handleRangeFieldChange('min', e.target.value)}
+                      onBlur={() => commitRangeField('min')}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          commitRangeField('min');
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      disabled={!maskTarget.hasSrc || activeParamMeta.disabled}
+                      className="h-9 rounded bg-[#222] px-2 text-[11px] font-mono text-white outline-none transition focus:border focus:border-white/30 disabled:cursor-not-allowed"
+                      step={0.01}
+                    />
+                  </label>
+                  <label className="flex flex-col min-w-[80px] text-[9px] uppercase tracking-normal text-[#bbb]">
+                    Max
+                    <input
+                      type="number"
+                      value={rangeFieldStrings[maskWheelParam]?.max ?? String(activeParamMeta.max)}
+                      onChange={(e) => handleRangeFieldChange('max', e.target.value)}
+                      onBlur={() => commitRangeField('max')}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          commitRangeField('max');
+                          e.currentTarget.blur();
+                        }
+                      }}
+                      disabled={!maskTarget.hasSrc || activeParamMeta.disabled}
+                      className="h-9 rounded bg-[#222] px-2 text-[11px] font-mono text-white outline-none transition focus:border focus:border-white/30 disabled:cursor-not-allowed"
+                      step={0.01}
+                    />
+                  </label>
+                </div>
               </div>
             </div>
+          </div>
           </div>
 
           <div className="p-2 rounded-lg bg-[#111]/40 border border-white/10">
@@ -1270,6 +1566,102 @@ export const DetailsWidget: React.FC<Props> = ({
           )}
         </div>
       )}
+
+      <div className="p-3 rounded-xl bg-[#111]/40 border border-white/10 space-y-3 text-[10px]">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#777]">Sheet Palette</div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void sheetFileInputRef.current?.click()}
+              className="px-2 py-1 rounded-full border border-white/10 text-[9px] uppercase tracking-[0.2em]"
+            >
+              Import Sheet
+            </button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {DEFAULT_SHEETS.map((sheet) => (
+            <button
+              key={sheet.id}
+              type="button"
+              onClick={() => void handleLoadDefaultSheet(sheet)}
+              className="px-2 py-1 rounded-full border border-white/10 text-[9px] uppercase tracking-[0.2em]"
+            >
+              {sheet.name}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center justify-between text-[9px] text-[#666] uppercase tracking-[0.2em]">
+          <span>{sheetPalette.name || 'No sheet loaded'}</span>
+          <span>{sheetPalette.dims ? `${sheetPalette.dims.width}×${sheetPalette.dims.height}` : '—'}</span>
+        </div>
+        {sheetLoading ? (
+          <div className="text-[9px] text-[#999]">Parsing sheet...</div>
+        ) : sheetError ? (
+          <div className="text-[9px] text-[#f88]">{sheetError}</div>
+        ) : null}
+        <div className="grid grid-cols-2 gap-2 max-h-52 overflow-y-auto">
+          {sheetPalette.segments.map((segment) => {
+            const selected = sheetPalette.selectedSegmentId === segment.id;
+            return (
+              <button
+                key={segment.id}
+                type="button"
+                onClick={() => updateSheetPalette({ selectedSegmentId: segment.id })}
+                className={`flex flex-col gap-2 p-2 rounded-lg border text-left bg-[#111] ${
+                  selected ? 'border-white/70' : 'border-white/10'
+                }`}
+              >
+                <img
+                  src={segment.thumbnail}
+                  alt={`Segment ${segment.id}`}
+                  className="w-full h-20 object-cover rounded"
+                />
+                <div className="flex items-center justify-between text-[8px] text-[#777] uppercase tracking-[0.2em]">
+                  <span>Area {segment.area}</span>
+                  <span>{segment.bounds.width}×{segment.bounds.height}</span>
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      assignSegmentToSlot(segment, effectivePieceId);
+                    }}
+                    className="flex-1 py-1 rounded bg-[#222] text-[8px] font-bold uppercase tracking-widest"
+                  >
+                    Assign to {effectivePieceId ? 'piece' : 'slot'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      assignSegmentToSlot(segment);
+                    }}
+                    className="flex-1 py-1 rounded border border-white/10 text-[8px] font-bold uppercase tracking-widest"
+                  >
+                    Auto
+                  </button>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {sheetPalette.segments.length === 0 && (
+          <div className="text-[9px] text-[#555] uppercase tracking-[0.2em]">Load a sheet to extract silhouettes</div>
+        )}
+        <input
+          ref={sheetFileInputRef}
+          type="file"
+          accept="image/*,.svg"
+          className="hidden"
+          onChange={handleSheetFileInput}
+        />
+        <div className="text-[9px] text-[#444] uppercase tracking-[0.3em]">
+          Target slot: {sheetPalette.targetSlotId ?? 'None'}
+        </div>
+      </div>
     </div>
   );
 };

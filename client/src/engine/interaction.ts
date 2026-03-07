@@ -64,10 +64,18 @@ const collectChainRootToJoint = (
   rootId: string,
 ): string[] => {
   const ids: string[] = [];
+  const visited = new Set<string>();
 
   let current: string | null = jointId;
   let depth = 0;
   while (current && depth < 64) {
+    // Cycle detection: if we've seen this joint before, break to prevent infinite loop
+    if (visited.has(current)) {
+      console.warn(`Cycle detected in joint hierarchy at joint: ${current}`);
+      break;
+    }
+    visited.add(current);
+    
     ids.push(current);
     if (current === rootId) break;
     current = joints[current]?.parent ?? null;
@@ -77,9 +85,16 @@ const collectChainRootToJoint = (
   if (ids[ids.length - 1] !== rootId) {
     // Fall back to full chain when root isn't found.
     ids.length = 0;
+    visited.clear();
     current = jointId;
     depth = 0;
     while (current && depth < 64) {
+      if (visited.has(current)) {
+        console.warn(`Cycle detected in fallback chain at joint: ${current}`);
+        break;
+      }
+      visited.add(current);
+      
       ids.push(current);
       current = joints[current]?.parent ?? null;
       depth += 1;
@@ -95,10 +110,18 @@ const collectChainRootToEffector = (
 ): string[] => {
   const desiredRoot = getIkRootForEffector(effectorId);
   const ids: string[] = [];
+  const visited = new Set<string>();
 
   let current: string | null = effectorId;
   let depth = 0;
   while (current && depth < 32) {
+    // Cycle detection: if we've seen this joint before, break to prevent infinite loop
+    if (visited.has(current)) {
+      console.warn(`Cycle detected in effector chain at joint: ${current}`);
+      break;
+    }
+    visited.add(current);
+    
     ids.push(current);
     if (desiredRoot && current === desiredRoot) break;
     current = joints[current]?.parent ?? null;
@@ -108,9 +131,16 @@ const collectChainRootToEffector = (
   // If the desired root wasn't found in the ancestor chain, fall back to the full chain.
   if (desiredRoot && ids[ids.length - 1] !== desiredRoot) {
     ids.length = 0;
+    visited.clear();
     current = effectorId;
     depth = 0;
     while (current && depth < 32) {
+      if (visited.has(current)) {
+        console.warn(`Cycle detected in fallback effector chain at joint: ${current}`);
+        break;
+      }
+      visited.add(current);
+      
       ids.push(current);
       current = joints[current]?.parent ?? null;
       depth += 1;
@@ -204,12 +234,16 @@ export const applyDragToState = (
   if (draggingId === 'sacrum' && nextJoints.sacrum && INITIAL_JOINTS.sacrum) {
     const sacrumWorld = getWorldPosition('sacrum', nextJoints, INITIAL_JOINTS, 'preview');
     
+    if (!sacrumWorld) return prev;
+    
     // Calculate rotation based on mouse position relative to sacrum
     const relativeMouse = { x: mouseWorld.x - sacrumWorld.x, y: mouseWorld.y - sacrumWorld.y };
     const targetAngle = Math.atan2(relativeMouse.y, relativeMouse.x);
     
     // Get current forward direction of the spine (from sacrum to navel)
     const navelWorld = getWorldPosition('navel', nextJoints, INITIAL_JOINTS, 'preview');
+    if (!navelWorld) return prev;
+    
     const currentForward = { x: navelWorld.x - sacrumWorld.x, y: navelWorld.y - sacrumWorld.y };
     const currentAngle = Math.atan2(currentForward.y, currentForward.x);
     
@@ -218,8 +252,7 @@ export const applyDragToState = (
     // Rotate all joints in the nested kinematic chain above sacrum
     // This respects the hierarchy: Sacrum → Navel → Sternum → Collar (Branch Point)
     const jointsToRotate = ['navel', 'sternum', 'collar', 
-                          'l_rib', 'r_rib',
-                          'l_clavicle', 'r_clavicle', 'l_upper_arm', 'r_upper_arm', 'l_elbow', 'r_elbow', 
+                          'l_clavicle', 'r_clavicle', 'l_bicep', 'r_bicep', 'l_elbow', 'r_elbow', 
                           'l_wrist', 'r_wrist', 'l_fingertip', 'r_fingertip'];
     
     for (const jointId of jointsToRotate) {
@@ -227,6 +260,8 @@ export const applyDragToState = (
       if (!joint) continue;
       
       const currentWorld = getWorldPosition(jointId, nextJoints, INITIAL_JOINTS, 'preview');
+      if (!currentWorld) continue;
+      
       const relativePos = { x: currentWorld.x - sacrumWorld.x, y: currentWorld.y - sacrumWorld.y };
       
       // Apply rotation
@@ -243,9 +278,12 @@ export const applyDragToState = (
       let parentPos = { x: 0, y: 0 };
       if (joint.parent) {
         parentPos = getWorldPosition(joint.parent, nextJoints, INITIAL_JOINTS, 'preview');
+        if (!parentPos) continue;
       }
       
       const newOffset = { x: newWorld.x - parentPos.x, y: newWorld.y - parentPos.y };
+      
+      if (!isFinitePoint(newOffset)) continue;
       
       // Update all offset types to ensure consistency and prevent physics interference
       nextJoints[jointId] = {
@@ -258,13 +296,16 @@ export const applyDragToState = (
     }
     
     // Keep sacrum fixed at its base position - no stretching, bending, or physics interference
-    nextJoints.sacrum = {
-      ...nextJoints.sacrum,
-      baseOffset: INITIAL_JOINTS.sacrum.baseOffset,
-      previewOffset: INITIAL_JOINTS.sacrum.baseOffset,
-      targetOffset: INITIAL_JOINTS.sacrum.baseOffset,
-      currentOffset: INITIAL_JOINTS.sacrum.baseOffset,
-    };
+    const sacrumBaseOffset = INITIAL_JOINTS.sacrum.baseOffset;
+    if (isFinitePoint(sacrumBaseOffset)) {
+      nextJoints.sacrum = {
+        ...nextJoints.sacrum,
+        baseOffset: sacrumBaseOffset,
+        previewOffset: sacrumBaseOffset,
+        targetOffset: sacrumBaseOffset,
+        currentOffset: sacrumBaseOffset,
+      };
+    }
     
     return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
   }

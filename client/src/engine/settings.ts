@@ -684,7 +684,16 @@ export const makeDefaultState = (): SkeletonState => {
     },
     assets: {},
     cutoutSlots: defaultSlots,
-    cutoutRig: { linkWaistToTorso: false },
+    sheetPalette: {
+      sheetId: null,
+      name: '',
+      dims: null,
+      segments: [],
+      selectedSegmentId: null,
+      targetSlotId: null,
+      previewSrc: null,
+    },
+    cutoutRig: { linkWaistToTorso: false, linkJointsToMasks: false },
     views: defaultViews,
     activeViewId: 'front',
     boneStyle: { hueT: 0, lightness: 0 },
@@ -973,7 +982,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
   // Handle cutout system migration and sanitization
   let assets = base.assets;
   let cutoutSlots = base.cutoutSlots;
-  let cutoutRig = base.cutoutRig ?? { linkWaistToTorso: false };
+  let cutoutRig = base.cutoutRig ?? { linkWaistToTorso: false, linkJointsToMasks: false };
   let views = base.views;
   let activeViewId = base.activeViewId;
 
@@ -1050,6 +1059,10 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
         typeof (rawCutoutRig as any).linkWaistToTorso === 'boolean'
           ? (rawCutoutRig as any).linkWaistToTorso
           : (base.cutoutRig?.linkWaistToTorso ?? false),
+      linkJointsToMasks:
+        typeof (rawCutoutRig as any).linkJointsToMasks === 'boolean'
+          ? (rawCutoutRig as any).linkJointsToMasks
+          : (base.cutoutRig?.linkJointsToMasks ?? false),
     };
   }
 
@@ -1230,6 +1243,54 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     }
   }
 
+  const sanitizeSheetPalette = (rawPalette: unknown): SheetPalette => {
+    const fallback = base.sheetPalette;
+    if (!rawPalette || typeof rawPalette !== 'object') return fallback;
+    const obj = rawPalette as Partial<SheetPalette>;
+    const dims =
+      obj.dims && Number.isFinite(obj.dims.width) && Number.isFinite(obj.dims.height)
+        ? { width: clamp(obj.dims.width, 1, 8192), height: clamp(obj.dims.height, 1, 8192) }
+        : fallback.dims;
+    const segments = Array.isArray(obj.segments)
+      ? obj.segments
+          .filter(
+            (seg): seg is SheetSegment =>
+              Boolean(seg) &&
+              typeof seg === 'object' &&
+              typeof seg.id === 'string' &&
+              seg.bounds !== undefined &&
+              typeof seg.bounds.x === 'number' &&
+              typeof seg.bounds.y === 'number' &&
+              typeof seg.bounds.width === 'number' &&
+              typeof seg.bounds.height === 'number' &&
+              Number.isFinite(seg.area) &&
+              typeof seg.thumbnail === 'string',
+          )
+          .map((seg) => ({
+            id: seg.id,
+            bounds: {
+              x: seg.bounds.x,
+              y: seg.bounds.y,
+              width: Math.max(1, seg.bounds.width),
+              height: Math.max(1, seg.bounds.height),
+            },
+            area: Math.max(1, seg.area),
+            thumbnail: seg.thumbnail,
+          }))
+      : fallback.segments;
+    const previewSrc = typeof obj.previewSrc === 'string' && obj.previewSrc.length > 0 ? obj.previewSrc : fallback.previewSrc;
+
+    return {
+      sheetId: typeof obj.sheetId === 'string' ? obj.sheetId : fallback.sheetId,
+      name: typeof obj.name === 'string' ? obj.name : fallback.name,
+      dims,
+      segments,
+      selectedSegmentId: typeof obj.selectedSegmentId === 'string' ? obj.selectedSegmentId : fallback.selectedSegmentId,
+      targetSlotId: typeof obj.targetSlotId === 'string' ? obj.targetSlotId : fallback.targetSlotId,
+      previewSrc,
+    };
+  };
+
   const state: SkeletonState = {
 	    joints,
 	    activeModel: (raw as any).activeModel === 'slenderbit' ? 'slenderbit' : 'humanoid',
@@ -1286,6 +1347,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     },
     assets,
     cutoutSlots,
+    sheetPalette: sanitizeSheetPalette((raw as any).sheetPalette ?? base.sheetPalette),
     cutoutRig,
     views,
     activeViewId,
