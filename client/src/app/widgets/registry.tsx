@@ -14,7 +14,7 @@ export type WidgetId =
   | 'responsiveness'
   | 'atomic_units'
   | 'animation'
-  | 'procgen'
+  | 'physics'
   | 'camera'
   | 'look'
   | 'views'
@@ -175,11 +175,11 @@ export const WIDGETS: Record<
     defaultFloatSize: { w: 420, h: 340 },
     minFloatSize: { w: 260, h: 200 },
   },
-  procgen: {
-    title: 'Auto Motion',
+  physics: {
+    title: 'Physics',
     tabGroup: 'physics',
     isGlobal: false,
-    docs: <div className="text-[11px] text-[#bbb]">Procedural motion and loop baking.</div>,
+    docs: <div className="text-[11px] text-[#bbb]">Physics mode and rigidity controls.</div>,
     defaultFloatSize: { w: 420, h: 420 },
     minFloatSize: { w: 260, h: 200 },
   },
@@ -279,7 +279,7 @@ export const WIDGET_GLOBAL_ORDER: WidgetId[] = [
 
 export const WIDGET_TAB_ORDER: Record<SidebarTab, WidgetId[]> = {
   character: ['tools', 'edit', 'joint_hierarchy', 'joint_masks'],
-  physics: ['procgen'],
+  physics: ['physics'],
   animation: ['animation', 'camera'],
   global: WIDGET_GLOBAL_ORDER,
 };

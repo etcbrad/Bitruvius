@@ -5,6 +5,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "NODE_ENV=development tsx server/index.ts",
+    "dev:vite": "vite",
+    "dev:full": "concurrently \"npm run dev:vite\" \"NODE_ENV=development tsx server/index.ts\"",
     "build": "tsx script/build.ts",
     "build:deploy": "tsx script/build-deploy.ts",
     "deploy": "npm run build:deploy && cd deploy && netlify deploy --prod --dir=.",
@@ -42,6 +44,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
     "esbuild": "^0.25.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",

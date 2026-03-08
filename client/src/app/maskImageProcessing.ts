@@ -22,6 +22,124 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 
 const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
+// Enhanced edge detection using Sobel operator for better hard edge detection
+const detectHardEdges = (
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  threshold: number = 30
+): Uint8Array => {
+  const edges = new Uint8Array(w * h);
+  const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+  const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      let pixelX = 0;
+      let pixelY = 0;
+
+      for (let j = -1; j <= 1; j++) {
+        for (let i = -1; i <= 1; i++) {
+          const idx = ((y + j) * w + (x + i)) * 4;
+          const gray = luminance(data[idx], data[idx + 1], data[idx + 2]);
+          const kernelIdx = (j + 1) * 3 + (i + 1);
+          pixelX += gray * sobelX[kernelIdx];
+          pixelY += gray * sobelY[kernelIdx];
+        }
+      }
+
+      const magnitude = Math.sqrt(pixelX * pixelX + pixelY * pixelY);
+      edges[y * w + x] = magnitude > threshold ? 255 : 0;
+    }
+  }
+
+  return edges;
+};
+
+// Laplacian edge detection for sharper edge detection
+const detectLaplacianEdges = (
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  threshold: number = 15
+): Uint8Array => {
+  const edges = new Uint8Array(w * h);
+  const kernel = [0, -1, 0, -1, 4, -1, 0, -1, 0];
+
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      let sum = 0;
+
+      for (let j = -1; j <= 1; j++) {
+        for (let i = -1; i <= 1; i++) {
+          const idx = ((y + j) * w + (x + i)) * 4;
+          const gray = luminance(data[idx], data[idx + 1], data[idx + 2]);
+          const kernelIdx = (j + 1) * 3 + (i + 1);
+          sum += gray * kernel[kernelIdx];
+        }
+      }
+
+      edges[y * w + x] = Math.abs(sum) > threshold ? 255 : 0;
+    }
+  }
+
+  return edges;
+};
+
+// Combine multiple edge detection methods for better hard edge detection
+const enhanceEdgeDetection = (
+  data: Uint8ClampedArray,
+  w: number,
+  h: number
+): Uint8Array => {
+  const sobelEdges = detectHardEdges(data, w, h, 25);
+  const laplacianEdges = detectLaplacianEdges(data, w, h, 20);
+  
+  // Combine edge maps (OR operation)
+  const combinedEdges = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    combinedEdges[i] = Math.max(sobelEdges[i], laplacianEdges[i]);
+  }
+  
+  return combinedEdges;
+};
+
+// Morphological operations to clean up edge detection
+const morphologicalCleanup = (
+  edges: Uint8Array,
+  w: number,
+  h: number,
+  iterations: number = 2
+): Uint8Array => {
+  const cleaned = new Uint8Array(edges);
+  
+  for (let iter = 0; iter < iterations; iter++) {
+    // Remove isolated pixels
+    const temp = new Uint8Array(cleaned);
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = y * w + x;
+        if (cleaned[idx] === 0) continue;
+        
+        let edgeNeighbors = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nIdx = (y + dy) * w + (x + dx);
+            if (cleaned[nIdx] > 0) edgeNeighbors++;
+          }
+        }
+        
+        // Remove pixels with too few edge neighbors
+        temp[idx] = edgeNeighbors >= 2 ? 255 : 0;
+      }
+    }
+    cleaned.set(temp);
+  }
+  
+  return cleaned;
+};
+
 const blobToDataUrl = (blob: Blob): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -261,6 +379,19 @@ export const processMaskImageFile = async (
     const { removeWhite, removeBlack } = shouldRemoveBorderBg(data, w, h);
     if (removeWhite) removedBackground = floodFillRemove(data, w, h, 'white') || removedBackground;
     if (removeBlack) removedBackground = floodFillRemove(data, w, h, 'black') || removedBackground;
+    
+    // Apply edge-aware refinement after background removal
+    if (removedBackground) {
+      // Enhance edges in the processed image
+      const postProcessEdges = enhanceEdgeDetection(data, w, h);
+      for (let i = 0; i < data.length / 4; i++) {
+        const idx = i * 4;
+        // Preserve hard edges by adjusting alpha
+        if (postProcessEdges[i] > 128 && data[idx + 3] > 0) {
+          data[idx + 3] = Math.max(data[idx + 3], 200); // Ensure edges are fully opaque
+        }
+      }
+    }
   }
 
   if (removedBackground) baseCtx.putImageData(imageData, 0, 0);

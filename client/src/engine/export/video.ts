@@ -27,57 +27,69 @@ const pickMimeType = (): string | undefined => {
   return undefined;
 };
 
-export const exportAsWebm = async (args: VideoExportArgs): Promise<void> => {
-  const { canvas, fps, frameCount, renderFrame } = await createTimeline2dRenderer(args);
+export const exportAsWebm = async (args: VideoExportArgs): Promise<boolean> => {
+  try {
+    const { canvas, fps, frameCount, renderFrame } = await createTimeline2dRenderer(args);
 
-  const stream = canvas.captureStream(fps);
-  const track = stream.getVideoTracks()[0] as MediaStreamTrack & { requestFrame?: () => void };
+    const stream = canvas.captureStream(fps);
+    const track = stream.getVideoTracks()[0] as MediaStreamTrack & { requestFrame?: () => void };
 
-  const mimeType = pickMimeType();
-  const mediaRecorder = new MediaRecorder(
-    stream,
-    mimeType
-      ? {
-          mimeType,
-          videoBitsPerSecond: 5_000_000,
-        }
-      : {
-          videoBitsPerSecond: 5_000_000,
-        },
-  );
+    // Check for MediaRecorder availability and valid MIME type
+    if (typeof MediaRecorder === 'undefined') {
+      throw new Error('MediaRecorder is not supported in this browser');
+    }
 
-  const chunks: Blob[] = [];
-  mediaRecorder.ondataavailable = (event) => {
-    if (event.data.size > 0) chunks.push(event.data);
-  };
+    const mimeType = pickMimeType();
+    if (!mimeType) {
+      throw new Error('No supported video MIME type found');
+    }
 
-  await new Promise<void>((resolve, reject) => {
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(chunks, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-      link.download = `bitruvius-animation-${timestamp}.webm`;
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      resolve();
+    const mediaRecorder = new MediaRecorder(
+      stream,
+      {
+        mimeType,
+        videoBitsPerSecond: 5_000_000,
+      },
+    );
+
+    const chunks: Blob[] = [];
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
     };
-    mediaRecorder.onerror = () => reject(new Error('MediaRecorder error'));
 
-    mediaRecorder.start(100);
+    await new Promise<void>((resolve, reject) => {
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        link.download = `bitruvius-animation-${timestamp}.webm`;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        resolve();
+      };
+      mediaRecorder.onerror = () => reject(new Error('MediaRecorder error'));
 
-    (async () => {
-      for (let frame = 0; frame < frameCount; frame += 1) {
-        await renderFrame(frame);
-        track.requestFrame?.();
-        await new Promise((r) => setTimeout(r, Math.round(1000 / fps)));
-      }
-      mediaRecorder.stop();
-    })().catch(reject);
-  });
+      mediaRecorder.start(100);
+
+      (async () => {
+        for (let frame = 0; frame < frameCount; frame += 1) {
+          await renderFrame(frame);
+          track.requestFrame?.();
+          await new Promise((r) => setTimeout(r, Math.round(1000 / fps)));
+        }
+        mediaRecorder.stop();
+      })().catch(reject);
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to export video:', error);
+    throw error;
+  }
 };
 

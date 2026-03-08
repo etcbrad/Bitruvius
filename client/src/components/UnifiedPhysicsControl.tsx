@@ -168,6 +168,35 @@ export const UnifiedPhysicsControl: React.FC<UnifiedPhysicsControlProps> = ({
           <span className="text-white/80 font-mono">{currentProfile.activeRoots.length}</span>
         </div>
       </div>
+
+      {/* IK Sensitivity Control */}
+      {(state.controlMode === 'IK' || state.controlMode === 'Rubberband') && (
+        <div className="space-y-2 pt-2 border-t border-white/10">
+          <div className="flex justify-between text-[9px] text-white/60">
+            <span>IK Sensitivity</span>
+            <span className="text-white/80 font-mono">{Math.round(state.ikSensitivity * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={state.ikSensitivity * 100}
+            onChange={(e) => {
+              const value = Math.max(0, Math.min(100, parseInt(e.target.value) || 30)) / 100;
+              setState(prev => ({ ...prev, ikSensitivity: value }));
+            }}
+            className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer slider"
+            style={{
+              background: `linear-gradient(to right, ${MODE_COLORS[currentMode]} 0%, ${MODE_COLORS[currentMode]} ${state.ikSensitivity * 100}%, rgba(255,255,255,0.1) ${state.ikSensitivity * 100}%, rgba(255,255,255,0.1) 100%)`
+            }}
+          />
+          <div className="flex justify-between text-[7px] text-white/40">
+            <span>Fluid</span>
+            <span>Clay</span>
+            <span>Instant</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

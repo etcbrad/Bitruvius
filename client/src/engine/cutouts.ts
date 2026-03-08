@@ -1,6 +1,46 @@
 import type { CutoutSlot } from './types';
 import { INITIAL_JOINTS } from './model';
 
+// Helper function to calculate distance between two joints
+const calculateJointDistance = (fromJointId: string, toJointId: string): number => {
+  const fromJoint = INITIAL_JOINTS[fromJointId];
+  const toJoint = INITIAL_JOINTS[toJointId];
+  
+  if (!fromJoint || !toJoint) return 100; // Default distance if joints not found
+  
+  const dx = toJoint.baseOffset.x - fromJoint.baseOffset.x;
+  const dy = toJoint.baseOffset.y - fromJoint.baseOffset.y;
+  return Math.sqrt(dx * dx + dy * dy);
+};
+
+// Helper function to calculate optimal scale for a cutout based on joint distance
+const calculateOptimalScale = (fromJointId: string, toJointId: string, segmentWidth: number, segmentHeight: number): number => {
+  const jointDistance = calculateJointDistance(fromJointId, toJointId);
+  const maxSegmentDimension = Math.max(segmentWidth, segmentHeight);
+  
+  // Guard against division by zero
+  if (maxSegmentDimension <= 0) {
+    return 0;
+  }
+  
+  // Scale piece so its largest dimension matches joint distance
+  // with some padding to prevent overlap
+  const paddingFactor = 0.8; // Use 80% of joint distance
+  return (jointDistance * paddingFactor) / maxSegmentDimension;
+};
+
+// Export function to calculate and apply optimal scale for a segment
+export const calculateSegmentScale = (segment: { bounds: { width: number; height: number } }, slot: CutoutSlot): number => {
+  if (slot.attachment.type !== 'bone') return 1.0; // Only apply to bone attachments
+  
+  return calculateOptimalScale(
+    slot.attachment.fromJointId,
+    slot.attachment.toJointId,
+    segment.bounds.width,
+    segment.bounds.height
+  );
+};
+
 // Default bone slots based on human rig topology
 export const createDefaultCutoutSlots = (): Record<string, CutoutSlot> => {
   const slots: Record<string, CutoutSlot> = {};

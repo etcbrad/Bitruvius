@@ -204,6 +204,7 @@ export type SheetSegment = {
   bounds: { x: number; y: number; width: number; height: number };
   area: number;
   thumbnail: string;
+  originalCoordinates?: { x: number; y: number }; // Original position in source image
 };
 
 export type SheetPalette = {
@@ -477,6 +478,7 @@ export type SkeletonState = {
   controlMode: ControlMode;
   rigidity: RigidityPreset;
   snappiness: number; // 0..1
+  ikSensitivity: number; // 0..1 - 0 = very fluid/clay-like, 1 = instant response
   viewScale: number;
   viewOffset: Point;
   procgen: ProcgenState;

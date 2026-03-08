@@ -15,11 +15,20 @@ const normalize = (v: Point): Point => {
   return { x: v.x / d, y: v.y / d };
 };
 
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+
+const lerpPoint = (a: Point, b: Point, t: number): Point => ({
+  x: lerp(a.x, b.x, t),
+  y: lerp(a.y, b.y, t)
+});
+
 const isFinitePoint = (p: Point): boolean => Number.isFinite(p.x) && Number.isFinite(p.y);
 
 export type FabrikChainSolveOptions = {
   tolerance?: number;
   maxIterations?: number;
+  sensitivity?: number; // 0..1 - 0 = very fluid/clay-like, 1 = instant response
+  previousPositions?: Point[]; // For smooth blending
 };
 
 /**
@@ -101,7 +110,21 @@ export const solveFabrikChainOffsets = (
   const nextOffsets: Record<string, Point> = {};
   for (let i = 1; i < chainIds.length; i++) {
     const id = chainIds[i];
-    nextOffsets[id] = sub(positions[i], positions[i - 1]);
+    let offset = sub(positions[i], positions[i - 1]);
+    
+    // Apply sensitivity-based smooth blending
+    const sensitivity = Math.max(0, Math.min(1, options.sensitivity ?? 1.0));
+    if (sensitivity < 1.0 && options.previousPositions && options.previousPositions[i]) {
+      const prevWorld = options.previousPositions[i];
+      const targetWorld = positions[i];
+      
+      // Smooth blend from previous position to new target based on sensitivity
+      const smoothedWorld = lerpPoint(prevWorld, targetWorld, sensitivity);
+      const parentWorld = positions[i - 1];
+      offset = sub(smoothedWorld, parentWorld);
+    }
+    
+    nextOffsets[id] = offset;
   }
   return nextOffsets;
 };

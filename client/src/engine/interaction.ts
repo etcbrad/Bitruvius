@@ -430,7 +430,21 @@ export const applyDragToState = (
   if ((prev.controlMode === 'IK' || prev.controlMode === 'Rubberband') && joint.isEndEffector && joint.parent) {
     const chainIds = collectChainRootToEffector(draggingId, nextJoints);
     const allowStretch = prev.stretchEnabled || prev.controlMode === 'Rubberband';
-    const offsets = solveFabrikChainOffsets(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, allowStretch);
+    
+    // Get previous positions for smooth blending
+    const previousPositions = chainIds.map(id => getWorldPosition(id, prev.joints, INITIAL_JOINTS, 'preview'));
+    
+    const offsets = solveFabrikChainOffsets(
+      chainIds, 
+      nextJoints, 
+      INITIAL_JOINTS, 
+      mouseWorld, 
+      allowStretch,
+      {
+        sensitivity: prev.ikSensitivity,
+        previousPositions
+      }
+    );
     if (offsets) {
       for (const [id, off] of Object.entries(offsets)) {
         const j = nextJoints[id];
@@ -630,12 +644,17 @@ export const applyBalanceDragToState = (
   // Re-pin legs: keep ankle world position fixed while hips translate with the body.
   for (const leg of legs) {
     const chainIds = collectChainRootToEffector(leg.ankleId, nextJoints);
+    const previousPositions = chainIds.map(id => getWorldPosition(id, prev.joints, INITIAL_JOINTS, 'preview'));
     const offsets = solveFabrikChainOffsets(
       chainIds,
       nextJoints,
       INITIAL_JOINTS,
       leg.ankleWorldTarget,
       prev.stretchEnabled,
+      {
+        sensitivity: prev.ikSensitivity,
+        previousPositions
+      }
     );
     if (!offsets) continue;
 
@@ -676,7 +695,18 @@ export const applyBalanceDragToState = (
     const err = dist(afterWorld, mouseWorld);
     if (err > 1e-3) {
       const chainIds = collectChainRootToJoint(draggingId, nextJoints, 'navel');
-      const offsets = solveFabrikChainOffsets(chainIds, nextJoints, INITIAL_JOINTS, mouseWorld, prev.stretchEnabled);
+      const previousPositions = chainIds.map(id => getWorldPosition(id, prev.joints, INITIAL_JOINTS, 'preview'));
+      const offsets = solveFabrikChainOffsets(
+        chainIds, 
+        nextJoints, 
+        INITIAL_JOINTS, 
+        mouseWorld, 
+        prev.stretchEnabled,
+        {
+          sensitivity: prev.ikSensitivity,
+          previousPositions
+        }
+      );
       if (offsets) {
         for (const [id, off] of Object.entries(offsets)) {
           const j = nextJoints[id];

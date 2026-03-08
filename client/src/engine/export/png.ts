@@ -17,7 +17,7 @@ const loadImage = (url: string): Promise<HTMLImageElement> =>
 export const downloadPngFromSvg = async (
   svg: SVGSVGElement,
   options: PngExportOptions,
-): Promise<void> => {
+): Promise<boolean> => {
   const svgText = serializeStandaloneSvg(svg, options);
   const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
   const svgUrl = URL.createObjectURL(svgBlob);
@@ -38,6 +38,10 @@ export const downloadPngFromSvg = async (
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
     const filename = options.filename ?? `bitruvius-export-${timestamp}.png`;
     downloadBlob(blob, filename);
+    return true;
+  } catch (error) {
+    console.error('Failed to export PNG:', error);
+    throw error;
   } finally {
     URL.revokeObjectURL(svgUrl);
   }

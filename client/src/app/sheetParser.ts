@@ -24,13 +24,150 @@ const getId = () =>
 
 const thresholdLuminance = (r: number, g: number, b: number) => (0.2126 * r + 0.7152 * g + 0.0722 * b);
 
+// Enhanced edge detection using Sobel operator
+const detectEdges = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  threshold: number
+): Uint8Array => {
+  const edges = new Uint8Array(width * height);
+  const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+  const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      let pixelX = 0;
+      let pixelY = 0;
+
+      for (let j = -1; j <= 1; j++) {
+        for (let i = -1; i <= 1; i++) {
+          const idx = ((y + j) * width + (x + i)) * 4;
+          const gray = thresholdLuminance(data[idx], data[idx + 1], data[idx + 2]);
+          const kernelIdx = (j + 1) * 3 + (i + 1);
+          pixelX += gray * sobelX[kernelIdx];
+          pixelY += gray * sobelY[kernelIdx];
+        }
+      }
+
+      const magnitude = Math.sqrt(pixelX * pixelX + pixelY * pixelY);
+      edges[y * width + x] = magnitude > threshold ? 255 : 0;
+    }
+  }
+
+  return edges;
+};
+
+// Adaptive threshold based on local mean
+const computeAdaptiveThreshold = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  regionSize: number = 15
+): number[] => {
+  const thresholds = new Array(width * height);
+  const halfRegion = Math.floor(regionSize / 2);
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let count = 0;
+
+      for (let dy = -halfRegion; dy <= halfRegion; dy++) {
+        for (let dx = -halfRegion; dx <= halfRegion; dx++) {
+          const nx = Math.max(0, Math.min(width - 1, x + dx));
+          const ny = Math.max(0, Math.min(height - 1, y + dy));
+          const idx = (ny * width + nx) * 4;
+          sum += thresholdLuminance(data[idx], data[idx + 1], data[idx + 2]);
+          count++;
+        }
+      }
+
+      thresholds[y * width + x] = (sum / count) * 0.85; // 85% of local mean
+    }
+  }
+
+  return thresholds;
+};
+
+// Enhanced edge detection combining multiple methods
+const enhanceEdgeDetection = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  baseThreshold: number
+): { edgeMap: Uint8Array; adaptiveThresholds: number[] } => {
+  // Apply Gaussian blur for noise reduction
+  const blurred = applyGaussianBlur(data, width, height);
+  
+  // Detect edges using Sobel operator
+  const edgeMap = detectEdges(blurred, width, height, baseThreshold * 0.5);
+  
+  // Compute adaptive thresholds
+  const adaptiveThresholds = computeAdaptiveThreshold(data, width, height);
+  
+  return { edgeMap, adaptiveThresholds };
+};
+
+// Simple Gaussian blur for noise reduction
+const applyGaussianBlur = (
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+): Uint8ClampedArray => {
+  const blurred = new Uint8ClampedArray(data.length);
+  const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+  const kernelSum = 16;
+
+  // Copy original border pixels to preserve them
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) {
+        const idx = (y * width + x) * 4;
+        blurred[idx] = data[idx];
+        blurred[idx + 1] = data[idx + 1];
+        blurred[idx + 2] = data[idx + 2];
+        blurred[idx + 3] = data[idx + 3];
+      }
+    }
+  }
+
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      let r = 0, g = 0, b = 0, a = 0;
+
+      for (let j = -1; j <= 1; j++) {
+        for (let i = -1; i <= 1; i++) {
+          const idx = ((y + j) * width + (x + i)) * 4;
+          const kernelIdx = (j + 1) * 3 + (i + 1);
+          const weight = kernel[kernelIdx];
+          r += data[idx] * weight;
+          g += data[idx + 1] * weight;
+          b += data[idx + 2] * weight;
+          a += data[idx + 3] * weight;
+        }
+      }
+
+      const destIdx = (y * width + x) * 4;
+      blurred[destIdx] = r / kernelSum;
+      blurred[destIdx + 1] = g / kernelSum;
+      blurred[destIdx + 2] = b / kernelSum;
+      blurred[destIdx + 3] = a / kernelSum;
+    }
+  }
+
+  return blurred;
+};
+
 const hasNeighborBelowThreshold = (
   px: number,
   py: number,
   width: number,
   height: number,
   data: Uint8ClampedArray,
-  threshold: number,
+  edgeMap: Uint8Array,
+  adaptiveThresholds: number[],
+  baseThreshold: number,
 ) => {
   for (let dy = -1; dy <= 1; dy += 1) {
     for (let dx = -1; dx <= 1; dx += 1) {
@@ -41,7 +178,14 @@ const hasNeighborBelowThreshold = (
       const nIdx = ny * width + nx;
       const offset = nIdx * 4;
       const nLum = thresholdLuminance(data[offset], data[offset + 1], data[offset + 2]);
-      if (nLum <= threshold) return true;
+      const adaptiveThreshold = adaptiveThresholds[nIdx];
+      const effectiveThreshold = Math.min(baseThreshold, adaptiveThreshold);
+      
+      // Consider both luminance and edge information
+      const isEdge = edgeMap[nIdx] > 128;
+      const isBelowThreshold = nLum <= effectiveThreshold;
+      
+      return isBelowThreshold && !isEdge;
     }
   }
   return false;
@@ -60,6 +204,7 @@ const loadImage = (src: string) =>
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error('Sheet image could not be loaded.'));
+    image.crossOrigin = 'anonymous';
     image.src = src;
   });
 
@@ -192,6 +337,8 @@ const floodFill = (
   height: number,
   data: Uint8ClampedArray,
   visited: Uint8Array,
+  edgeMap: Uint8Array,
+  adaptiveThresholds: number[],
   options: Required<SheetParserOptions>,
 ) => {
   const stack = [y * width + x];
@@ -200,7 +347,7 @@ const floodFill = (
   let minY = y;
   let maxX = x;
   let maxY = y;
-  const altThreshold = options.threshold + Math.max(0, options.edgeTolerance);
+  const baseThreshold = options.threshold;
 
   while (stack.length) {
     const idx = stack.pop();
@@ -213,8 +360,19 @@ const floodFill = (
     const alpha = data[offset + 3];
     if (alpha <= 16) continue;
     const lum = thresholdLuminance(data[offset], data[offset + 1], data[offset + 2]);
-    if (lum > altThreshold) continue;
-    if (lum > options.threshold && !hasNeighborBelowThreshold(px, py, width, height, data, options.threshold)) continue;
+    
+    // Use adaptive threshold for better edge detection
+    const adaptiveThreshold = adaptiveThresholds[idx];
+    const effectiveThreshold = Math.min(baseThreshold, adaptiveThreshold);
+    const altThreshold = effectiveThreshold + Math.max(0, options.edgeTolerance);
+    
+    // Skip if pixel is too bright or is a strong edge
+    const isEdge = edgeMap[idx] > 128;
+    if (lum > altThreshold || isEdge) continue;
+    
+    // Enhanced connectivity check
+    if (lum > effectiveThreshold && !hasNeighborBelowThreshold(px, py, width, height, data, edgeMap, adaptiveThresholds, effectiveThreshold)) continue;
+    
     segmentPixels.push(idx);
     if (px < minX) minX = px;
     if (py < minY) minY = py;
@@ -259,6 +417,9 @@ const extractSegments = (
   const visited = new Uint8Array(width * height);
   const segments: SheetSegment[] = [];
 
+  // Enhance edge detection first
+  const { edgeMap, adaptiveThresholds } = enhanceEdgeDetection(data, width, height, options.threshold);
+
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const idx = y * width + x;
@@ -267,9 +428,13 @@ const extractSegments = (
       const alpha = data[offset + 3];
       if (alpha <= 16) continue;
       const lum = thresholdLuminance(data[offset], data[offset + 1], data[offset + 2]);
-      if (lum > options.threshold) continue;
+      
+      // Use adaptive threshold for initial check
+      const adaptiveThreshold = adaptiveThresholds[idx];
+      const effectiveThreshold = Math.min(options.threshold, adaptiveThreshold);
+      if (lum > effectiveThreshold) continue;
 
-      const { pixels, bounds } = floodFill(x, y, width, height, data, visited, options);
+      const { pixels, bounds } = floodFill(x, y, width, height, data, visited, edgeMap, adaptiveThresholds, options);
       if (pixels.length < options.minSegmentArea) continue;
       const thumbnail = buildSegmentThumbnail(
         pixels,
@@ -302,7 +467,15 @@ const normalizeOptions = (opts?: SheetParserOptions): Required<SheetParserOption
 
 const segmentFromImage = (image: HTMLImageElement, options: Required<SheetParserOptions>): SheetParserResult => {
   const { canvas, ctx } = createCanvasContext(image.naturalWidth, image.naturalHeight);
-  ctx.drawImage(image, 0, 0);
+  
+  // Check if scaling is needed
+  const needsScaling = image.naturalWidth > canvas.width || image.naturalHeight > canvas.height;
+  if (needsScaling) {
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.drawImage(image, 0, 0);
+  }
+  
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const segments = extractSegments(ctx, canvas.width, canvas.height, imageData.data, options);
   return {

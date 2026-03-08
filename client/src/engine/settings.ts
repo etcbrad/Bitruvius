@@ -592,6 +592,7 @@ export const makeDefaultState = (): SkeletonState => {
     controlMode: 'Cardboard', // FK-heavy default
 	    rigidity: 'cardboard', // Most rigid setting by default
 	    snappiness: 1.0, // Maximum snappiness for crisp rigid movement
+    ikSensitivity: 0.3, // Default to fluid clay-like behavior (0.3 = smooth but responsive)
     viewScale: 1.0,
     viewOffset: { x: 0, y: 0 },
     procgen: {
@@ -877,6 +878,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
       : base.controlMode;
 
   const snappiness = isFiniteNumber(raw.snappiness) ? clamp(raw.snappiness, 0.05, 1.0) : base.snappiness;
+  const ikSensitivity = isFiniteNumber(raw.ikSensitivity) ? clamp(raw.ikSensitivity, 0.0, 1.0) : base.ikSensitivity;
   const rawViewScale = (raw as any).viewScale;
   const viewScale = isFiniteNumber(rawViewScale) ? clamp(rawViewScale, 0.1, 10.0) : base.viewScale;
   if (rawViewScale !== undefined && viewScale !== rawViewScale) {
@@ -1323,6 +1325,7 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     controlMode: finalControlMode,
     rigidity: finalRigidity,
     snappiness,
+    ikSensitivity,
     procgen,
     timeline: {
       enabled: typeof rawTimeline?.enabled === 'boolean' ? rawTimeline.enabled : base.timeline.enabled,

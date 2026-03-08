@@ -154,7 +154,7 @@ export const FkCartridge: React.FC<FkCartridgeProps> = ({
           viewBox="-400 -400 800 800"
         >
           {/* Render joints */}
-          {Object.entries(state.joints).map(([id, joint]) => (
+          {state.joints ? Object.entries(state.joints).map(([id, joint]) => (
             <g key={id}>
               <circle
                 cx={joint.currentOffset.x}
@@ -177,10 +177,10 @@ export const FkCartridge: React.FC<FkCartridgeProps> = ({
                 {id}
               </text>
             </g>
-          ))}
+          )) : null}
           
           {/* Render bones */}
-          {Object.entries(state.joints).map(([id, joint]) => {
+          {state.joints ? Object.entries(state.joints).map(([id, joint]) => {
             if (!joint.parent) return null;
             const parentJoint = state.joints[joint.parent];
             if (!parentJoint) return null;
@@ -197,7 +197,7 @@ export const FkCartridge: React.FC<FkCartridgeProps> = ({
                 strokeLinecap="round"
               />
             );
-          })}
+          }) : null}
         </svg>
       </div>
     </div>

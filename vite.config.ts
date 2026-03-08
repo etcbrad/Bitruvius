@@ -36,5 +36,13 @@ export default defineConfig({
       strict: true,
       deny: ["**/.*"],
     },
+    hmr: {
+      overlay: true,
+      port: 5003,
+    },
+    watch: {
+      usePolling: false,
+      interval: 100,
+    },
   },
 });

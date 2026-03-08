@@ -178,58 +178,58 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
         />
       )}
 
-      {/* Vitruvian Square */}
+      {/* Vitruvian Square - represents standing height from ankle to head */}
       {showGrid && (
         <g>
-          {/* Outer square with 4x4 grid */}
+          {/* Outer square with 4x4 grid - positioned from ankle level to head */}
           <rect
-            x={toPxX(-0.5)}
-            y={toPxY(1.0)}
-            width={t.pxPerUnit}
-            height={t.pxPerUnit}
+            x={toPxX(-0.4165)} // Centered at x=0
+            y={toPxY(0.833)} // Head height (1.0) minus ankle height (0.167)
+            width={t.pxPerUnit * 0.833} // Width scaled to ankle-to-head height
+            height={t.pxPerUnit * 0.833} // Height from ankle to head
             fill="none"
             stroke="rgba(139, 119, 101, 0.12)"
             strokeWidth="1.5"
           />
           
-          {/* 4x4 grid lines within square */}
+          {/* 4x4 grid lines within square - scaled to ankle-to-head proportions */}
           {Array.from({ length: 3 }, (_, i) => i + 1).map((i) => (
             <g key={`grid-${i}`}>
               {/* Vertical lines */}
               <line
-                x1={toPxX(-0.5 + (i * 0.25))}
-                y1={toPxY(1.0)}
-                x2={toPxX(-0.5 + (i * 0.25))}
+                x1={toPxX(-0.4165 + (i * 0.25 * 0.833))}
+                y1={toPxY(0.833)}
+                x2={toPxX(-0.4165 + (i * 0.25 * 0.833))}
                 y2={toPxY(0.0)}
                 stroke="rgba(139, 119, 101, 0.05)"
                 strokeWidth="0.5"
               />
               {/* Horizontal lines */}
               <line
-                x1={toPxX(-0.5)}
-                y1={toPxY(1.0 - (i * 0.25))}
-                x2={toPxX(0.5)}
-                y2={toPxY(1.0 - (i * 0.25))}
+                x1={toPxX(-0.4165)}
+                y1={toPxY(0.833 - (i * 0.25 * 0.833))}
+                x2={toPxX(0.4165)}
+                y2={toPxY(0.833 - (i * 0.25 * 0.833))}
                 stroke="rgba(139, 119, 101, 0.05)"
                 strokeWidth="0.5"
               />
             </g>
           ))}
           
-          {/* Diagonal lines */}
+          {/* Diagonal lines - within ankle-to-head square */}
           <line
-            x1={toPxX(-0.5)}
-            y1={toPxY(1.0)}
-            x2={toPxX(0.5)}
+            x1={toPxX(-0.4165)}
+            y1={toPxY(0.833)}
+            x2={toPxX(0.4165)}
             y2={toPxY(0.0)}
             stroke="rgba(139, 119, 101, 0.08)"
             strokeWidth="1"
             strokeDasharray="8 12"
           />
           <line
-            x1={toPxX(0.5)}
-            y1={toPxY(1.0)}
-            x2={toPxX(-0.5)}
+            x1={toPxX(0.4165)}
+            y1={toPxY(0.833)}
+            x2={toPxX(-0.4165)}
             y2={toPxY(0.0)}
             stroke="rgba(139, 119, 101, 0.08)"
             strokeWidth="1"
@@ -317,22 +317,22 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
         );
       })}
 
-      {/* Vitruvian Circle */}
+      {/* Vitruvian Circle - reaches top of head, base at toe line */}
       {showRings && (
         <circle
           cx={toPxX(0)}
-          cy={toPxY(0.5)}
-          r={t.pxPerUnit * 0.5}
+          cy={toPxY(0.4165)} // Centered between toe line (0.0) and head (0.833)
+          r={t.pxPerUnit * 0.4165} // Radius from toe line to head
           fill="none"
           stroke="rgba(139, 119, 101, 0.11)"
           strokeWidth="1.3"
         />
       )}
 
-      {/* Vitruvian Triangle */}
+      {/* Vitruvian Triangle - scaled to new circle dimensions */}
       {showRings && (
         <polygon
-          points={getTrianglePoints(0, 0.5, 0.5)}
+          points={getTrianglePoints(0, 0.417, 0.417)}
           fill="none"
           stroke="rgba(139, 119, 101, 0.10)"
           strokeWidth="1.2"
