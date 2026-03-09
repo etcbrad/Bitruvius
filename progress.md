@@ -69,6 +69,10 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - Build: `npm run check` + `npm run build` pass (server build still warns about `import.meta` under CJS).
 - Playwright smoke: `node "$WEB_GAME_CLIENT" --url http://localhost:5001 --actions-file "$WEB_GAME_ACTIONS" --iterations 3 --pause-ms 250`. Latest artifacts: `output/web-game/shot-0.png`, `shot-1.png`, `shot-2.png`, `state-0.json`, `state-1.json`, `state-2.json`; no `output/web-game/errors-0.json` was produced after the rerun (console errors cleared).
 
+2026-03-08
+- Fixed the Right Console cutout detector: it no longer creates fake segments from the full source canvas. `handleCanvasDetection` now uses `segmentSheetFromFile(...)`, populates real cropped segments/dimensions/preview metadata, and keeps the first detected segment selected by default.
+- Build: `npm run build` passes after the detector swap.
+
 2026-03-03
 - Fix attempt for navel 180° flip on activation: when `navel` proxies manipulation to `sternum`, we now apply a drag target offset so the sternum doesn’t snap to the mouse-down world position.
 

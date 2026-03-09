@@ -4,6 +4,7 @@ import { Wand2, Upload, Settings, Box, Link2, Zap, Layers, Grid3X3 } from 'lucid
 import type { SheetPalette, SheetSegment, SkeletonState } from '@/engine/types';
 import { getWorldPosition } from '@/engine/kinematics';
 import { INITIAL_JOINTS } from '@/engine/model';
+import { segmentSheetFromFile } from '@/app/sheetParser';
 import { CollapsibleSection } from './CollapsibleSection';
 
 // Types for cutout rigging
@@ -234,38 +235,49 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
     setIsDetecting(true);
     
     try {
-      const dataUrl = await new Promise<string>((resolve) => {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => resolve(e.target?.result as string);
+        reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
         reader.readAsDataURL(file);
       });
-      
-      const img = new Image();
-      img.onload = () => {
-        const canvas = createCanvasFromImage(img);
-        const result = detectShapesFromCanvas(canvas, detectionThreshold);
-        
-        setUploadedImage(img);
-        setSheetPreview(dataUrl);
-        setDetectionResult(result);
-        
-        // Convert detected shapes to segments
-        const segments = buildSegmentsFromDetection(result, canvas);
-        setSheetPalette({ segments });
-        }));
-        
-        updateSheetPalette({
-          segments: [...sheetPalette.segments, ...segments],
-          name: file.name,
-          sheetId: `canvas_${Date.now()}`
-        setIsDetecting(false);
-      };
-      img.src = dataUrl;
+
+      const parsed = await segmentSheetFromFile(file, {
+        threshold: detectionThreshold,
+        featherRadius: featherAmount,
+      });
+
+      setSheetPreview(dataUrl);
+      setDetectionResult({
+        shapes: parsed.segments.map((segment) => ({
+          id: segment.id,
+          bounds: segment.bounds,
+          contour: [],
+          area: segment.area,
+          centroid: {
+            x: segment.bounds.x + segment.bounds.width / 2,
+            y: segment.bounds.y + segment.bounds.height / 2,
+          },
+          imageData: new ImageData(1, 1),
+        })),
+        backgroundRemoved: true,
+        confidence: parsed.segments.length > 0 ? 1 : 0,
+      });
+
+      updateSheetPalette({
+        segments: parsed.segments,
+        name: file.name,
+        sheetId: `canvas_${Date.now()}`,
+        dims: { width: parsed.width, height: parsed.height },
+        previewSrc: dataUrl,
+        selectedSegmentId: parsed.segments[0]?.id ?? null,
+      });
     } catch (error) {
       console.error('Detection failed:', error);
+    } finally {
       setIsDetecting(false);
     }
-  }, [detectionThreshold, sheetPalette.segments, updateSheetPalette]);
+  }, [detectionThreshold, featherAmount, updateSheetPalette]);
 
   // Drag and drop handlers
   const handlePieceDragStart = useCallback((pieceId: string, event: React.DragEvent<HTMLButtonElement>) => {

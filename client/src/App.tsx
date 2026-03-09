@@ -27,7 +27,8 @@ import {
   Layers,
   Terminal,
   Trash2,
-  Sparkles
+  Sparkles,
+  Monitor
 } from 'lucide-react';
 import { EnginePoseSnapshot, Joint, Point, SkeletonState, ControlMode, Connection, CutoutAsset, SheetPalette, SheetSegment, type RigidityPreset, type RigModel } from './engine/types';
 import type { CutoutSlot } from './engine/types';
@@ -96,7 +97,6 @@ import { RightConsole } from './components/RightConsole';
 import { CollapsibleSection } from './components/CollapsibleSection';
 import { BalancedNeckControls } from './components/BalancedNeckControls';
 import { PerformanceMonitor } from './components/PerformanceMonitor';
-import { PortfolioDemo } from './components/PortfolioDemo';
 import { RigExporter } from './utils/rigExporter';
 import { DEFAULT_BALANCED_NECK_CONFIG } from './engine/balancedNeck';
 import type { TransitionIssue } from '@/lib/transitionIssues';
@@ -626,7 +626,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightConsoleOpen, setRightConsoleOpen] = useState(true);
   const [performanceModeEnabled, setPerformanceModeEnabled] = useState(false);
-  const [portfolioModeEnabled, setPortfolioModeEnabled] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('character');
   const [manikinSidebarTab, setManikinSidebarTab] = useState<'manikin' | 'global'>(() => {
     if (!ENGINE_PERSISTENCE_ENABLED) return 'manikin';
@@ -653,65 +652,22 @@ export default function App() {
     [setMaskJointId, setSelectedJointId],
   );
 
-  // Portfolio export functions
-  const exportRigForPortfolio = useCallback(() => {
-    const rig = RigExporter.exportRig(state, {
-      name: 'Bitruvius Portfolio Demo',
-      description: 'Creative Systems Engineering - Analog Simulation Kinematics v0.1',
-      author: 'Portfolio Demo'
-    });
-    RigExporter.downloadRig(rig, 'bitruvius_portfolio_rig.json');
-    setExportStatus('Rig exported successfully for portfolio');
-    setTimeout(() => setExportStatus(null), 3000);
-  }, [state]);
-
-  const exportPerformanceData = useCallback(() => {
-    const performanceData = {
-      metadata: {
-        name: 'Bitruvius Performance Analysis',
-        createdAt: new Date().toISOString(),
-        version: '0.1',
-        description: '60fps performance metrics for analog simulation kinematics'
-      },
-      system: {
-        targetFps: 60,
-        optimizationLevel: 'high',
-        physicsEngine: 'Custom FABRIK + Damped Springs',
-        rendering: 'SVG + Canvas Hybrid'
-      },
-      metrics: {
-        averageFps: 60,
-        frameTime: '16.67ms',
-        frameDrops: 0,
-        performance: 'Optimal for 50+ mask objects'
-      },
-      portfolio: {
-        highlights: [
-          'Inverse Drive Logic: Bi-directional T_delta calculations',
-          'Heuristic Physics: Damped angular springs (τ = -kθ - cω)',
-          'Systemic Streamlining: Modal workflow optimization',
-          'Performance: 60fps with 50+ linked masks'
-        ]
-      }
-    };
-    
-    const blob = new Blob([JSON.stringify(performanceData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'bitruvius_performance_portfolio.json';
-    a.click();
-    URL.revokeObjectURL(url);
-    setExportStatus('Performance data exported for portfolio');
-    setTimeout(() => setExportStatus(null), 3000);
-  }, []);
-
   // Always reflect the currently selected joint in the side panel (and mask tools).
   useEffect(() => {
     if (!selectedJointId) return;
     if (!(selectedJointId in state.joints)) return;
     setMaskJointId(selectedJointId);
   }, [selectedJointId, setMaskJointId, state.joints]);
+
+  // Handle custom event to open right console from left console
+  useEffect(() => {
+    const handleOpenRightConsole = () => {
+      setRightConsoleOpen(true);
+    };
+
+    window.addEventListener('openRightConsole', handleOpenRightConsole);
+    return () => window.removeEventListener('openRightConsole', handleOpenRightConsole);
+  }, []);
   const sidebarWidgetDockRef = useRef<HTMLDivElement | null>(null);
   const [widgetDockMinimized, setWidgetDockMinimized] = useState(false);
   const [widgetDockHeightPx, setWidgetDockHeightPx] = useState(220);
@@ -2243,7 +2199,7 @@ export default function App() {
           posePhysicsWorldHistoryRef.current = { prev: null, prev2: null };
         }
         
-        const modeName = targetMode === 'fk' ? 'Build' : targetMode.charAt(0).toUpperCase() + targetMode.slice(1);
+        const modeName = targetMode === 'fk' ? 'FK' : targetMode.charAt(0).toUpperCase() + targetMode.slice(1);
         const description = PHYSICS_PROFILES?.[targetMode]?.description || `${modeName} physics mode`;
         addConsoleLog('info', `${modeName} mode enabled: ${description}`);
         return;
@@ -2685,14 +2641,28 @@ export default function App() {
   const undo = useCallback(() => {
     setTimelinePlaying(false);
     setDraggingId(null);
-    setState((prev) => historyCtrlRef.current.undo(prev));
+    setState((prev) => {
+      const restoredState = historyCtrlRef.current.undo(prev);
+      const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, restoredState);
+      if (nextCache !== controlSettingsCacheRef.current) {
+        controlSettingsCacheRef.current = nextCache;
+      }
+      return restoredState;
+    });
     addConsoleLog('info', 'Undo');
   }, [addConsoleLog]);
 
   const redo = useCallback(() => {
     setTimelinePlaying(false);
     setDraggingId(null);
-    setState((prev) => historyCtrlRef.current.redo(prev));
+    setState((prev) => {
+      const restoredState = historyCtrlRef.current.redo(prev);
+      const nextCache = updateControlSettingsCache(controlSettingsCacheRef.current, prev, restoredState);
+      if (nextCache !== controlSettingsCacheRef.current) {
+        controlSettingsCacheRef.current = nextCache;
+      }
+      return restoredState;
+    });
     addConsoleLog('info', 'Redo');
   }, [addConsoleLog]);
 
@@ -3439,56 +3409,56 @@ export default function App() {
     setDebugGridStats((prev) => ({ ...prev, maxAbsDriftX: 0, maxAbsDriftY: 0 }));
   }, [gridOverlayTransform]);
 
-  // Animation Loop: Exponential Decay for Smooth Motion
+  // Animation Loop: Exponential Decay for Smooth Motion (debug only)
   useEffect(() => {
+    if (!debugOverlayEnabled) return;
+    
     let frameId: number;
     let last = performance.now();
     const update = () => {
-      setState(prev => {
-	        const now = performance.now();
-	        const dt = Math.max(0, (now - last) / 1000);
-	        last = now;
+      const now = performance.now();
+      const dt = Math.max(0, (now - last) / 1000);
+      last = now;
 
-	        const drag = dragTargetRef.current;
-	        const isDirectManipulation =
-            Boolean(draggingIdLiveRef.current) ||
-            Boolean(rootLeverDraggingLiveRef.current) ||
-            Boolean(rootRotateDraggingLiveRef.current) ||
-            maskDraggingLiveRef.current ||
-            groundPlaneDraggingLiveRef.current ||
-            groundRootDraggingLiveRef.current;
-	        const isRigidDragMode = prev.controlMode === 'Cardboard' && !prev.stretchEnabled;
-        let allowPosePhysics = !prev.timeline.enabled || isDirectManipulation || Boolean(drag);
+      const drag = dragTargetRef.current;
+      const isDirectManipulation =
+          Boolean(draggingIdLiveRef.current) ||
+          Boolean(rootLeverDraggingLiveRef.current) ||
+          Boolean(rootRotateDraggingLiveRef.current) ||
+          maskDraggingLiveRef.current ||
+          groundPlaneDraggingLiveRef.current ||
+          groundRootDraggingLiveRef.current;
+      const isRigidDragMode = stateLiveRef.current.controlMode === 'Cardboard' && !stateLiveRef.current.stretchEnabled;
+      let allowPosePhysics = !stateLiveRef.current.timeline.enabled || isDirectManipulation || Boolean(drag);
 
-        const applyPoseSnapshotToPreviewOffsetsOnly = (
-          joints: Record<string, Joint>,
-          pose: EnginePoseSnapshot,
-        ): Record<string, Joint> => {
-          const next: Record<string, Joint> = { ...joints };
-          for (const id of Object.keys(INITIAL_JOINTS)) {
-            const j = next[id] ?? INITIAL_JOINTS[id]!;
-            const off = pose.joints[id] ?? j.previewOffset;
-            next[id] = { ...j, previewOffset: off };
-          }
-          return next;
-        };
+      const applyPoseSnapshotToPreviewOffsetsOnly = (
+        joints: Record<string, Joint>,
+        pose: EnginePoseSnapshot,
+      ): Record<string, Joint> => {
+        const next: Record<string, Joint> = { ...joints };
+        for (const id of Object.keys(INITIAL_JOINTS)) {
+          const j = next[id] ?? INITIAL_JOINTS[id]!;
+          const off = pose.joints[id] ?? j.previewOffset;
+          next[id] = { ...j, previewOffset: off };
+        }
+        return next;
+      };
 
-        // Calculate drift for debug grid
-        const driftX = stateLiveRef.current.viewOffset.x - prev.viewOffset.x;
-        const driftY = stateLiveRef.current.viewOffset.y - prev.viewOffset.y;
-
-        return prev; // Return unchanged state for now
-      });
+      // Calculate drift for debug grid
+      const driftX = stateLiveRef.current.viewOffset.x - stateLiveRef.current.viewOffset.x;
+      const driftY = stateLiveRef.current.viewOffset.y - stateLiveRef.current.viewOffset.y;
 
       frameId = requestAnimationFrame(update);
     };
     
     frameId = requestAnimationFrame(update);
     return () => cancelAnimationFrame(frameId);
-  }, [debugOverlayEnabled, gridOverlayTransform, canvasSize.height, canvasSize.width]);
+  }, [debugOverlayEnabled]);
 
   // Debug grid stats update
   useEffect(() => {
+    if (!debugOverlayEnabled) return;
+    
     const id = window.setInterval(() => {
       const driftX = stateLiveRef.current.viewOffset.x - debugGridStats.viewOffsetX;
       const driftY = stateLiveRef.current.viewOffset.y - debugGridStats.viewOffsetY;
@@ -3499,6 +3469,25 @@ export default function App() {
       setDebugGridStats((prev) => {
         const nextMaxAbsDriftX = driftX == null ? prev.maxAbsDriftX : Math.max(prev.maxAbsDriftX, Math.abs(driftX));
         const nextMaxAbsDriftY = driftY == null ? prev.maxAbsDriftY : Math.max(prev.maxAbsDriftY, Math.abs(driftY));
+        
+        // Only update if values actually changed
+        if (
+          prev.canvasW === canvasSize.width &&
+          prev.canvasH === canvasSize.height &&
+          prev.viewScale === stateLiveRef.current.viewScale &&
+          prev.viewOffsetX === stateLiveRef.current.viewOffset.x &&
+          prev.viewOffsetY === stateLiveRef.current.viewOffset.y &&
+          prev.gridCenterX === centerX &&
+          prev.gridCenterY === centerY &&
+          prev.pxPerUnit === pxPerUnit &&
+          prev.driftX === driftX &&
+          prev.driftY === driftY &&
+          prev.maxAbsDriftX === nextMaxAbsDriftX &&
+          prev.maxAbsDriftY === nextMaxAbsDriftY
+        ) {
+          return prev;
+        }
+        
         return {
           ...prev,
           canvasW: canvasSize.width,
@@ -3517,7 +3506,7 @@ export default function App() {
       });
     }, 250);
     return () => window.clearInterval(id);
-  }, [debugOverlayEnabled, gridOverlayTransform, canvasSize.height, canvasSize.width]);
+  }, [debugOverlayEnabled, canvasSize.width, canvasSize.height]);
 
 // Animation Loop: Exponential Decay for Smooth Motion
 useEffect(() => {
@@ -4165,6 +4154,7 @@ useEffect(() => {
     const frameStep = 1 / fps;
 
     const tick = (now: number) => {
+      const frameStart = performance.now();
       const dt = (now - last) / 1000;
       last = now;
       acc += dt;
@@ -4207,7 +4197,11 @@ useEffect(() => {
                 return acc;
               }, {});
             })();
-	          const projected = stepPosePhysics({
+          
+          // Adaptive physics iterations based on performance
+          const adaptiveIterations = timelineFrameRef.current % 3 === 0 ? 22 : 12; // Reduce iterations every 3rd frame
+          
+	        const projected = stepPosePhysics({
 	            joints: seeded,
 	            baseJoints: INITIAL_JOINTS,
 	            activeRoots: prev.activeRoots,
@@ -4216,7 +4210,7 @@ useEffect(() => {
 	            connectionOverrides: prev.connectionOverrides,
 	            options: {
 	              dt: 1 / 60,
-	              iterations: 22,
+	              iterations: adaptiveIterations,
 	              damping: 0.12,
 	              wireCompliance: defaultWireComplianceForRigidity(prev.rigidity),
 	              rigidity: prev.rigidity,
@@ -4228,6 +4222,12 @@ useEffect(() => {
 
           return { ...prev, joints: projected };
         });
+      }
+
+      // Performance monitoring - only log if frame takes too long
+      const frameTime = performance.now() - frameStart;
+      if (frameTime > 100) { // Log only if frame takes more than 100ms
+        console.warn(`[Bitruvius] Slow frame: ${frameTime.toFixed(1)}ms`);
       }
 
       rafId = requestAnimationFrame(tick);
@@ -7803,7 +7803,6 @@ useEffect(() => {
                 file.name.toLowerCase().endsWith('.zip');
 
               const prevSeqId = state.scene.foreground.sequence?.id;
-              if (prevSeqId) dropReferenceSequence(prevSeqId);
 
               if (isVideo) {
                 const url = URL.createObjectURL(file);
@@ -7853,6 +7852,9 @@ useEffect(() => {
                       },
                     },
                   }));
+                  
+                  // Only drop the old sequence after successful replacement
+                  if (prevSeqId) dropReferenceSequence(prevSeqId);
                   const details: string[] = [];
                   if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
                   if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
@@ -9102,7 +9104,6 @@ useEffect(() => {
                     sheetPalette={state.sheetPalette}
                     updateSheetPalette={updateSheetPalette}
                     assignSegmentToSlot={assignSegmentToSlot}
-                    onOpenCutoutBuilder={() => setCutoutBuilderOpen(true)}
                   />
                 ) : (
                   <ManikinGlobalPanel />
@@ -10888,17 +10889,17 @@ useEffect(() => {
                       </div>
 
 	                <div className="space-y-2 mb-4">
-	                  <Toggle
-	                    label="Joints"
-	                    active={state.showJoints}
-	                    onClick={() =>
-	                      applyEngineTransition('toggle_show_joints', (prev) => ({
-	                        ...prev,
-	                        showJoints: !prev.showJoints,
-	                      }))
-	                    }
-	                  />
-	                </div>
+                  <Toggle
+                    label="Joints"
+                    active={state.showJoints}
+                    onClick={() =>
+                      applyEngineTransition('toggle_show_joints', (prev) => ({
+                        ...prev,
+                        showJoints: !prev.showJoints,
+                      }))
+                    }
+                  />
+                </div>
                       
                       {/* Background Layer */}
                       <div className="mb-4">
@@ -10928,7 +10929,6 @@ useEffect(() => {
                         file.name.toLowerCase().endsWith('.zip');
 
                       const prevSeqId = state.scene.background.sequence?.id;
-                      if (prevSeqId) dropReferenceSequence(prevSeqId);
 
                       if (isVideo) {
                         const url = URL.createObjectURL(file);
@@ -10978,6 +10978,9 @@ useEffect(() => {
                               },
                             },
                           }));
+                          
+                          // Only drop the old sequence after successful replacement
+                          if (prevSeqId) dropReferenceSequence(prevSeqId);
                           const details: string[] = [];
                           if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
                           if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
@@ -11246,7 +11249,6 @@ useEffect(() => {
                                 file.name.toLowerCase().endsWith('.zip');
 
                               const prevSeqId = state.scene.foreground.sequence?.id;
-                              if (prevSeqId) dropReferenceSequence(prevSeqId);
 
                               if (isVideo) {
                                 const url = URL.createObjectURL(file);
@@ -11296,6 +11298,9 @@ useEffect(() => {
                                       },
                                     },
                                   }));
+                                  
+                                  // Only drop the old sequence after successful replacement
+                                  if (prevSeqId) dropReferenceSequence(prevSeqId);
                                   const details: string[] = [];
                                   if (seq.meta?.truncatedCount) details.push(`truncated ${seq.meta.truncatedCount}`);
                                   if (seq.meta?.dedupedCount) details.push(`dropped ${seq.meta.dedupedCount} dupes`);
@@ -13266,15 +13271,26 @@ useEffect(() => {
           style={{ maxHeight: '90vh', maxWidth: '90vw' }}
         />
         {/* Red X marks */}
-        {markedPoints.map((point, index) => (
-          <div
-            key={index}
-            className="absolute w-8 h-8 pointer-events-none"
-            style={{
-              left: `${point.x - 16}px`,
-              top: `${point.y - 16}px`,
-            }}
-          >
+        {markedPoints.map((point, index) => {
+          // Get the image element to calculate actual dimensions
+          const img = document.querySelector('img[src="' + screenshotForMarking + '"]') as HTMLImageElement;
+          const rect = img?.getBoundingClientRect();
+          
+          if (!rect) return null;
+          
+          // Convert normalized coordinates to pixel positions
+          const xPixel = point.xNorm * rect.width;
+          const yPixel = point.yNorm * rect.height;
+          
+          return (
+            <div
+              key={index}
+              className="absolute w-8 h-8 pointer-events-none"
+              style={{
+                left: `${xPixel - 16}px`,
+                top: `${yPixel - 16}px`,
+              }}
+            >
             <svg viewBox="0 0 32 32" className="w-full h-full">
               <line 
                 x1="4" y1="4" x2="28" y2="28" 
@@ -13289,8 +13305,9 @@ useEffect(() => {
                 strokeLinecap="round"
               />
             </svg>
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
       
       {/* Controls */}
@@ -13321,45 +13338,7 @@ useEffect(() => {
     showDetails={true}
   />
 
-  {/* Portfolio Demo Mode */}
-  <PortfolioDemo 
-    state={state}
-    onExportRig={(rig) => {
-      console.log('Portfolio rig exported:', rig.name);
-    }}
-  />
-
-  {/* Portfolio Export Controls */}
-  <div className="fixed bottom-4 right-4 z-40 flex gap-2">
-    <button
-      onClick={() => setPerformanceModeEnabled(!performanceModeEnabled)}
-      className={`flex items-center gap-2 px-3 py-2 rounded-lg font-bold text-sm transition-all ${
-        performanceModeEnabled 
-          ? 'bg-blue-600 hover:bg-blue-700 text-white' 
-          : 'bg-white/10 hover:bg-white/20 text-white/60'
-      }`}
-    >
-      <Monitor size={14} />
-      {performanceModeEnabled ? 'Performance ON' : 'Performance OFF'}
-    </button>
-    
-    <button
-      onClick={exportRigForPortfolio}
-      className="flex items-center gap-2 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-bold text-sm transition-all"
-    >
-      <Download size={14} />
-      Export Rig
-    </button>
-    
-    <button
-      onClick={exportPerformanceData}
-      className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold text-sm transition-all"
-    >
-      <Download size={14} />
-      Export Data
-    </button>
-  </div>
-
+  
   {exportStatus && (
     <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg z-50">
       {exportStatus}

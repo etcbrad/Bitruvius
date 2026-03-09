@@ -25,11 +25,12 @@ export const runModelSimplifyTests = () => {
   };
 
   // Spine / head
+  requireConn('waist', 'navel');
   requireConn('navel', 'sternum');
-  requireConn('sternum', 'collar');
-  requireConn('collar', 'neck_base');
-  requireConn('neck_base', 'skull');
-  requireConn('skull', 'head');
+  requireConn('sternum', 'mid_torso');
+  requireConn('mid_torso', 'upper_torso');
+  requireConn('upper_torso', 'collar');
+  requireConn('collar', 'head');
 
   // Left arm
   requireConn('collar', 'l_clavicle');
@@ -46,14 +47,14 @@ export const runModelSimplifyTests = () => {
   requireConn('r_wrist', 'r_fingertip');
 
   // Left leg
-  requireConn('navel', 'l_hip');
-  requireConn('l_hip', 'l_knee');
+  requireConn('navel', 'l_thigh');
+  requireConn('l_thigh', 'l_knee');
   requireConn('l_knee', 'l_ankle');
   requireConn('l_ankle', 'l_toe');
 
   // Right leg
-  requireConn('navel', 'r_hip');
-  requireConn('r_hip', 'r_knee');
+  requireConn('navel', 'r_thigh');
+  requireConn('r_thigh', 'r_knee');
   requireConn('r_knee', 'r_ankle');
   requireConn('r_ankle', 'r_toe');
 };

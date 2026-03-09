@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Play, Pause, RotateCcw, Download, Monitor, Sparkles } from 'lucide-react';
 import { RigExporter, type RigExportSchema } from '../utils/rigExporter';
-import { usePerformanceTracker } from '../hooks/usePerformanceTracker';
+import { usePerformanceTracker, type PerformanceMetrics } from '../hooks/usePerformanceTracker';
+import type { SkeletonState } from '../engine/types';
+import { ErrorBoundary } from './ErrorBoundary';
 
 interface PortfolioDemoProps {
-  state: any; // SkeletonState - using any for simplicity
+  state: SkeletonState;
   onExportRig?: (rig: RigExportSchema) => void;
 }
 
@@ -20,6 +22,7 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
   const [performanceData, setPerformanceData] = useState<any[]>([]);
   
   const tracker = usePerformanceTracker();
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const demos = [
     {
@@ -59,6 +62,12 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
   ];
 
   const startDemo = useCallback(() => {
+    // Clear any existing interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    
     setIsDemoMode(true);
     setIsPlaying(true);
     setDemoProgress(0);
@@ -69,7 +78,7 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
     
     // Simulate demo progress
     const startTime = Date.now();
-    const progressInterval = setInterval(() => {
+    intervalRef.current = setInterval(() => {
       const elapsed = Date.now() - startTime;
       const progress = Math.min(elapsed / currentDemoConfig.duration, 1);
       
@@ -77,29 +86,47 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
       
       // Collect performance data
       const metrics = tracker.getMetrics();
-      setPerformanceData(prev => [...prev, {
-        timestamp: Date.now(),
-        demo: currentDemoConfig.name,
-        ...metrics
-      }]);
+      if (metrics && Number.isFinite(metrics.fps)) {
+        setPerformanceData(prev => [...prev, {
+          timestamp: Date.now(),
+          demo: currentDemoConfig.name,
+          fps: metrics.fps,
+          frameTime: metrics.frameTime,
+          averageFps: metrics.averageFps,
+          dropCount: metrics.dropCount,
+          totalFrames: metrics.totalFrames,
+          isOptimal: metrics.isOptimal
+        }]);
+      }
       
       if (progress >= 1) {
-        clearInterval(progressInterval);
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
         setIsPlaying(false);
         currentDemoConfig.cleanup();
       }
     }, 100);
     
     return () => {
-      clearInterval(progressInterval);
-      currentDemoConfig.cleanup();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      demos[currentDemo].cleanup();
     };
-  }, [currentDemo, tracker]);
+  }, [currentDemo, tracker, demos]);
 
   const stopDemo = useCallback(() => {
     setIsPlaying(false);
     tracker.stop();
     demos[currentDemo].cleanup();
+    // Clear any running interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
   }, [currentDemo, tracker]);
 
   const nextDemo = useCallback(() => {
@@ -113,6 +140,17 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
     setDemoProgress(0);
     setPerformanceData([]);
   }, [stopDemo]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      tracker.stop();
+    };
+  }, [tracker]);
 
   const exportRig = useCallback(() => {
     const rig = RigExporter.exportRig(state, {
@@ -157,62 +195,66 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
 
   if (!isDemoMode) {
     return (
-      <div className="fixed bottom-4 left-4 z-50">
-        <button
-          onClick={() => setIsDemoMode(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-bold text-sm transition-all"
-        >
-          <Sparkles size={16} />
-          Portfolio Demo
-        </button>
-      </div>
+      <ErrorBoundary context="PortfolioDemo Entry">
+        <div className="fixed bottom-4 left-4 z-50">
+          <button
+            onClick={() => setIsDemoMode(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-bold text-sm transition-all"
+          >
+            <Sparkles size={16} />
+            Portfolio Demo
+          </button>
+        </div>
+      </ErrorBoundary>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm">
-      <div className="h-full flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-white/10">
-          <div>
-            <h1 className="text-2xl font-bold text-white mb-2">
-              Bitruvius: Portfolio Demo
-            </h1>
-            <p className="text-white/60">
-              Analog Simulation Kinematics - Creative Systems Engineering
-            </p>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            {/* Performance Toggle */}
-            <button
-              onClick={() => setShowMetrics(!showMetrics)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
-                showMetrics 
-                  ? 'bg-white/20 text-white' 
-                  : 'bg-white/10 text-white/60 hover:bg-white/20'
-              }`}
-            >
-              <Monitor size={14} />
-              <span className="text-xs">Metrics</span>
-            </button>
+    <ErrorBoundary context="PortfolioDemo Main Interface">
+      <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm">
+        <div className="h-full flex flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between p-6 border-b border-white/10">
+            <div>
+              <h1 className="text-2xl font-bold text-white mb-2">
+                Bitruvius: Portfolio Demo
+              </h1>
+              <p className="text-white/60">
+                Analog Simulation Kinematics - Creative Systems Engineering
+              </p>
+            </div>
             
-            {/* Export Controls */}
-            <button
-              onClick={exportRig}
-              className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition-all"
-            >
-              <Download size={14} />
-              Export Rig
-            </button>
-            
-            <button
-              onClick={exportPerformanceData}
-              className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm transition-all"
-            >
-              <Download size={14} />
-              Export Data
-            </button>
+            <div className="flex items-center gap-3">
+              {/* Performance Toggle */}
+              <button
+                onClick={() => setShowMetrics(!showMetrics)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
+                  showMetrics 
+                    ? 'bg-white/20 text-white' 
+                    : 'bg-white/10 text-white/60 hover:bg-white/20'
+                }`}
+              >
+                <Monitor size={14} />
+                <span className="text-xs">Metrics</span>
+              </button>
+              
+              {/* Export Controls */}
+              <button
+                onClick={exportRig}
+                className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition-all"
+              >
+                <Download size={14} />
+                Export Rig
+              </button>
+              
+              <button
+                onClick={exportPerformanceData}
+                className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm transition-all"
+              >
+                <Download size={14} />
+                Export Data
+              </button>
+            </div>
           </div>
         </div>
 
@@ -370,6 +412,6 @@ export const PortfolioDemo: React.FC<PortfolioDemoProps> = ({
           </div>
         </div>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 };

@@ -32,7 +32,8 @@ export const usePerformanceTracker = (): PerformanceTracker => {
     const now = performance.now();
     const deltaTime = now - lastTimeRef.current;
     
-    if (deltaTime > 0) {
+    // Validate deltaTime to prevent negative values
+    if (deltaTime > 0 && Number.isFinite(deltaTime)) {
       const currentFps = 1000 / deltaTime;
       fpsHistoryRef.current.push(currentFps);
       
@@ -56,7 +57,7 @@ export const usePerformanceTracker = (): PerformanceTracker => {
 
     return {
       fps: Math.round(currentFps),
-      frameTime: Math.round(deltaTime * 100) / 100,
+      frameTime: Math.round(Math.max(0, deltaTime) * 100) / 100,
       averageFps: Math.round(averageFps * 100) / 100,
       dropCount: dropCountRef.current,
       totalFrames: frameCountRef.current,
@@ -109,8 +110,11 @@ export const usePerformanceTracker = (): PerformanceTracker => {
 
   useEffect(() => {
     return () => {
+      // Clean up animation frame and stop tracking
+      isRunningRef.current = false;
       if (animationIdRef.current) {
         cancelAnimationFrame(animationIdRef.current);
+        animationIdRef.current = undefined;
       }
     };
   }, []);

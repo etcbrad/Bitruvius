@@ -280,7 +280,7 @@ export type HeadMask = {
   pixelate: MaskBase['pixelate'];
   /**
    * Optional relationship joints used to drive placement/orientation/length.
-   * When empty, the head mask uses `skull` as its relationship.
+   * When empty, the head mask uses `head` as its relationship.
    *
    * Semantics match `JointMask.relatedJoints`:
    * - 1st entry (driver) acts like a custom "base" joint for direction/length.
@@ -549,6 +549,10 @@ export type SkeletonState = {
       hidden?: boolean;
     }
   >;
+  // Cutout editor system
+  cutoutEditor: CutoutEditorState;
+  // Cutout sheet library
+  cutoutSheets: Record<string, CutoutSheet>;
 };
 export type Pose = {
   root: Vector2D;
@@ -590,4 +594,72 @@ export type RenderMode = 'default' | 'wireframe' | 'silhouette' | 'backlight'; /
 // Defines the min/max rotation limits for each joint (in degrees).
 export type JointLimits = {
   [key: string]: { min: number; max: number };
+};
+
+// Cutout System Types
+export type AnchorPoint = {
+  id: string;
+  localPosition: Vector2D;
+  connectedTo: string | null; // ID of connected anchor
+  jointMapping: string | null; // Maps to skeleton joint ID
+  type: 'parent' | 'child' | 'free';
+  visible: boolean;
+};
+
+export type CutoutNode = {
+  id: string;
+  name: string;
+  assetId: string;
+  transform: {
+    x: number;
+    y: number;
+    rotation: number;
+    scaleX: number;
+    scaleY: number;
+    flipX: boolean;
+  };
+  anchors: AnchorPoint[];
+  parent: string | null; // Parent cutout node ID
+  children: string[]; // Child cutout node IDs
+  visible: boolean;
+  opacity: number;
+  zIndex: number;
+  locked: boolean;
+};
+
+export type CutoutEditorMode = 'layout' | 'pose' | 'animation';
+
+export type CutoutEditorState = {
+  mode: CutoutEditorMode;
+  nodes: Record<string, CutoutNode>;
+  selectedNodeId: string | null;
+  selectedAnchorId: string | null;
+  showAnchors: boolean;
+  showConnections: boolean;
+  snapToAnchors: boolean;
+  gridSize: number;
+  viewTransform: {
+    x: number;
+    y: number;
+    scale: number;
+  };
+};
+
+export type CutoutSheet = {
+  id: string;
+  name: string;
+  src: string;
+  width: number;
+  height: number;
+  pieces: CutoutPiece[];
+  processedAt: number;
+};
+
+export type CutoutPiece = {
+  id: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  area: number;
+  thumbnail: string;
+  suggestedJoints: string[]; // Suggested skeleton joints for this piece
+  autoAnchors: Vector2D[]; // Automatically detected anchor points
 };

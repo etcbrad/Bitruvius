@@ -105,23 +105,20 @@ export function HumanoidBacklightOverlay({
     const navel = req('navel');
     const sternum = req('sternum');
     const collar = req('collar');
-    const neckBase = req('neck_base');
-    const skullRaw = req('skull');
+    const skullRaw = req('head');
     const headRaw = req('head');
     const lClav = req('l_clavicle');
     const rClav = req('r_clavicle');
     const lHip = req('l_hip');
     const rHip = req('r_hip');
-    if (!navel || !sternum || !collar || !neckBase || !lClav || !rClav || !lHip || !rHip) return null;
+    if (!navel || !sternum || !collar || !lClav || !rClav || !lHip || !rHip) return null;
 
-    const skull = skullRaw ?? neckBase;
-    const head = headRaw ?? skull;
+    const head = headRaw;
+    if (!head) return null;
 
     const navelPx = pxFromWorld(navel);
     const sternumPx = pxFromWorld(sternum);
     const collarPx = pxFromWorld(collar);
-    const neckBasePx = pxFromWorld(neckBase);
-    const skullPx = pxFromWorld(skull);
     const headPx = pxFromWorld(head);
     const lClavPx = pxFromWorld(lClav);
     const rClavPx = pxFromWorld(rClav);
@@ -132,8 +129,8 @@ export function HumanoidBacklightOverlay({
     const hipMidPx = mul(add(lHipPx, rHipPx), 0.5);
     const centerlineX = (Math.min(lClavPx.x, rClavPx.x, lHipPx.x, rHipPx.x) + Math.max(lClavPx.x, rClavPx.x, lHipPx.x, rHipPx.x)) / 2;
 
-    const headHeightPxMeasured = Math.max(12, dist(neckBasePx, headPx));
-    const headAngleRad = Math.atan2(headPx.y - skullPx.y, headPx.x - skullPx.x) - Math.PI / 2;
+    const headHeightPxMeasured = Math.max(12, dist(collarPx, headPx));
+    const headAngleRad = Math.atan2(headPx.y - collarPx.y, headPx.x - collarPx.x) - Math.PI / 2;
 
     const pelvisWMeasured = Math.max(18, dist(lHipPx, rHipPx));
     const shoulderWMeasured = Math.max(18, dist(lClavPx, rClavPx));
@@ -163,7 +160,7 @@ export function HumanoidBacklightOverlay({
     const pelvisTopW = pelvisW;
     const pelvisBottomW = pelvisW * 0.62;
 
-    const shoulderTopY = neckBasePx.y + headRadiusPx * 0.05;
+    const shoulderTopY = collarPx.y + headRadiusPx * 0.05;
     const shoulderBottomY = Math.max(shoulderTopY + headRadiusPx * 0.25, shoulderMidPx.y + headRadiusPx * 0.35);
     const shoulderTopW = shoulderW * 0.55;
     const shoulderBottomW = shoulderW;

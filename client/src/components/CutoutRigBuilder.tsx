@@ -3,7 +3,7 @@ import { X, Scissors, Wand2 } from 'lucide-react';
 
 import type { SheetPalette, SheetSegment, SkeletonState } from '@/engine/types';
 import { segmentSheetFromFile } from '@/app/sheetParser';
-import { MANIKIN_SLOT_ORDER } from './ManikinConsole';
+import { MANIKIN_SLOT_ORDER } from '../constants/manikinSlots';
 
 // Shape detection types
 type DetectedShape = {

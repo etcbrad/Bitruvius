@@ -50,7 +50,7 @@ const getIkRootForEffector = (effectorId: string): string | null => {
   // - Head pulls the skull/neck chain but does not translate the torso (root at collar).
   // - Arms solve from clavicle down (root at clavicle).
   // - Legs solve from hip down (root at hip).
-  if (effectorId === 'head' || effectorId === 'skull') return 'collar';
+  if (effectorId === 'head') return 'collar';
   if (effectorId === 'l_wrist' || effectorId === 'l_fingertip') return 'l_clavicle';
   if (effectorId === 'r_wrist' || effectorId === 'r_fingertip') return 'r_clavicle';
   if (effectorId === 'l_ankle' || effectorId === 'l_toe') return 'l_hip';

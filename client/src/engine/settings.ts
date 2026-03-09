@@ -521,6 +521,13 @@ export const makeDefaultState = (): SkeletonState => {
     defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), fkFollowDeg };
   };
 
+  const setHidden = (a: string, b: string) => {
+    const key = canonicalConnKey(a, b);
+    defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), hidden: true };
+  };
+
+  // Hide skull connections by default for clean head shape
+
   // Default FK follow: collar acts as shoulder socket. Rotating collar rotates neck/head and both arms.
   // Simplified shoulder mechanics - direct connections for accordion compression
   const COLLAR_SOCKET_FOLLOW_DEG = 90;
@@ -715,6 +722,18 @@ export const makeDefaultState = (): SkeletonState => {
 	    collarLock: { enabled: false, extendCompressEnabled: false, restLen: undefined, minScale: 1, maxScale: 1 },
 	    balancedNeck: DEFAULT_BALANCED_NECK_CONFIG,
 	    connectionOverrides: defaultConnectionOverrides,
+	    cutoutEditor: {
+	      mode: 'layout',
+	      nodes: {},
+	      selectedNodeId: null,
+	      selectedAnchorId: null,
+	      showAnchors: true,
+	      showConnections: true,
+	      snapToAnchors: true,
+	      gridSize: 20,
+	      viewTransform: { x: 0, y: 0, scale: 1 },
+	    },
+	    cutoutSheets: {},
 	  };
 	};
 
@@ -1354,14 +1373,16 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     cutoutRig,
     views,
     activeViewId,
-	    boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),
-	    hipLock,
-	    collarLock,
-	    balancedNeck,
-	    connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
-	    viewScale,
-	    viewOffset,
-	  };
+    boneStyle: sanitizeBoneStyle((raw as any).boneStyle, base.boneStyle),
+    hipLock,
+    collarLock,
+    balancedNeck,
+    connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
+    cutoutEditor: (raw as any).cutoutEditor ?? base.cutoutEditor,
+    cutoutSheets: (raw as any).cutoutSheets ?? base.cutoutSheets,
+    viewScale,
+    viewOffset,
+  };
   return { state, issues };
 };
 

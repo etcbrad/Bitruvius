@@ -1,33 +1,15 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 
 import type { ControlMode, SkeletonState, SheetPalette, SheetSegment } from '../engine/types';
 import { canonicalConnKey } from '../app/connectionKey';
 import { INITIAL_JOINTS } from '../engine/model';
 import { applyPoseSnapshotToJoints, capturePoseSnapshot, interpolatePoseSnapshots } from '../engine/timeline';
+import { Monitor, Zap, AlertCircle, CheckCircle } from 'lucide-react';
+import { usePerformanceTracker, type PerformanceMetrics } from '../hooks/usePerformanceTracker';
+import { MANIKIN_SLOT_ORDER, type ManikinSlotId } from '../constants/manikinSlots';
 
 import { CollapsibleSection } from './CollapsibleSection';
 import { DetailsWidget } from './DetailsWidget';
-
-export const MANIKIN_SLOT_ORDER = [
-  'head',
-  'collar',
-  'torso',
-  'l_thigh',
-  'l_calf',
-  'l_foot',
-  'r_thigh',
-  'r_calf',
-  'r_foot',
-  'l_upper_arm',
-  'l_forearm',
-  'l_hand',
-  'r_upper_arm',
-  'r_forearm',
-  'r_hand',
-  'waist',
-] as const;
-
-type ManikinSlotId = (typeof MANIKIN_SLOT_ORDER)[number];
 
 type PoseSnapshot = Omit<SkeletonState, 'timeline'> & { timestamp?: number };
 
@@ -60,7 +42,6 @@ type ManikinConsoleProps = {
   sheetPalette: SheetPalette;
   updateSheetPalette: (patch: Partial<SheetPalette>) => void;
   assignSegmentToSlot: (segment: SheetSegment, slotId?: string) => void;
-  onOpenCutoutBuilder: () => void;
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -89,7 +70,6 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
   sheetPalette,
   updateSheetPalette,
   assignSegmentToSlot,
-  onOpenCutoutBuilder,
 }) => {
   const [selectedSlotId, setSelectedSlotId] = useState<ManikinSlotId>('torso');
   const [poseToPoseEnabled, setPoseToPoseEnabled] = useState(false);
@@ -130,10 +110,14 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={onOpenCutoutBuilder}
+            onClick={() => {
+              // This will be handled by the parent component to open right console
+              const event = new CustomEvent('openRightConsole');
+              window.dispatchEvent(event);
+            }}
             className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border border-white/10 hover:border-white/50 hover:text-white transition"
           >
-            Cutout Builder
+            Right Console
           </button>
           <div className="text-[10px] text-[#444]">FK</div>
         </div>
@@ -441,11 +425,148 @@ export const ManikinConsole: React.FC<ManikinConsoleProps> = ({
   );
 };
 
-export const ManikinGlobalPanel: React.FC = () => {
+interface PerformanceControlsProps {
+  performanceModeEnabled: boolean;
+  setPerformanceModeEnabled: (enabled: boolean) => void;
+}
+
+const PerformanceControls: React.FC<PerformanceControlsProps> = ({
+  performanceModeEnabled,
+  setPerformanceModeEnabled
+}) => {
+  const [metrics, setMetrics] = useState<PerformanceMetrics>({
+    fps: 0,
+    frameTime: 0,
+    averageFps: 0,
+    dropCount: 0,
+    totalFrames: 0,
+    isOptimal: true
+  });
+  const [showDetails, setShowDetails] = useState(false);
+  const tracker = usePerformanceTracker();
+  const trackerRef = useRef(tracker);
+  
+  // Update ref when tracker changes
+  useEffect(() => {
+    trackerRef.current = tracker;
+  }, [tracker]);
+
+  useEffect(() => {
+    if (!performanceModeEnabled) return;
+
+    const activeTracker = trackerRef.current;
+    activeTracker.start();
+    
+    const interval = setInterval(() => {
+      const currentMetrics = activeTracker.getMetrics();
+      setMetrics(currentMetrics);
+    }, 100);
+
+    return () => {
+      clearInterval(interval);
+      activeTracker.stop();
+    };
+  }, [performanceModeEnabled, tracker]);
+
   return (
-    <div className="p-4 text-center text-white/60">
-      <div className="text-lg font-semibold mb-2">Global Settings</div>
-      <div className="text-sm">Global panel functionality coming soon...</div>
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-bold uppercase tracking-wider text-white/60 mb-3">
+          Performance Monitoring
+        </h3>
+        <button
+          onClick={() => setPerformanceModeEnabled(!performanceModeEnabled)}
+          className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all ${
+            performanceModeEnabled 
+              ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+              : 'bg-white/10 hover:bg-white/20 text-white/60'
+          }`}
+        >
+          <Monitor size={14} />
+          {performanceModeEnabled ? 'Performance ON' : 'Performance OFF'}
+        </button>
+      </div>
+
+      {performanceModeEnabled && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-white/60">
+              Metrics
+            </h4>
+            <button
+              onClick={() => setShowDetails(!showDetails)}
+              className="text-xs text-white/40 hover:text-white/60 transition-colors"
+            >
+              {showDetails ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="bg-white/5 rounded p-2">
+              <div className="text-white/40">FPS</div>
+              <div className="font-mono text-lg text-green-400">{metrics.fps}</div>
+            </div>
+            <div className="bg-white/5 rounded p-2">
+              <div className="text-white/40">Avg FPS</div>
+              <div className="font-mono text-lg">{metrics.averageFps}</div>
+            </div>
+            {showDetails && (
+              <>
+                <div className="bg-white/5 rounded p-2">
+                  <div className="text-white/40">Frame Time</div>
+                  <div className="font-mono">{metrics.frameTime}ms</div>
+                </div>
+                <div className="bg-white/5 rounded p-2">
+                  <div className="text-white/40">Drops</div>
+                  <div className="font-mono">{metrics.dropCount}</div>
+                </div>
+              </>
+            )}
+          </div>
+          
+          {showDetails && (
+            <div className="mt-2 pt-2 border-t border-white/10">
+              <div className="flex justify-between text-xs mb-1">
+                <span className="text-white/40">Performance</span>
+                <span className={metrics.isOptimal ? 'text-green-400' : 'text-yellow-400'}>
+                  {Math.round((metrics.averageFps / 60) * 100)}%
+                </span>
+              </div>
+              <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full transition-all duration-300 ${
+                    metrics.isOptimal ? 'bg-green-400' : 'bg-yellow-400'
+                  }`}
+                  style={{ width: `${Math.min(100, (metrics.averageFps / 60) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const ManikinGlobalPanel: React.FC = () => {
+  // This will be passed down from App.tsx through props
+  // For now, we'll use a placeholder implementation
+  const [performanceModeEnabled, setPerformanceModeEnabled] = useState(false);
+
+  return (
+    <div className="p-4 space-y-6">
+      <div>
+        <div className="text-lg font-semibold mb-4 text-white">Global Settings</div>
+      </div>
+      
+      <PerformanceControls 
+        performanceModeEnabled={performanceModeEnabled}
+        setPerformanceModeEnabled={setPerformanceModeEnabled}
+      />
+      
+      <div className="text-center text-white/40 text-sm">
+        Additional global settings coming soon...
+      </div>
     </div>
   );
 };

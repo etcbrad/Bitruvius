@@ -1,12 +1,22 @@
 import express from 'express';
 import { createServer } from 'http';
 import path from 'path';
+import multer from 'multer';
 import { serveStatic } from './static';
 import { storageRoutes } from './storage';
 import { apiRoutes } from './routes';
 
 const app = express();
 const server = createServer(app);
+
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+});
+
 const parsedPort = process.env.PORT ? parseInt(process.env.PORT, 10) : NaN;
 const requestedPort = Number.isFinite(parsedPort) ? parsedPort : 5000;
 const allowPortFallback = !process.env.PORT;
@@ -52,6 +62,85 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use('/api', apiRoutes);
 app.use('/storage', storageRoutes);
+
+// Multi-file upload endpoint
+app.post('/api/segment_multi', upload.array('images', 10), async (req, res) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded' });
+    }
+
+    // Validate file types
+    for (const file of files) {
+      if (!file.mimetype || !file.mimetype.startsWith('image/')) {
+        return res.status(400).json({ error: `Invalid file type: ${file.mimetype}. Only images are allowed.` });
+      }
+    }
+
+    const { segmentSheetFromFile } = await import('../client/src/app/sheetParser');
+    const parsed = parseInt(req.body.min_area);
+    const minArea = Number.isNaN(parsed) ? 500 : parsed;
+    const pieces: Array<{
+      id: string;
+      src: string;
+      width: number;
+      height: number;
+      bounds: { x: number; y: number; width: number; height: number };
+      area: number;
+      thumbnail: string;
+      anchors: any[];
+    }> = [];
+    let totalShapes = 0;
+
+    // Process each uploaded file
+    for (const file of files) {
+      try {
+        // Convert buffer to file-like object for parser
+        const arrayBuffer = file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength);
+        const blob = new Blob([arrayBuffer as ArrayBuffer], { type: file.mimetype });
+        const fileObj = new File([blob], file.originalname, { type: file.mimetype });
+        
+        const result = await segmentSheetFromFile(fileObj, {
+          minSegmentArea: minArea,
+          threshold: 160,
+          padding: 3,
+          featherRadius: 2,
+          edgeTolerance: 20,
+        });
+
+        // Convert segments to pieces format
+        result.segments.forEach((segment: any, index: number) => {
+          pieces.push({
+            id: `piece_${Date.now()}_${totalShapes++}`,
+            src: result.src,
+            width: segment.bounds.width,
+            height: segment.bounds.height,
+            bounds: segment.bounds,
+            area: segment.area,
+            thumbnail: segment.thumbnail,
+            anchors: [], // Will be populated by anchor detection
+          });
+        });
+      } catch (error) {
+        console.error(`Error processing file ${file.originalname}:`, error);
+        // Continue processing other files
+      }
+    }
+
+    res.json({
+      pieces,
+      count: pieces.length,
+      processed: files.length,
+    });
+  } catch (error) {
+    console.error('Segmentation error:', error);
+    res.status(500).json({ error: 'Failed to process images' });
+  }
+});
+
+// Export upload middleware for use in routes
+export { upload };
 
 (async () => {
   if (process.env.NODE_ENV === 'production') {

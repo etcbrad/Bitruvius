@@ -21,6 +21,9 @@ export interface ReinigerJointState {
   targetAngle: number;  // Target angle to snap to
   config: ReinigerJointConfig;
   lastUpdate: number;   // Timestamp for delta time calculation
+  flutterCooldown: number; // Cooldown counter for flutter injection
+  startAngle: number;   // Starting angle for interpolation
+  interpolationProgress: number; // Progress for easing interpolation
 }
 
 export class ReinigerJoint {
@@ -41,7 +44,10 @@ export class ReinigerJoint {
         maxAngle: 180,
         ...config
       },
-      lastUpdate: Date.now()
+      lastUpdate: Date.now(),
+      flutterCooldown: 0,
+      startAngle: baseJoint.rotation || 0,
+      interpolationProgress: 1.0 // Start at 100% (no interpolation needed)
     };
   }
 
@@ -50,13 +56,16 @@ export class ReinigerJoint {
    * This creates the immediate gesture-first feel
    */
   performGesture(newAngle: number): void {
-    // Apply power-4 out easing to the angle for natural settle
-    const normalizedAngle = (newAngle % 360 + 360) % 360; // Normalize to 0-360
-    const easedProgress = this.power4Out(normalizedAngle / 360); // Apply easing to 0-1 range
-    const easedAngle = easedProgress * 360; // Convert back to angle
+    // Validate input
+    if (!Number.isFinite(newAngle)) return;
     
-    // Set target with immediate response
-    this.state.targetAngle = this.clampAngle(easedAngle);
+    // Store normalized target angle directly (no easing here)
+    const normalizedAngle = this.safeAngleNormalize(newAngle);
+    this.state.targetAngle = this.clampAngle(normalizedAngle);
+    
+    // Initialize interpolation state
+    this.state.startAngle = this.state.angle;
+    this.state.interpolationProgress = 0.0; // Start interpolation
     
     // Add initial impulse for "flick" feeling
     const displacement = this.state.targetAngle - this.state.angle;
@@ -72,18 +81,36 @@ export class ReinigerJoint {
     const deltaTime = Math.min((now - this.state.lastUpdate) / 1000, 0.1); // Cap at 100ms
     this.state.lastUpdate = now;
 
-    // Calculate angular displacement from target
+    // Validate deltaTime
+    if (!Number.isFinite(deltaTime) || deltaTime <= 0) return;
+
+    // Update interpolation progress
+    if (this.state.interpolationProgress < 1.0) {
+      this.state.interpolationProgress = Math.min(1.0, this.state.interpolationProgress + deltaTime * 2.0); // 0.5 second duration
+      const easedProgress = this.power4Out(this.state.interpolationProgress);
+      const interpolatedAngle = this.state.startAngle + (this.state.targetAngle - this.state.startAngle) * easedProgress;
+      this.state.angle = interpolatedAngle;
+    }
+    
+    // Apply spring physics when interpolation is complete
     const displacement = this.state.targetAngle - this.state.angle;
+    if (this.state.interpolationProgress >= 1.0) {
+      // Calculate spring force: F = -kθ - cω
+      const springForce = this.state.config.stiffness * displacement;
+      const dampingForce = this.state.config.damping * this.state.velocity;
+      
+      // Update velocity with spring equation
+      this.state.velocity += (springForce - dampingForce) * deltaTime;
+    }
     
-    // Apply spring force (Snap to target) - τ = -kθ
-    const springForce = displacement * this.state.config.stiffness;
+    // Validate velocity before applying
+    if (!Number.isFinite(this.state.velocity)) {
+      this.state.velocity = 0;
+    }
     
-    // Apply damping (Air resistance/Paper feel) - τ = -cω
-    this.state.velocity += springForce;
-    this.state.velocity *= Math.pow(this.state.config.damping, deltaTime);
-    
-    // Update angle based on velocity
-    this.state.angle += this.state.velocity * deltaTime * 60; // Normalize to 60fps
+    // Update angle based on velocity with bounds checking
+    const angleDelta = this.state.velocity * deltaTime; // True degrees-per-second integration
+    this.state.angle += Number.isFinite(angleDelta) ? angleDelta : 0;
     
     // Apply hard stop limits
     this.state.angle = this.clampAngle(this.state.angle);
@@ -96,7 +123,21 @@ export class ReinigerJoint {
     
     // Add "paper flutter" micro-oscillation when settling
     if (Math.abs(this.state.velocity) < 0.01 && Math.abs(displacement) > 0.001) {
-      this.state.angle += (Math.random() - 0.5) * 0.5; // < 1° Z-axis flutter
+      // Apply cooldown to prevent excessive flutter
+      if (this.state.flutterCooldown <= 0) {
+        // Apply probabilistically and scale by displacement
+        if (Math.random() < 0.3) { // 30% chance when conditions are met
+          const displacementScale = Math.min(1, Math.abs(displacement) / 0.01); // Scale down for small displacements
+          const flutter = (Math.random() - 0.5) * 0.25 * displacementScale; // Max 0.25° scaled by displacement
+          this.state.angle += Number.isFinite(flutter) ? flutter : 0;
+          this.state.flutterCooldown = 10; // 10 frames cooldown
+        }
+      }
+    }
+    
+    // Update cooldown
+    if (this.state.flutterCooldown > 0) {
+      this.state.flutterCooldown--;
     }
   }
 
@@ -105,15 +146,31 @@ export class ReinigerJoint {
    * Starts nearly instantaneous, slows down significantly at end
    */
   private power4Out(t: number): number {
-    return 1 - Math.pow(1 - t, 4);
+    // Validate input
+    if (!Number.isFinite(t)) return 0;
+    // Clamp to valid range
+    const clampedT = Math.max(0, Math.min(1, t));
+    return 1 - Math.pow(1 - clampedT, 4);
   }
 
   /**
    * Clamp angle within configured limits
    */
   private clampAngle(angle: number): number {
+    // Validate input
+    if (!Number.isFinite(angle)) return 0;
+    
     const { minAngle = -180, maxAngle = 180 } = this.state.config;
     return Math.max(minAngle, Math.min(maxAngle, angle));
+  }
+
+  /**
+   * Safely normalize angle to 0-360 range
+   */
+  private safeAngleNormalize(angle: number): number {
+    // Validate input
+    if (!Number.isFinite(angle)) return 0;
+    return ((angle % 360) + 360) % 360;
   }
 
   /**
@@ -185,6 +242,12 @@ export class ReinigerEngine {
    * Start the physics simulation
    */
   start(): void {
+    // Clean up any existing animation frame
+    if (this.animationFrame) {
+      cancelAnimationFrame(this.animationFrame);
+      this.animationFrame = null;
+    }
+    
     if (this.isRunning) return;
     
     this.isRunning = true;

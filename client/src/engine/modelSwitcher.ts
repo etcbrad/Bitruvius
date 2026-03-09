@@ -5,7 +5,7 @@ export const RIG_MODELS: Record<RigModel, { name: string; description: string; j
   slenderbit: {
     name: 'SlenderBit',
     description: 'Original slender rig with traditional shoulder mechanics',
-    joints: SLENDERBIT_JOINTS,
+    joints: INITIAL_JOINTS,
   },
   humanoid: {
     name: 'Humanoid',
