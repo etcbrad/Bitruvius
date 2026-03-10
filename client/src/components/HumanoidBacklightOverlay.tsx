@@ -105,16 +105,12 @@ export function HumanoidBacklightOverlay({
     const navel = req('navel');
     const sternum = req('sternum');
     const collar = req('collar');
-    const skullRaw = req('head');
-    const headRaw = req('head');
+    const head = req('head');
     const lClav = req('l_clavicle');
     const rClav = req('r_clavicle');
     const lHip = req('l_hip');
     const rHip = req('r_hip');
-    if (!navel || !sternum || !collar || !lClav || !rClav || !lHip || !rHip) return null;
-
-    const head = headRaw;
-    if (!head) return null;
+    if (!navel || !sternum || !collar || !head || !lClav || !rClav || !lHip || !rHip) return null;
 
     const navelPx = pxFromWorld(navel);
     const sternumPx = pxFromWorld(sternum);

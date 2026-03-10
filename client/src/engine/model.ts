@@ -59,12 +59,12 @@ export const INITIAL_JOINTS: Record<string, Joint> = {
   r_wrist: { id: 'r_wrist', label: 'R Wrist', parent: 'r_elbow', baseOffset: { x: 4, y: 0 }, currentOffset: { x: 4, y: 0 }, targetOffset: { x: 4, y: 0 }, previewOffset: { x: 4, y: 0 }, isEndEffector: true, mirrorId: 'l_wrist', rotation: 0 },
   r_fingertip: { id: 'r_fingertip', label: 'R Fingertip', parent: 'r_wrist', baseOffset: { x: 1.5, y: 0 }, currentOffset: { x: 1.5, y: 0 }, targetOffset: { x: 1.5, y: 0 }, previewOffset: { x: 1.5, y: 0 }, mirrorId: 'l_fingertip', rotation: 0 },
 
-  l_thigh: { id: 'l_thigh', label: 'L Hip', parent: 'navel', baseOffset: { x: -1.5, y: 0 }, currentOffset: { x: -1.5, y: 0 }, targetOffset: { x: -1.5, y: 0 }, previewOffset: { x: -1.5, y: 0 }, mirrorId: 'r_thigh', rotation: 0 },
+  l_thigh: { id: 'l_thigh', label: 'L Thigh', parent: 'navel', baseOffset: { x: -1.5, y: 0 }, currentOffset: { x: -1.5, y: 0 }, targetOffset: { x: -1.5, y: 0 }, previewOffset: { x: -1.5, y: 0 }, mirrorId: 'r_thigh', rotation: 0 },
   l_knee: { id: 'l_knee', label: 'L Knee', parent: 'l_thigh', baseOffset: { x: 0, y: 6 }, currentOffset: { x: 0, y: 6 }, targetOffset: { x: 0, y: 6 }, previewOffset: { x: 0, y: 6 }, rotation: 0 },
   l_ankle: { id: 'l_ankle', label: 'L Ankle', parent: 'l_knee', baseOffset: { x: 0, y: 6 }, currentOffset: { x: 0, y: 6 }, targetOffset: { x: 0, y: 6 }, previewOffset: { x: 0, y: 6 }, isEndEffector: true, mirrorId: 'r_ankle', rotation: 0 },
   l_toe: { id: 'l_toe', label: 'L Toe', parent: 'l_ankle', baseOffset: { x: 0, y: 2 }, currentOffset: { x: 0, y: 2 }, targetOffset: { x: 0, y: 2 }, previewOffset: { x: 0, y: 2 }, isEndEffector: true, mirrorId: 'r_toe', rotation: 0 },
 
-  r_thigh: { id: 'r_thigh', label: 'R Hip', parent: 'navel', baseOffset: { x: 1.5, y: 0 }, currentOffset: { x: 1.5, y: 0 }, targetOffset: { x: 1.5, y: 0 }, previewOffset: { x: 1.5, y: 0 }, mirrorId: 'l_thigh', rotation: 0 },
+  r_thigh: { id: 'r_thigh', label: 'R Thigh', parent: 'navel', baseOffset: { x: 1.5, y: 0 }, currentOffset: { x: 1.5, y: 0 }, targetOffset: { x: 1.5, y: 0 }, previewOffset: { x: 1.5, y: 0 }, mirrorId: 'l_thigh', rotation: 0 },
   r_knee: { id: 'r_knee', label: 'R Knee', parent: 'r_thigh', baseOffset: { x: 0, y: 6 }, currentOffset: { x: 0, y: 6 }, targetOffset: { x: 0, y: 6 }, previewOffset: { x: 0, y: 6 }, rotation: 0 },
   r_ankle: { id: 'r_ankle', label: 'R Ankle', parent: 'r_knee', baseOffset: { x: 0, y: 6 }, currentOffset: { x: 0, y: 6 }, targetOffset: { x: 0, y: 6 }, previewOffset: { x: 0, y: 6 }, isEndEffector: true, mirrorId: 'l_ankle', rotation: 0 },
   r_toe: { id: 'r_toe', label: 'R Toe', parent: 'r_ankle', baseOffset: { x: 0, y: 2 }, currentOffset: { x: 0, y: 2 }, targetOffset: { x: 0, y: 2 }, previewOffset: { x: 0, y: 2 }, isEndEffector: true, mirrorId: 'l_toe', rotation: 0 },
