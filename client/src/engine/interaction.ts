@@ -5,6 +5,7 @@ import { solveFabrikChainOffsets } from './ik/fabrik';
 import { clampClavicleTargetAngleRad } from './clavicleConstraint';
 import { applyManikinFkRotation } from './manikinFk';
 import { applyNeckBaseCenteredOffsets, computeNeckBaseCenteredWorld } from './neckBase';
+import { updateSocketEasing } from './socketEasing';
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -498,7 +499,11 @@ export const applyDragToState = (
     };
   }
 
-  return { ...prev, joints: applyNeckBaseCenteredOffsets(nextJoints, INITIAL_JOINTS) };
+  // Apply socket easing for smooth magnetic force effect on arm sliding
+  const currentTime = Date.now() / 1000; // Convert to seconds
+  const jointsWithSocketEasing = updateSocketEasing(nextJoints, prev.connectionOverrides, currentTime);
+
+  return { ...prev, joints: applyNeckBaseCenteredOffsets(jointsWithSocketEasing, INITIAL_JOINTS) };
 };
 
 export const applyBalanceDragToState = (

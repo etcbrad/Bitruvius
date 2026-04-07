@@ -200,7 +200,8 @@ describe('CutoutRigBuilder', () => {
       expect(segmentSheetFromFile).toHaveBeenCalledWith(file, {
         threshold: 160,
         featherRadius: 2,
-        edgeTolerance: 20
+        edgeTolerance: 20,
+        penInkCleanup: true,
       });
     });
   });

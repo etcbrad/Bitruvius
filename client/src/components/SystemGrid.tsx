@@ -27,6 +27,12 @@ interface SystemGridProps {
     characterCenterY: number;
     pxPerUnit: number;
   } | null;
+  frame?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
 }
 
 interface BenchmarkLine {
@@ -55,6 +61,7 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
   opacity = 0.18,
   plot = null,
   transform = null,
+  frame = null,
 }) => {
   if (!visible) return null;
 
@@ -74,6 +81,10 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
   const majorGridSize = headLenPx;
   const minorGridSize = Math.max(6, majorGridSize / 8);
   const groundY = toPxY(0);
+
+  const frameRect = frame ?? null;
+  const frameMaskId = `system-grid-mask-${ids}`;
+  const frameVignetteId = `system-grid-vignette-${ids}`;
 
   const keptFamilies = new Set(['head-x', 'head-y', 'centerline', 'square', 'diagonal', 'triangle', 'cubit', 'palm', 'finger']);
   const filteredLines = plot?.lines?.filter((l) => keptFamilies.has(l.family)) ?? [];
@@ -117,6 +128,31 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
   return (
     <g className="pointer-events-none" style={{ opacity }}>
       <defs>
+        {frameRect && (
+          <>
+            <radialGradient
+              id={frameVignetteId}
+              gradientUnits="userSpaceOnUse"
+              cx={frameRect.x + frameRect.width / 2}
+              cy={frameRect.y + frameRect.height / 2}
+              r={Math.max(frameRect.width, frameRect.height) * 0.6}
+            >
+              <stop offset="0%" stopColor="white" stopOpacity="1" />
+              <stop offset="72%" stopColor="white" stopOpacity="1" />
+              <stop offset="100%" stopColor="white" stopOpacity="0" />
+            </radialGradient>
+            <mask id={frameMaskId} maskUnits="userSpaceOnUse">
+              <rect
+                x={frameRect.x}
+                y={frameRect.y}
+                width={frameRect.width}
+                height={frameRect.height}
+                fill={`url(#${frameVignetteId})`}
+              />
+            </mask>
+          </>
+        )}
+
         <pattern
           id={`system-grid-minor-${ids}`}
           width={minorGridSize}
@@ -167,16 +203,17 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
         </linearGradient>
       </defs>
 
-      {/* Grid */}
-      {showGrid && (
-        <rect
-          x={-span}
-          y={-span}
-          width={span * 2}
-          height={span * 2}
-          fill={`url(#system-grid-major-${ids})`}
-        />
-      )}
+      <g mask={frameRect ? `url(#${frameMaskId})` : undefined}>
+        {/* Grid */}
+        {showGrid && (
+          <rect
+            x={-span}
+            y={-span}
+            width={span * 2}
+            height={span * 2}
+            fill={`url(#system-grid-major-${ids})`}
+          />
+        )}
 
       {/* Vitruvian Square - represents standing height from ankle to head */}
       {showGrid && (
@@ -238,11 +275,11 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
         </g>
       )}
 
-      {/* Plot lines with enhanced proportional data */}
-      {showGrid && [
-        ...filteredLines,
-        ...benchmarkLines,
-      ].map((l) => {
+        {/* Plot lines with enhanced proportional data */}
+        {showGrid && [
+          ...filteredLines,
+          ...benchmarkLines,
+        ].map((l) => {
         const isCenterline = l.family === 'centerline';
         const isSquare = l.family === 'square';
         const isDiagonal = l.family === 'diagonal';
@@ -315,44 +352,44 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
             )}
           </g>
         );
-      })}
+        })}
 
-      {/* Vitruvian Circle - reaches top of head, base at toe line */}
-      {showRings && (
-        <circle
-          cx={toPxX(0)}
-          cy={toPxY(0.4165)} // Centered between toe line (0.0) and head (0.833)
-          r={t.pxPerUnit * 0.4165} // Radius from toe line to head
-          fill="none"
-          stroke="rgba(139, 119, 101, 0.11)"
-          strokeWidth="1.3"
-        />
-      )}
+        {/* Vitruvian Circle - reaches top of head, base at toe line */}
+        {showRings && (
+          <circle
+            cx={toPxX(0)}
+            cy={toPxY(0.4165)} // Centered between toe line (0.0) and head (0.833)
+            r={t.pxPerUnit * 0.4165} // Radius from toe line to head
+            fill="none"
+            stroke="rgba(139, 119, 101, 0.11)"
+            strokeWidth="1.3"
+          />
+        )}
 
-      {/* Vitruvian Triangle - scaled to new circle dimensions */}
-      {showRings && (
-        <polygon
-          points={getTrianglePoints(0, 0.417, 0.417)}
-          fill="none"
-          stroke="rgba(139, 119, 101, 0.10)"
-          strokeWidth="1.2"
-          strokeDasharray="4 8"
-        />
-      )}
+        {/* Vitruvian Triangle - scaled to new circle dimensions */}
+        {showRings && (
+          <polygon
+            points={getTrianglePoints(0, 0.417, 0.417)}
+            fill="none"
+            stroke="rgba(139, 119, 101, 0.10)"
+            strokeWidth="1.2"
+            strokeDasharray="4 8"
+          />
+        )}
 
-      {/* Additional reach circles with Vitruvian proportions */}
-      {showRings && [
-        ...(filteredCircles.length > 0 ? filteredCircles : [
-          { key: 'fallback-1', cx: 0, cy: 0.55, r: 0.25, family: 'reach' },
-          { key: 'fallback-2', cx: 0, cy: 0.55, r: 0.5, family: 'reach' },
-        ]),
-        // Additional Vitruvian circles
-        { key: 'head-circle', cx: 0, cy: 0.9375, r: 0.0625, family: 'proportion' },
-        { key: 'chest-circle', cx: 0, cy: 0.75, r: 0.15, family: 'proportion' },
-        { key: 'pelvic-circle', cx: 0, cy: 0.5, r: 0.1, family: 'proportion' },
-        { key: 'knee-circle', cx: -0.15, cy: 0.25, r: 0.05, family: 'proportion' },
-        { key: 'knee-circle-right', cx: 0.15, cy: 0.25, r: 0.05, family: 'proportion' },
-      ].map((c, idx) => {
+        {/* Additional reach circles with Vitruvian proportions */}
+        {showRings && [
+          ...(filteredCircles.length > 0 ? filteredCircles : [
+            { key: 'fallback-1', cx: 0, cy: 0.55, r: 0.25, family: 'reach' },
+            { key: 'fallback-2', cx: 0, cy: 0.55, r: 0.5, family: 'reach' },
+          ]),
+          // Additional Vitruvian circles
+          { key: 'head-circle', cx: 0, cy: 0.9375, r: 0.0625, family: 'proportion' },
+          { key: 'chest-circle', cx: 0, cy: 0.75, r: 0.15, family: 'proportion' },
+          { key: 'pelvic-circle', cx: 0, cy: 0.5, r: 0.1, family: 'proportion' },
+          { key: 'knee-circle', cx: -0.15, cy: 0.25, r: 0.05, family: 'proportion' },
+          { key: 'knee-circle-right', cx: 0.15, cy: 0.25, r: 0.05, family: 'proportion' },
+        ].map((c, idx) => {
         const isOuter = c.key.includes('max') || idx === 0;
         const isProportion = c.family === 'proportion';
         let stroke, strokeWidth, dashArray;
@@ -379,24 +416,25 @@ export const SystemGrid: React.FC<SystemGridProps> = ({
             strokeDasharray={dashArray}
           />
         );
-      })}
+        })}
 
-      {/* Ground (subtle strip + line) */}
-      <rect
-        x={-span}
-        y={groundY}
-        width={span * 2}
-        height={span * 2}
-        fill={`url(#system-ground-${ids})`}
-      />
-      <line
-        x1={-span}
-        y1={groundY}
-        x2={span}
-        y2={groundY}
-        stroke="rgba(139, 119, 101, 0.12)"
-        strokeWidth="1"
-      />
+        {/* Ground (subtle strip + line) */}
+        <rect
+          x={-span}
+          y={groundY}
+          width={span * 2}
+          height={span * 2}
+          fill={`url(#system-ground-${ids})`}
+        />
+        <line
+          x1={-span}
+          y1={groundY}
+          x2={span}
+          y2={groundY}
+          stroke="rgba(139, 119, 101, 0.12)"
+          strokeWidth="1"
+        />
+      </g>
     </g>
   );
 };

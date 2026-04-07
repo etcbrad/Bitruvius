@@ -271,7 +271,7 @@ export const CutoutGallery: React.FC<CutoutGalleryProps> = ({
                   `}
                   onClick={() => handlePieceClick(piece, sheet)}
                   draggable
-                  onDragStart={(e: React.DragEvent) => handlePieceDragStart(e, piece, sheet)}
+                  onDragStart={(e, _info) => handlePieceDragStart(e as any, piece, sheet)}
                   onDragEnd={() => setSelectedPieceId(null)}
                 >
                   {/* Thumbnail */}

@@ -66,19 +66,50 @@ app.use('/storage', storageRoutes);
 // Multi-file upload endpoint
 app.post('/api/segment_multi', upload.array('images', 10), async (req, res) => {
   try {
-    const files = req.files as Express.Multer.File[];
-    if (!files || files.length === 0) {
+    // Safe type assertion with validation
+    const files = req.files;
+    if (!files || !Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: 'No images uploaded' });
     }
 
-    // Validate file types
+    // Validate file types and check for malicious content
     for (const file of files) {
       if (!file.mimetype || !file.mimetype.startsWith('image/')) {
         return res.status(400).json({ error: `Invalid file type: ${file.mimetype}. Only images are allowed.` });
       }
+      
+      // Additional validation: check file signature (magic bytes)
+      const buffer = file.buffer;
+      if (!buffer || buffer.length < 4) {
+        return res.status(400).json({ error: `Invalid image file: ${file.originalname}` });
+      }
+      
+      // Basic image signature validation
+      const signature = buffer.subarray(0, 4);
+      const isValidImage = 
+        signature[0] === 0x89 && signature[1] === 0x50 && signature[2] === 0x4E && signature[3] === 0x47 || // PNG
+        signature[0] === 0xFF && signature[1] === 0xD8 && signature[2] === 0xFF || // JPEG
+        signature[0] === 0x47 && signature[1] === 0x49 && signature[2] === 0x46; // GIF
+        
+      if (!isValidImage) {
+        return res.status(400).json({ error: `Invalid image format: ${file.originalname}` });
+      }
     }
 
-    const { segmentSheetFromFile } = await import('../client/src/app/sheetParser');
+    // Add error handling for dynamic import
+    let segmentSheetFromFile;
+    try {
+      const sheetParser = await import('../client/src/app/sheetParser');
+      segmentSheetFromFile = sheetParser.segmentSheetFromFile;
+    } catch (importError) {
+      console.error('Failed to import sheetParser:', importError);
+      return res.status(500).json({ error: 'Image processing service unavailable' });
+    }
+
+    if (!segmentSheetFromFile || typeof segmentSheetFromFile !== 'function') {
+      return res.status(500).json({ error: 'Image processing function not available' });
+    }
+
     const parsed = parseInt(req.body.min_area);
     const minArea = Number.isNaN(parsed) ? 500 : parsed;
     const pieces: Array<{
@@ -93,13 +124,11 @@ app.post('/api/segment_multi', upload.array('images', 10), async (req, res) => {
     }> = [];
     let totalShapes = 0;
 
-    // Process each uploaded file
+    // Process each uploaded file with memory-efficient approach
     for (const file of files) {
       try {
-        // Convert buffer to file-like object for parser
-        const arrayBuffer = file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength);
-        const blob = new Blob([arrayBuffer as ArrayBuffer], { type: file.mimetype });
-        const fileObj = new File([blob], file.originalname, { type: file.mimetype });
+        // Create File object directly from buffer without intermediate conversions
+        const fileObj = new File([new Uint8Array(file.buffer)], file.originalname, { type: file.mimetype });
         
         const result = await segmentSheetFromFile(fileObj, {
           minSegmentArea: minArea,

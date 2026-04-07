@@ -717,6 +717,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
   const [segmentLabels, setSegmentLabels] = useState<Record<string, string>>({});
   const [segmentFeather, setSegmentFeather] = useState(2);
   const [edgeTolerance, setEdgeTolerance] = useState(20);
+  const [penInkCleanup, setPenInkCleanup] = useState(true);
   const jointIdCounter = useRef(0);
   
   // Canvas-based detection state
@@ -729,6 +730,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
   const [uploadedImage, setUploadedImage] = useState<HTMLImageElement | null>(null);
   const [canvasScale, setCanvasScale] = useState(1);
   const [originalImageDimensions, setOriginalImageDimensions] = useState<{ width: number; height: number } | null>(null);
+  const penInkLook = state.lookMode === 'pen-ink-1918';
   
   // Mask upload state
   const [maskFiles, setMaskFiles] = useState<File[]>([]);
@@ -871,6 +873,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
           threshold: segmentThreshold,
           featherRadius: segmentFeather,
           edgeTolerance,
+          penInkCleanup,
         });
         setSheetPreview(result.src);
         setSheetName(result.name ?? file.name);
@@ -890,7 +893,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
         setSheetLoading(false);
       }
     },
-    [segmentThreshold, segmentFeather, edgeTolerance, updateSheetPalette],
+    [segmentThreshold, segmentFeather, edgeTolerance, penInkCleanup, updateSheetPalette],
   );
 
   const handleFileChange = useCallback(
@@ -1027,7 +1030,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
   }, []);
 
   const handleRigStageClick = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
+    (event: React.MouseEvent<SVGSVGElement>) => {
       const rect = event.currentTarget.getBoundingClientRect();
       const scaleX = RIG_STAGE_SIZE / rect.width;
       const scaleY = RIG_STAGE_SIZE / rect.height;
@@ -1092,7 +1095,7 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-black/70">
-      <div className="relative w-full max-w-[1100px] h-[calc(100vh-48px)] overflow-hidden rounded-2xl border border-white/10 bg-[#040404] shadow-2xl flex flex-col">
+      <div className={`relative w-full max-w-[1100px] h-[calc(100vh-48px)] overflow-hidden rounded-2xl border flex flex-col shadow-2xl ${penInkLook ? 'pen-ink-panel' : 'border-white/10 bg-[#040404]'}`}>
         <header className="flex items-center justify-between gap-4 border-b border-white/5 px-6 py-4">
           <div>
             <div className="text-[10px] uppercase tracking-[0.4em] text-[#666]">Cutout Rig Builder</div>
@@ -1162,6 +1165,15 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
                         <Wand2 size={16} />
                         {isDetecting ? 'Detecting...' : 'Auto-Detect'}
                       </button>
+
+                      <label className="flex items-center gap-2 text-[10px] uppercase tracking-[0.3em] text-white/70">
+                        <input
+                          type="checkbox"
+                          checked={penInkCleanup}
+                          onChange={(e) => setPenInkCleanup(e.target.checked)}
+                        />
+                        Pen & Ink cleanup
+                      </label>
                       
                       {/* Zoom Controls */}
                       <div className="flex items-center gap-2 bg-white/10 rounded-full px-3 py-2">
@@ -1342,6 +1354,15 @@ export const CutoutRigBuilder: React.FC<CutoutRigBuilderProps> = ({
                       {sheetPalette.segments.length} pieces
                     </div>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => sheetPalette.segments.forEach((segment) => assignSegmentToSlot(segment))}
+                    disabled={sheetPalette.segments.length === 0}
+                    className="w-full mb-3 px-3 py-2 rounded-lg bg-white/10 text-[10px] font-bold uppercase tracking-[0.2em] hover:bg-white/20 disabled:opacity-40"
+                  >
+                    Auto-assign Pen & Ink sheet
+                  </button>
                   
                   {/* Piece Type Indicators */}
                   <div className="flex gap-2 text-[8px]">

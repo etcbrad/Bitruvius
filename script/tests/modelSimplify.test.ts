@@ -24,37 +24,28 @@ export const runModelSimplifyTests = () => {
     assert.ok(connKeys.has(k), `expected CONNECTIONS to include ${k}`);
   };
 
-  // Spine / head
-  requireConn('waist', 'navel');
-  requireConn('navel', 'sternum');
-  requireConn('sternum', 'mid_torso');
-  requireConn('mid_torso', 'upper_torso');
-  requireConn('upper_torso', 'collar');
+  // Pyxl Puppet DragonBones-style structure with collar as direct socket parent
+  requireConn('waist', 'torso');
+  requireConn('torso', 'collar');
   requireConn('collar', 'head');
 
-  // Left arm
-  requireConn('collar', 'l_clavicle');
-  requireConn('l_clavicle', 'l_bicep');
-  requireConn('l_bicep', 'l_elbow');
-  requireConn('l_elbow', 'l_wrist');
-  requireConn('l_wrist', 'l_fingertip');
+  // Direct arm connections - collar → bicep → forearm → hand
+  // Collar acts as the socket parent for arms
+  requireConn('collar', 'bicep_l');
+  requireConn('bicep_l', 'forearm_l');
+  requireConn('forearm_l', 'hand_l');
 
-  // Right arm
-  requireConn('collar', 'r_clavicle');
-  requireConn('r_clavicle', 'r_bicep');
-  requireConn('r_bicep', 'r_elbow');
-  requireConn('r_elbow', 'r_wrist');
-  requireConn('r_wrist', 'r_fingertip');
+  requireConn('collar', 'bicep_r');
+  requireConn('bicep_r', 'forearm_r');
+  requireConn('forearm_r', 'hand_r');
 
-  // Left leg
-  requireConn('navel', 'l_thigh');
-  requireConn('l_thigh', 'l_knee');
-  requireConn('l_knee', 'l_ankle');
-  requireConn('l_ankle', 'l_toe');
+  // Left leg chain
+  requireConn('waist', 'thigh_l');
+  requireConn('thigh_l', 'shin_l');
+  requireConn('shin_l', 'foot_l');
 
-  // Right leg
-  requireConn('navel', 'r_thigh');
-  requireConn('r_thigh', 'r_knee');
-  requireConn('r_knee', 'r_ankle');
-  requireConn('r_ankle', 'r_toe');
+  // Right leg chain
+  requireConn('waist', 'thigh_r');
+  requireConn('thigh_r', 'shin_r');
+  requireConn('shin_r', 'foot_r');
 };

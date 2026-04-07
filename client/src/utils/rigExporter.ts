@@ -143,21 +143,21 @@ export class RigExporter {
     Object.entries(state.scene.jointMasks || {}).forEach(([id, mask]) => {
       masks.push({
         id,
-        name: mask.name || id,
+        name: id,
         jointId: id,
         transform: {
-          x: mask.x || 0,
-          y: mask.y || 0,
-          scaleX: mask.scaleX || 1,
-          scaleY: mask.scaleY || 1,
-          rotation: mask.rotation || 0
+          x: mask.offsetX || 0,
+          y: mask.offsetY || 0,
+          scaleX: mask.scale || 1,
+          scaleY: mask.scale || 1,
+          rotation: mask.rotation || 0,
         },
         blendMode: mask.blendMode || 'normal',
-        opacity: mask.opacity || 1,
+        opacity: mask.opacity ?? 1,
         physics: {
           stiffness: state.physicsRigidity,
-          damping: 1 - state.snappiness
-        }
+          damping: 1 - state.snappiness,
+        },
       });
     });
 
@@ -168,14 +168,14 @@ export class RigExporter {
         id,
         name: slot.name || id,
         type: 'torso', // Default type
-        jointBindings: [slot.jointId || 'root'],
+        jointBindings: [slot.attachment?.toJointId || slot.attachment?.fromJointId || 'root'],
         transform: {
           x: 0,
           y: 0,
           scaleX: 1,
           scaleY: 1,
-          rotation: 0
-        }
+          rotation: 0,
+        },
       });
     });
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Wand2, Upload, Settings, Box, Link2, Zap, Layers, Grid3X3 } from 'lucide-react';
+import { Wand2, Upload, Settings, Box, Link2, Zap, Layers, Grid3X3, RotateCw } from 'lucide-react';
 
 import type { SheetPalette, SheetSegment, SkeletonState } from '@/engine/types';
 import { getWorldPosition } from '@/engine/kinematics';
@@ -14,7 +14,7 @@ type DetectedShape = {
   contour: { x: number; y: number }[];
   area: number;
   centroid: { x: number; y: number };
-  imageData: ImageData;
+  imageData?: ImageData;
 };
 
 type ShapeDetectionResult = {
@@ -43,7 +43,8 @@ type RightConsoleProps = {
 };
 
 // Auto-crop utility - calculates minimum bounding box of non-transparent pixels
-const calculateAutoCrop = (imageData: ImageData): { x: number; y: number; w: number; h: number } => {
+const calculateAutoCrop = (imageData?: ImageData): { x: number; y: number; w: number; h: number } => {
+  if (!imageData) return { x: 0, y: 0, w: 0, h: 0 };
   const { data, width, height } = imageData;
   let minX = width, minY = height, maxX = 0, maxY = 0;
   let foundPixel = false;
@@ -198,6 +199,7 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
   const [detectionResult, setDetectionResult] = useState<ShapeDetectionResult | null>(null);
   const [uploadedImage, setUploadedImage] = useState<HTMLImageElement | null>(null);
   const [sheetPreview, setSheetPreview] = useState<string | null>(null);
+  const [penInkCleanup, setPenInkCleanup] = useState(true);
   
   // Library/Assembly state
   const [bindingMode, setBindingMode] = useState<RigBindingMode>('JOINT_DRIVES_MASK');
@@ -219,6 +221,7 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
   const sheetInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedSegment = sheetPalette.segments.find(s => s.id === selectedPieceId) || null;
+  const penInkLook = state.lookMode === 'pen-ink-1918';
 
   // Helper function to convert detection result to segments
   const buildSegmentsFromDetection = (result: ShapeDetectionResult, canvas: HTMLCanvasElement): SheetSegment[] => {
@@ -245,6 +248,7 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
       const parsed = await segmentSheetFromFile(file, {
         threshold: detectionThreshold,
         featherRadius: featherAmount,
+        penInkCleanup,
       });
 
       setSheetPreview(dataUrl);
@@ -277,7 +281,7 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
     } finally {
       setIsDetecting(false);
     }
-  }, [detectionThreshold, featherAmount, updateSheetPalette]);
+  }, [detectionThreshold, featherAmount, penInkCleanup, updateSheetPalette]);
 
   // Drag and drop handlers
   const handlePieceDragStart = useCallback((pieceId: string, event: React.DragEvent<HTMLButtonElement>) => {
@@ -448,12 +452,19 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
     }
   }, [selectedSegment, targetJointId, bindingMode, assignSegmentToSlot, state.joints, setStateWithHistory, snapToGrid, reinigerConfig.enabled, reinigerConfig]);
 
+  const autoAssignPenInk = useCallback(() => {
+    sheetPalette.segments.forEach((segment) => assignSegmentToSlot(segment));
+  }, [assignSegmentToSlot, sheetPalette.segments]);
+
   return (
-    <div className="flex flex-col min-h-0 bg-[#040404] border-l border-white/10">
+    <div className={`flex flex-col min-h-0 w-[360px] max-w-[420px] border-l shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] ${penInkLook ? 'pen-ink-panel' : 'bg-gradient-to-b from-[#0a0a0a] via-[#050505] to-black border-white/10'}`}>
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 p-4 border-b border-white/5">
-        <div className="text-[10px] font-bold uppercase tracking-widest text-[#666]">Cutout Rig</div>
-        <div className="text-[10px] text-[#444]">Console</div>
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-white/5 backdrop-blur-sm sticky top-0 z-10">
+        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.35em] text-white/70">
+          <RotateCw size={14} className="text-[#8b5cf6]" />
+          Rotation Console
+        </div>
+        <div className="text-[10px] text-[#555]">Side Deck</div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -476,12 +487,21 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
                 type="button"
                 onClick={() => sheetInputRef.current?.click()}
                 disabled={isDetecting}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-full bg-[#8b5cf6] text-white px-4 py-2 text-[10px] font-bold uppercase tracking-[0.4em] disabled:opacity-50"
+                className={`flex-1 inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-[10px] font-bold uppercase tracking-[0.4em] disabled:opacity-50 ${penInkLook ? 'pen-ink-button' : 'bg-[#8b5cf6] text-white'}`}
               >
                 <Wand2 size={14} />
                 {isDetecting ? 'Detecting...' : 'Auto-Detect'}
               </button>
             </div>
+
+            <label className="flex items-center gap-2 text-[10px] uppercase tracking-[0.3em] text-white/60">
+              <input
+                type="checkbox"
+                checked={penInkCleanup}
+                onChange={(e) => setPenInkCleanup(e.target.checked)}
+              />
+              Pen & Ink cleanup
+            </label>
             
             <div className="space-y-2">
               <label className="text-[10px] uppercase tracking-[0.3em] text-white/60">Sensitivity</label>
@@ -553,6 +573,15 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
         {/* ASSEMBLY Section */}
         <CollapsibleSection title="ASSEMBLY" storageKey="btv:cutout:section:assembly" defaultOpen>
           <div className="space-y-3">
+            <button
+              type="button"
+              onClick={autoAssignPenInk}
+              disabled={sheetPalette.segments.length === 0}
+              className={`w-full px-3 py-2 rounded-lg text-[10px] font-bold uppercase transition-all border ${penInkLook ? 'pen-ink-button' : 'bg-[#222] text-white hover:bg-[#333]'}`}
+            >
+              Auto-assign Pen & Ink sheet
+            </button>
+
             <div className="flex items-center justify-between">
               <span className="text-[10px] uppercase tracking-[0.3em] text-white/60">DRIVE MODE</span>
               <button
@@ -679,7 +708,7 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
             </div>
 
             <div className="flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-[0.3em] text-white/60">SNAP-TO-GRID</span>
+              <span className="text-[10px] uppercase tracking-[0.3em] text-white/60">Rotation Snap</span>
               <button
                 type="button"
                 onClick={() => updatePhysicsConfig('snapToGrid', !reinigerConfig.snapToGrid)}
@@ -696,7 +725,7 @@ export const RightConsole: React.FC<RightConsoleProps> = ({
 
             {reinigerConfig.snapToGrid && (
               <div className="space-y-2">
-                <label className="text-[10px] uppercase tracking-[0.3em] text-white/60">GRID INCREMENT</label>
+                <label className="text-[10px] uppercase tracking-[0.3em] text-white/60">Rotation Increment</label>
                 <select
                   value={reinigerConfig.gridIncrement}
                   onChange={(e) => updatePhysicsConfig('gridIncrement', parseInt(e.target.value))}

@@ -2,6 +2,7 @@ import type { SkeletonState } from './types';
 
 export const ENGINE_STATE_SCHEMA_V1 = 'bitruvius-core-engine:state@1' as const;
 export const ENGINE_STATE_SCHEMA_V2 = 'bitruvius-core-engine:state@2' as const;
+export const ENGINE_STATE_SCHEMA_V3 = 'bitruvius-core-engine:state@3' as const;
 
 export type PersistedEngineStateV1 = {
   schema: typeof ENGINE_STATE_SCHEMA_V1;
@@ -11,6 +12,12 @@ export type PersistedEngineStateV1 = {
 
 export type PersistedEngineStateV2 = {
   schema: typeof ENGINE_STATE_SCHEMA_V2;
+  savedAt: string;
+  state: SkeletonState;
+};
+
+export type PersistedEngineStateV3 = {
+  schema: typeof ENGINE_STATE_SCHEMA_V3;
   savedAt: string;
   state: SkeletonState;
 };
@@ -31,8 +38,8 @@ export const serializeEngineState = (
   state: SkeletonState,
   options: { pretty?: boolean } = {},
 ): string => {
-  const payload: PersistedEngineStateV2 = {
-    schema: ENGINE_STATE_SCHEMA_V2,
+  const payload: PersistedEngineStateV3 = {
+    schema: ENGINE_STATE_SCHEMA_V3,
     savedAt: new Date().toISOString(),
     state,
   };
@@ -85,9 +92,26 @@ export const deserializeEngineState = (serialized: string): DeserializeResult =>
       }
     };
 
-    if ((maybe.schema === ENGINE_STATE_SCHEMA_V2 || maybe.schema === ENGINE_STATE_SCHEMA_V1) && 'state' in maybe) {
+    const ensureBoneBuilder = (state: any) => {
+      if (!state || typeof state !== 'object') return;
+      if (!state.boneBuilder) {
+        state.boneBuilder = {
+          overlayDismissed: false,
+          activeStep: 'Head',
+          plateReadyByStep: {},
+          plates: [],
+          penChainJointId: null,
+          snapRadiusPx: 18,
+          headLenPx: 80,
+          settings: { stance: 'single', species: 'humanoid', height: 170, torsoRatio: 50 },
+        };
+      }
+    };
+
+    if ((maybe.schema === ENGINE_STATE_SCHEMA_V3 || maybe.schema === ENGINE_STATE_SCHEMA_V2 || maybe.schema === ENGINE_STATE_SCHEMA_V1) && 'state' in maybe) {
       const state = maybe.state as any;
       migrateCameraDefaults(state);
+      ensureBoneBuilder(state);
       if (maybe.schema === ENGINE_STATE_SCHEMA_V1) migrateMaskOffsetsV1ToV2(state);
       return {
         ok: true,
@@ -100,6 +124,7 @@ export const deserializeEngineState = (serialized: string): DeserializeResult =>
     // Legacy: stored directly as SkeletonState shape (treat as v1 for mask offsets).
     const state = parsed as any;
     migrateCameraDefaults(state);
+    ensureBoneBuilder(state);
     migrateMaskOffsetsV1ToV2(state);
     return { ok: true, rawState: state, schema: null };
   } catch (err) {

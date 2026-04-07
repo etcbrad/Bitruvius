@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Slider } from "@/components/ui/slider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SystemGrid } from "@/components/SystemGrid";
+import { CollapsibleSection } from "./components/CollapsibleSection";
 import { 
   Activity, 
   RotateCcw, 
@@ -94,9 +95,10 @@ import { ExportActionsPanel, type ExportAction } from './components/ExportAction
 import { UnifiedPhysicsControl } from './components/UnifiedPhysicsControl';
 import { ManikinConsole } from './components/ManikinConsole';
 import { RightConsole } from './components/RightConsole';
-import { CollapsibleSection } from './components/CollapsibleSection';
 import { BalancedNeckControls } from './components/BalancedNeckControls';
 import { PerformanceMonitor } from './components/PerformanceMonitor';
+import { BoneBuilderOverlay } from './components/BoneBuilderOverlay';
+import { BoneBuilderPenOverlay } from './components/BoneBuilderPenOverlay';
 import { RigExporter } from './utils/rigExporter';
 import { DEFAULT_BALANCED_NECK_CONFIG } from './engine/balancedNeck';
 import type { TransitionIssue } from '@/lib/transitionIssues';
@@ -1515,6 +1517,15 @@ export default function App() {
     // Note: We don't reset the background when leaving nosferatu mode to preserve user choice
   }, [state.lookMode, backgroundColor]);
 
+  useEffect(() => {
+    const cls = 'look-pen-ink-1918';
+    const body = typeof document !== 'undefined' ? document.body : null;
+    if (!body) return;
+    if (state.lookMode === 'pen-ink-1918') body.classList.add(cls);
+    else body.classList.remove(cls);
+    return () => body.classList.remove(cls);
+  }, [state.lookMode]);
+
   const setStateWithHistory = useCallback(
     (actionId: string, update: (prev: SkeletonState) => SkeletonState) => {
       setState((prev) => {
@@ -1759,13 +1770,58 @@ export default function App() {
   const findBestSlotForSegment = useCallback(
     (stateForSearch: SkeletonState, segment: SheetSegment): string | null => {
       const centerY = segment.bounds.y + segment.bounds.height / 2;
+      const centerX = segment.bounds.x + segment.bounds.width / 2;
+      const dims = stateForSearch.sheetPalette?.dims;
+      const sheetWidth = dims?.width ?? 0;
+      const side: 'left' | 'right' | 'center' = sheetWidth
+        ? centerX < sheetWidth * 0.45
+          ? 'left'
+          : centerX > sheetWidth * 0.55
+            ? 'right'
+            : 'center'
+        : 'center';
+      const aspect = segment.bounds.width / Math.max(1, segment.bounds.height);
+      const area = segment.area;
+
+      const slotSide = (id: string): 'left' | 'right' | 'center' =>
+        id.startsWith('l_') ? 'left' : id.startsWith('r_') ? 'right' : 'center';
+
       let bestId: string | null = null;
-      let bestDistance = Infinity;
+      let bestScore = Infinity;
+
       for (const [slotId, slot] of Object.entries(stateForSearch.cutoutSlots)) {
         const jointPos = getWorldPosition(slot.attachment.toJointId, stateForSearch.joints, INITIAL_JOINTS, 'preview');
-        const distance = Math.abs(jointPos.y - centerY);
-        if (distance < bestDistance) {
-          bestDistance = distance;
+        if (!jointPos) continue;
+        let score = Math.abs(jointPos.y - centerY);
+
+        const sSide = slotSide(slotId);
+        if (side === 'left' && sSide === 'right') score += 300;
+        if (side === 'right' && sSide === 'left') score += 300;
+        if (side === 'center' && sSide !== 'center') score += 40;
+
+        const isHeadish = slotId === 'head' || slotId === 'collar';
+        const isTorso = slotId === 'torso' || slotId === 'waist';
+        const isArm = slotId.includes('_upper_arm') || slotId.includes('_forearm') || slotId.includes('_hand');
+        const isLeg = slotId.includes('_thigh') || slotId.includes('_calf') || slotId.includes('_foot');
+
+        if (isHeadish) {
+          score *= 0.75;
+          if (dims?.height) score += Math.max(0, (centerY / dims.height) - 0.35) * 120;
+        }
+        if (isTorso) {
+          const tallness = 1 / Math.max(0.01, aspect);
+          score -= tallness * 8;
+        }
+        if (isArm || isLeg) {
+          score += Math.abs(aspect - 0.35) * 30;
+        }
+
+        // Prefer larger pieces for torso/head slots, smaller for extremities
+        if (isTorso || isHeadish) score -= Math.min(area, 50_000) / 600;
+        if (isArm || isLeg) score += Math.max(0, area - 12_000) / 400;
+
+        if (score < bestScore) {
+          bestScore = score;
           bestId = slotId;
         }
       }
@@ -2325,12 +2381,11 @@ export default function App() {
     const svg = svgRef.current;
     if (!svg) throw new Error('No SVG element found');
     if (!canvasSize.width || !canvasSize.height) throw new Error('Invalid canvas size');
-    const success = downloadSvg(svg, {
+    downloadSvg(svg, {
       width: canvasSize.width,
       height: canvasSize.height,
       backgroundColor,
     });
-    if (!success) throw new Error('Failed to download SVG');
   }, [backgroundColor, canvasSize.height, canvasSize.width]);
 
   const exportPng = useCallback(async (): Promise<void> => {
@@ -2338,12 +2393,11 @@ export default function App() {
     if (!svg) throw new Error('No SVG element found');
     if (!canvasSize.width || !canvasSize.height) throw new Error('Invalid canvas size');
     try {
-      const success = await downloadPngFromSvg(svg, {
+      await downloadPngFromSvg(svg, {
         width: canvasSize.width,
         height: canvasSize.height,
         backgroundColor,
       });
-      if (!success) throw new Error('Failed to download PNG');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       alert(`Export failed: ${message}`);
@@ -3345,6 +3399,15 @@ export default function App() {
     };
   }, [canvasSize.height, canvasSize.width, gridRingsBgData]);
 
+  const gridFrame = useMemo(() => {
+    if (!canvasSize.width || !canvasSize.height) return null;
+    const frameWidth = Math.min(canvasSize.width, canvasSize.height * (4 / 3));
+    const frameHeight = frameWidth * 0.75;
+    const frameX = (canvasSize.width - frameWidth) / 2;
+    const frameY = (canvasSize.height - frameHeight) / 2;
+    return { x: frameX, y: frameY, width: frameWidth, height: frameHeight };
+  }, [canvasSize.height, canvasSize.width]);
+
   useEffect(() => {
     if (!freezeGridCalibration) {
       gridTransformFrozenRef.current = null;
@@ -3363,6 +3426,114 @@ export default function App() {
   const gridOverlayTransform = freezeGridCalibration
     ? gridTransformFrozenRef.current ?? computedGridOverlayTransform
     : computedGridOverlayTransform;
+
+  // Apply bone-builder pen points to real joints when available
+  useEffect(() => {
+    const bb = state.boneBuilder;
+    if (!bb || !bb.specialPoints) return;
+    const pxPerUnit = gridOverlayTransform?.pxPerUnit ?? 80;
+    if (pxPerUnit <= 0.001) return;
+
+    const required = ['head', 'neck_v', 'navel', 'groin', 'knee_l', 'foot_l'] as const;
+    const missing = required.some((id) => !bb.specialPoints?.[id]);
+    if (missing) return;
+
+    const sp = bb.specialPoints;
+    // Normalize positions to units relative to groin as origin
+    const toUnits = (id: string) => {
+      const p = sp[id];
+      return p ? { x: p.x / pxPerUnit, y: p.y / pxPerUnit } : null;
+    };
+    const groinU = toUnits('groin')!;
+    const rel = (id: string) => {
+      const p = toUnits(id);
+      return p ? { x: p.x - groinU.x, y: p.y - groinU.y } : null;
+    };
+
+    const head = rel('head')!;
+    const neck = rel('neck_v')!;
+    const navel = rel('navel')!;
+    const kneeL = rel('knee_l')!;
+    const footL = rel('foot_l')!;
+    const kneeR = rel('knee_r') ?? { x: -kneeL.x, y: kneeL.y };
+    const footR = rel('foot_r') ?? { x: -footL.x, y: footL.y };
+
+    // Arms (auto-generated in specialPoints)
+    const shoulderL = rel('shoulder_l');
+    const shoulderR = rel('shoulder_r');
+    const elbowL = rel('elbow_l');
+    const elbowR = rel('elbow_r');
+    const wristL = rel('wrist_l');
+    const wristR = rel('wrist_r');
+
+    setStateWithHistory('bone_builder_apply_pen', (prev) => {
+      const nextJoints = { ...prev.joints };
+      const setJoint = (id: string, parentId: string | null, world: { x: number; y: number }) => {
+        const parentWorld = parentId ? worldPos[parentId] ?? { x: 0, y: 0 } : { x: 0, y: 0 };
+        const offset = { x: world.x - parentWorld.x, y: world.y - parentWorld.y };
+        const j = nextJoints[id] ?? { id, label: id, parent: parentId, baseOffset: offset, currentOffset: offset, targetOffset: offset, previewOffset: offset };
+        nextJoints[id] = {
+          ...j,
+          parent: parentId,
+          baseOffset: offset,
+          currentOffset: offset,
+          targetOffset: offset,
+          previewOffset: offset,
+        };
+      };
+
+      const worldPos: Record<string, { x: number; y: number }> = {};
+      worldPos['waist'] = { x: 0, y: 0 };
+      worldPos['torso'] = navel;
+      worldPos['collar'] = neck;
+      worldPos['head'] = head;
+
+      worldPos['thigh_l'] = kneeL;
+      worldPos['shin_l'] = footL;
+      worldPos['foot_l'] = footL;
+
+      worldPos['thigh_r'] = kneeR;
+      worldPos['shin_r'] = footR;
+      worldPos['foot_r'] = footR;
+
+      if (shoulderL) {
+        worldPos['bicep_l'] = shoulderL;
+        if (elbowL) worldPos['forearm_l'] = elbowL;
+        if (wristL) worldPos['hand_l'] = wristL;
+      }
+      if (shoulderR) {
+        worldPos['bicep_r'] = shoulderR;
+        if (elbowR) worldPos['forearm_r'] = elbowR;
+        if (wristR) worldPos['hand_r'] = wristR;
+      }
+
+      setJoint('waist', null, worldPos['waist']);
+      setJoint('torso', 'waist', worldPos['torso']);
+      setJoint('collar', 'torso', worldPos['collar']);
+      setJoint('head', 'collar', worldPos['head']);
+
+      setJoint('thigh_l', 'waist', worldPos['thigh_l']);
+      setJoint('shin_l', 'thigh_l', worldPos['shin_l']);
+      setJoint('foot_l', 'shin_l', worldPos['foot_l']);
+
+      setJoint('thigh_r', 'waist', worldPos['thigh_r']);
+      setJoint('shin_r', 'thigh_r', worldPos['shin_r']);
+      setJoint('foot_r', 'shin_r', worldPos['foot_r']);
+
+      if (shoulderL) {
+        setJoint('bicep_l', 'collar', worldPos['bicep_l']);
+        if (elbowL) setJoint('forearm_l', 'bicep_l', worldPos['forearm_l']);
+        if (wristL) setJoint('hand_l', 'forearm_l', worldPos['hand_l']);
+      }
+      if (shoulderR) {
+        setJoint('bicep_r', 'collar', worldPos['bicep_r']);
+        if (elbowR) setJoint('forearm_r', 'bicep_r', worldPos['forearm_r']);
+        if (wristR) setJoint('hand_r', 'forearm_r', worldPos['hand_r']);
+      }
+
+      return { ...prev, joints: nextJoints };
+    });
+  }, [gridOverlayTransform, setStateWithHistory, state.boneBuilder]);
 
   useEffect(() => {
     if (!debugOverlayEnabled) return;
@@ -3464,7 +3635,7 @@ export default function App() {
       const driftY = stateLiveRef.current.viewOffset.y - debugGridStats.viewOffsetY;
       const centerX = canvasSize.width / 2 + stateLiveRef.current.viewOffset.x;
       const centerY = canvasSize.height / 2 + stateLiveRef.current.viewOffset.y;
-      const pxPerUnit = stateLiveRef.current.viewScale * BITRUVIAN_CONSTANTS.HEAD_UNIT;
+      const pxPerUnit = stateLiveRef.current.viewScale * BITRUVIAN_CONSTANTS.ANATOMY_RAW_RELATIVE_TO_BASE_HEAD_UNIT.HEAD;
 
       setDebugGridStats((prev) => {
         const nextMaxAbsDriftX = driftX == null ? prev.maxAbsDriftX : Math.max(prev.maxAbsDriftX, Math.abs(driftX));
@@ -5786,6 +5957,7 @@ useEffect(() => {
   const snapPx = (v: number) => (pixelSnapPx > 0 ? Math.round(v / pixelSnapPx) * pixelSnapPx : v);
   const isNosferatuLook = state.lookMode === 'nosferatu';
   const isSkeletalLook = state.lookMode === 'skeletal';
+  const isPenInkLook = state.lookMode === 'pen-ink-1918';
 
   const childrenByParentId = useMemo(() => {
     const out: Record<string, string[]> = {};
@@ -6236,22 +6408,26 @@ useEffect(() => {
       ? '#ffffff'
       : isLotte
         ? '#000000'
-        : isRoot
-          ? 'white'
-          : state.activeRoots.includes(id)
-            ? '#00ff88'
-            : state.controlMode === 'Rubberband' && isLongPress
-              ? '#ff4444'
-              : 'var(--accent)';
+        : isPenInkLook
+          ? 'var(--pen-ink-ink, #1c1712)'
+          : isRoot
+            ? 'white'
+            : state.activeRoots.includes(id)
+              ? '#00ff88'
+              : state.controlMode === 'Rubberband' && isLongPress
+                ? '#ff4444'
+                : 'var(--accent)';
     const strokeColor = isNosferatu
       ? '#ffffff'
       : isLotte
         ? '#000000'
-        : isSelected
-          ? 'rgba(255, 255, 255, 0.9)'
-          : state.controlMode === 'Rubberband' && isLongPress
-            ? 'rgba(255, 68, 68, 0.8)'
-            : 'var(--bg)';
+        : isPenInkLook
+          ? 'var(--pen-ink-shadow, #221811)'
+          : isSelected
+            ? 'rgba(255, 255, 255, 0.9)'
+            : state.controlMode === 'Rubberband' && isLongPress
+              ? 'rgba(255, 68, 68, 0.8)'
+              : 'var(--bg)';
 
     const glowStrength = clamp(state.physicsRigidity ?? 0, 0, 1);
     const baseGlow = isNosferatu ? 0 : glowStrength * 0.35;
@@ -6288,7 +6464,7 @@ useEffect(() => {
             cx={sx}
             cy={sy}
             r={isRoot ? 14 : 10}
-            fill="rgb(125 255 170 / 1)"
+            fill={isPenInkLook ? 'rgba(90,75,116,0.55)' : 'rgb(125 255 170 / 1)'}
             opacity={glowOpacity}
             filter="url(#joint-soft-glow)"
             pointerEvents="none"
@@ -6300,7 +6476,7 @@ useEffect(() => {
 	          data-joint-id={id}
 	          fill={fillColor}
 	          stroke={strokeColor}
-	          strokeWidth={isSelected ? 3 : 2}
+          strokeWidth={isSelected ? (isPenInkLook ? 3.5 : 3) : isPenInkLook ? 2.5 : 2}
 	          className="cursor-grab active:cursor-grabbing"
           onMouseDown={handleMouseDown(id)}
         />
@@ -8769,7 +8945,9 @@ useEffect(() => {
   return (
     <TooltipProvider delayDuration={200}>
       <div
-        className="relative isolate flex h-screen w-full text-[#e0e0e0] font-sans selection:bg-white/20 bg-[#0a0a0a]"
+        className={`relative isolate flex h-screen w-full selection:bg-white/20 font-sans ${
+          isPenInkLook ? 'pen-ink-1918-ui text-[#1c1712]' : 'text-[#e0e0e0] bg-[#0a0a0a]'
+        }`}
         data-build-id={BUILD_ID}
       >
         {/* Sidebar */}
@@ -10864,43 +11042,45 @@ useEffect(() => {
                         <h2 className={`text-[10px] font-bold uppercase tracking-widest ${titleFontClassMap[titleFont as keyof typeof titleFontClassMap]}`}>Scene</h2>
                       </div>
 
-                      {/* Vitruvian Guides */}
-                      <div className="space-y-4 mb-4">
-                        <div className="flex flex-col gap-2">
-                          <label className="flex items-center justify-between gap-3 text-[10px]">
-                            <span className="font-bold uppercase tracking-widest text-[#666]">Rings Overlay</span>
-                            <input
-                              type="checkbox"
-                              checked={gridRingsEnabled}
-                              onChange={(e) => setGridRingsEnabled(e.target.checked)}
-                              className="rounded accent-white"
-                            />
-                          </label>
-                          <label className="flex items-center justify-between gap-3 text-[10px]">
-                            <span className="font-bold uppercase tracking-widest text-[#666]">Grid Overlay</span>
-                            <input
-                              type="checkbox"
-                              checked={gridOverlayEnabled}
-                              onChange={(e) => setGridOverlayEnabled(e.target.checked)}
-                              className="rounded accent-white"
-                            />
-                          </label>
-                        </div>
-                      </div>
+                      <CollapsibleSection title="Guides & Overlays" storageKey="btv:scene:guides" defaultOpen>
+                        <div className="space-y-4">
+                          <div className="flex flex-col gap-2">
+                            <label className="flex items-center justify-between gap-3 text-[10px]">
+                              <span className="font-bold uppercase tracking-widest text-[#666]">Rings Overlay</span>
+                              <input
+                                type="checkbox"
+                                checked={gridRingsEnabled}
+                                onChange={(e) => setGridRingsEnabled(e.target.checked)}
+                                className="rounded accent-white"
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-3 text-[10px]">
+                              <span className="font-bold uppercase tracking-widest text-[#666]">Grid Overlay</span>
+                              <input
+                                type="checkbox"
+                                checked={gridOverlayEnabled}
+                                onChange={(e) => setGridOverlayEnabled(e.target.checked)}
+                                className="rounded accent-white"
+                              />
+                            </label>
+                          </div>
 
-	                <div className="space-y-2 mb-4">
-                  <Toggle
-                    label="Joints"
-                    active={state.showJoints}
-                    onClick={() =>
-                      applyEngineTransition('toggle_show_joints', (prev) => ({
-                        ...prev,
-                        showJoints: !prev.showJoints,
-                      }))
-                    }
-                  />
-                </div>
+                          <div className="space-y-2">
+                            <Toggle
+                              label="Joints"
+                              active={state.showJoints}
+                              onClick={() =>
+                                applyEngineTransition('toggle_show_joints', (prev) => ({
+                                  ...prev,
+                                  showJoints: !prev.showJoints,
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      </CollapsibleSection>
                       
+                      <CollapsibleSection title="Background" storageKey="btv:scene:bg" defaultOpen>
                       {/* Background Layer */}
                       <div className="mb-4">
                         <div className="flex items-center justify-between mb-2">
@@ -11220,7 +11400,9 @@ useEffect(() => {
                   </div>
                 )}
               </div>
+                      </CollapsibleSection>
               
+                      <CollapsibleSection title="Foreground" storageKey="btv:scene:fg" defaultOpen>
                       {/* Foreground Layer */}
                       <div className="mb-4">
                         <div className="flex items-center justify-between mb-2">
@@ -11540,6 +11722,7 @@ useEffect(() => {
                           </div>
                         )}
                       </div>
+                      </CollapsibleSection>
 
                       {/* Titles / Intertitles */}
                       <div className="mb-4">
@@ -12323,7 +12506,7 @@ useEffect(() => {
               handleCanvasRootRotateMouseDown(e);
             }}
             onContextMenu={handleSvgContextMenu}
-            className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''}`}
+            className={`w-full h-full skeleton-canvas ${state.lookMode === 'nosferatu' ? 'grayscale contrast-125' : ''} ${isPenInkLook ? 'pen-ink-1918-canvas' : ''}`}
           >
             <defs>
               <filter id="joint-soft-glow" x="-200%" y="-200%" width="400%" height="400%">
@@ -12433,6 +12616,7 @@ useEffect(() => {
                 opacity={0.65}
                 plot={gridRingsBgData?.vitruvian.plot ?? null}
                 transform={gridOverlayTransform}
+                frame={gridFrame}
                       />
 
               {/* Backlight / Manikin Overlay (Volumetric primitives) */}
@@ -13329,6 +13513,32 @@ useEffect(() => {
         </div>
       </div>
     </div>
+  )}
+
+  <BoneBuilderOverlay
+    state={state}
+    setStateWithHistory={setStateWithHistory}
+    onLaunchStudio={() =>
+      setState((prev) => ({
+        ...prev,
+        boneBuilder: {
+          ...(prev.boneBuilder ?? {
+            activeStep: 'Head',
+            plateReadyByStep: {},
+            plates: [],
+            penChainJointId: null,
+            snapRadiusPx: 18,
+            headLenPx: 80,
+            specialPoints: {},
+            settings: { stance: 'single', species: 'humanoid', height: 170, torsoRatio: 50 },
+          }),
+          overlayDismissed: true,
+        },
+      }))
+    }
+  />
+  {state.boneBuilder && state.boneBuilder.overlayDismissed && (
+    <BoneBuilderPenOverlay state={state} setStateWithHistory={setStateWithHistory} />
   )}
 
   {/* Performance Monitoring */}

@@ -552,9 +552,9 @@ export const DetailsWidget: React.FC<Props> = ({
     return { ...meta, disabled };
   }, [maskTargetType, maskWheelParam]);
 
-  const [paramRangeOverrides, setParamRangeOverrides] = useState<
-    Record<MaskWheelParam, { min?: number; max?: number }>
-  >({});
+  const [paramRangeOverrides, setParamRangeOverrides] = useState<Record<MaskWheelParam, { min?: number; max?: number }>>(
+    {} as Record<MaskWheelParam, { min?: number; max?: number }>,
+  );
 
   const activeParamMeta = useMemo<WheelMeta>(() => {
     const overrides = paramRangeOverrides[maskWheelParam];
@@ -579,7 +579,7 @@ export const DetailsWidget: React.FC<Props> = ({
   }, [maskParamValue]);
 
   const [rangeFieldStrings, setRangeFieldStrings] = useState<Record<MaskWheelParam, { min: string; max: string }>>(
-    {},
+    {} as Record<MaskWheelParam, { min: string; max: string }>,
   );
 
   useEffect(() => {

@@ -6,7 +6,8 @@ export type LookModeId =
   | 'noir'
   | 'skeletal'
   | 'lotte'
-  | 'nosferatu';
+  | 'nosferatu'
+  | 'pen-ink-1918';
 
 export type LookMode = {
   id: LookModeId;
@@ -64,7 +65,13 @@ export const LOOK_MODES: LookMode[] = [
     label: 'Nosferatu',
     description: 'White-on-black, high-contrast rendering tuned for spooky readability.',
   },
+  {
+    id: 'pen-ink-1918',
+    label: 'Pen & Ink 1918',
+    description: 'Muted ink on warm paper with letterpress grain; keeps existing hues but softens them.',
+    pixelSnapPx: 1,
+    filters: { contrast: 1.1 },
+  },
 ];
 
 export const LOOK_MODE_ID_SET = new Set<LookModeId>(LOOK_MODES.map((m) => m.id));
-

@@ -270,9 +270,21 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
       shapeScale: undefined,
       fkMode: undefined,
       fkFollowDeg: undefined,
+      socketEasing: undefined,
       mergeToJointId: undefined,
       hidden: undefined,
     };
+    
+    // Handle socketEasing
+    if (v.socketEasing && typeof v.socketEasing === 'object') {
+      const easing = v.socketEasing as Record<string, unknown>;
+      next.socketEasing = {
+        enabled: Boolean(easing.enabled),
+        strength: isFiniteNumber(easing.strength) ? clamp(easing.strength, 0, 1) : 0.5,
+        radius: isFiniteNumber(easing.radius) ? Math.max(0, easing.radius) : 1.0,
+        easeInTime: isFiniteNumber(easing.easeInTime) ? Math.max(0, easing.easeInTime) : 0.5,
+      };
+    }
     
     if (typeof v.shape === 'string' && ALLOWED_SHAPES.has(v.shape)) {
       next.shape = v.shape;
@@ -305,36 +317,22 @@ const sanitizeConnectionOverrides = (rawValue: unknown): SkeletonState['connecti
   return out;
 };
 
-const sanitizeHipLock = (rawValue: unknown, base: SkeletonState['hipLock']): SkeletonState['hipLock'] => {
-  if (!rawValue || typeof rawValue !== 'object') return base;
-  const raw = rawValue as Record<string, unknown>;
-  const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : base.enabled;
-  const extendCompressEnabled =
-    typeof raw.extendCompressEnabled === 'boolean' ? raw.extendCompressEnabled : base.extendCompressEnabled;
-  const restLen = isFiniteNumber(raw.restLen) ? clamp(raw.restLen, 0.1, 100) : base.restLen;
-  const minScale = isFiniteNumber(raw.minScale) ? clamp(raw.minScale, 0.1, 10) : base.minScale;
-  const maxScale = isFiniteNumber(raw.maxScale) ? clamp(raw.maxScale, 0.1, 10) : base.maxScale;
-  const fkEnabled = typeof raw.fkEnabled === 'boolean' ? raw.fkEnabled : base.fkEnabled;
-  const fkLengthScale = isFiniteNumber(raw.fkLengthScale) ? clamp(raw.fkLengthScale, 0.1, 10) : base.fkLengthScale;
-  const walkModeEnabled = typeof raw.walkModeEnabled === 'boolean' ? raw.walkModeEnabled : base.walkModeEnabled;
-  const walkAmount = isFiniteNumber(raw.walkAmount) ? clamp(raw.walkAmount, 0, 10) : base.walkAmount;
-  const pelvisBiasEnabled = typeof raw.pelvisBiasEnabled === 'boolean' ? raw.pelvisBiasEnabled : base.pelvisBiasEnabled;
-  const pelvisBiasSide =
-    raw.pelvisBiasSide === 'above' || raw.pelvisBiasSide === 'below' ? raw.pelvisBiasSide : base.pelvisBiasSide;
-  const pelvisBiasAmount = isFiniteNumber(raw.pelvisBiasAmount) ? clamp(raw.pelvisBiasAmount, 0, 10) : base.pelvisBiasAmount;
+const sanitizeHipLock = (raw: unknown, base: any) => {
+  if (!raw || typeof raw !== 'object') return base;
+  const r = raw as Record<string, unknown>;
   return {
-    enabled,
-    extendCompressEnabled,
-    restLen,
-    minScale: Math.min(minScale, maxScale),
-    maxScale: Math.max(minScale, maxScale),
-    fkEnabled,
-    fkLengthScale,
-    walkModeEnabled,
-    walkAmount,
-    pelvisBiasEnabled,
-    pelvisBiasSide,
-    pelvisBiasAmount,
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : base.enabled,
+    extendCompressEnabled: typeof r.extendCompressEnabled === 'boolean' ? r.extendCompressEnabled : base.extendCompressEnabled,
+    restLen: isFiniteNumber(r.restLen) ? clamp(r.restLen, 0.1, 100) : base.restLen,
+    minScale: isFiniteNumber(r.minScale) ? clamp(r.minScale, 0.1, 10) : base.minScale,
+    maxScale: isFiniteNumber(r.maxScale) ? clamp(r.maxScale, 0.1, 10) : base.maxScale,
+    fkEnabled: typeof r.fkEnabled === 'boolean' ? r.fkEnabled : base.fkEnabled,
+    fkLengthScale: isFiniteNumber(r.fkLengthScale) ? clamp(r.fkLengthScale, 0.1, 10) : base.fkLengthScale,
+    walkModeEnabled: typeof r.walkModeEnabled === 'boolean' ? r.walkModeEnabled : base.walkModeEnabled,
+    walkAmount: isFiniteNumber(r.walkAmount) ? clamp(r.walkAmount, 0, 10) : base.walkAmount,
+    pelvisBiasEnabled: typeof r.pelvisBiasEnabled === 'boolean' ? r.pelvisBiasEnabled : base.pelvisBiasEnabled,
+    pelvisBiasSide: r.pelvisBiasSide === 'above' || r.pelvisBiasSide === 'below' ? r.pelvisBiasSide : base.pelvisBiasSide,
+    pelvisBiasAmount: isFiniteNumber(r.pelvisBiasAmount) ? clamp(r.pelvisBiasAmount, 0, 10) : base.pelvisBiasAmount,
   };
 };
 
@@ -416,6 +414,101 @@ const sanitizeBoneStyle = (rawValue: unknown, base: SkeletonState['boneStyle']):
   return { hueT, lightness };
 };
 
+const sanitizeCutoutEditor = (rawValue: unknown, base: SkeletonState['cutoutEditor']): SkeletonState['cutoutEditor'] => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+  
+  // Validate mode
+  const mode = (raw.mode === 'layout' || raw.mode === 'pose' || raw.mode === 'animation') ? raw.mode : base.mode;
+  
+  // Validate gridSize
+  const gridSize = isFiniteNumber(raw.gridSize) ? clamp(raw.gridSize, 5, 100) : base.gridSize;
+  
+  // Validate boolean flags
+  const showAnchors = typeof raw.showAnchors === 'boolean' ? raw.showAnchors : base.showAnchors;
+  const showConnections = typeof raw.showConnections === 'boolean' ? raw.showConnections : base.showConnections;
+  const snapToAnchors = typeof raw.snapToAnchors === 'boolean' ? raw.snapToAnchors : base.snapToAnchors;
+  
+  // Validate selected IDs
+  const selectedNodeId = (typeof raw.selectedNodeId === 'string' && raw.selectedNodeId) ? raw.selectedNodeId : base.selectedNodeId;
+  const selectedAnchorId = (typeof raw.selectedAnchorId === 'string' && raw.selectedAnchorId) ? raw.selectedAnchorId : base.selectedAnchorId;
+  
+  // Validate viewTransform
+  const viewTransform = {
+    x: safeNumber((raw.viewTransform as any)?.x, base.viewTransform.x),
+    y: safeNumber((raw.viewTransform as any)?.y, base.viewTransform.y),
+    scale: isFiniteNumber((raw.viewTransform as any)?.scale) ? clamp((raw.viewTransform as any).scale, 0.1, 10) : base.viewTransform.scale,
+  };
+  
+  // For nodes, we'll do a basic validation - in a real implementation you might want deeper validation
+  const nodes = (raw.nodes && typeof raw.nodes === 'object') ? raw.nodes as Record<string, any> : base.nodes;
+  
+  return {
+    mode,
+    nodes,
+    selectedNodeId,
+    selectedAnchorId,
+    showAnchors,
+    showConnections,
+    snapToAnchors,
+    gridSize,
+    viewTransform,
+  };
+};
+
+const sanitizeCutoutSheets = (rawValue: unknown, base: SkeletonState['cutoutSheets']): SkeletonState['cutoutSheets'] => {
+  if (!rawValue || typeof rawValue !== 'object') return base;
+  const raw = rawValue as Record<string, unknown>;
+  const result: SkeletonState['cutoutSheets'] = {};
+  
+  for (const [sheetId, sheetRaw] of Object.entries(raw)) {
+    if (!sheetRaw || typeof sheetRaw !== 'object') {
+      if (base[sheetId] !== undefined) {
+        result[sheetId] = base[sheetId];
+      }
+      continue;
+    }
+    
+    const sheet = sheetRaw as Record<string, unknown>;
+    
+    // Validate basic sheet fields
+    const id = (typeof sheet.id === 'string' && sheet.id) ? sheet.id : sheetId;
+    const name = typeof sheet.name === 'string' ? sheet.name : base[sheetId]?.name || sheetId;
+    const src = typeof sheet.src === 'string' ? sheet.src : base[sheetId]?.src || '';
+    const width = isFiniteNumber(sheet.width) && sheet.width > 0 ? sheet.width : base[sheetId]?.width || 0;
+    const height = isFiniteNumber(sheet.height) && sheet.height > 0 ? sheet.height : base[sheetId]?.height || 0;
+    const processedAt = isFiniteNumber(sheet.processedAt) ? sheet.processedAt : base[sheetId]?.processedAt || Date.now();
+    
+    // Validate pieces array
+    let pieces: any[] = [];
+    if (Array.isArray(sheet.pieces)) {
+      pieces = sheet.pieces.filter(piece => 
+        piece && 
+        typeof piece === 'object' && 
+        typeof piece.id === 'string' && 
+        piece.bounds && 
+        typeof piece.bounds === 'object' &&
+        isFiniteNumber(piece.area) &&
+        typeof piece.thumbnail === 'string'
+      );
+    } else if (base[sheetId]?.pieces) {
+      pieces = base[sheetId].pieces;
+    }
+    
+    result[sheetId] = {
+      id,
+      name,
+      src,
+      width,
+      height,
+      pieces,
+      processedAt,
+    };
+  }
+  
+  return result;
+};
+
 const sanitizeHeadMask = (raw: unknown, base: HeadMask): HeadMask => {
   if (!raw || typeof raw !== 'object') return base;
   const mask = raw as Partial<HeadMask>;
@@ -461,17 +554,16 @@ export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
   const raw = rawJoints && typeof rawJoints === 'object' ? (rawJoints as Record<string, Partial<Joint>>) : {};
   const next: Record<string, Joint> = {};
   const hasSavedRoot = Boolean(raw.root && typeof raw.root === 'object');
-  const hasSavedNavel = Boolean(raw.navel && typeof raw.navel === 'object');
+  const hasSavedWaist = Boolean(raw.waist && typeof raw.waist === 'object');
 
   const legacyWorldOffsets = (() => {
-    if (hasSavedRoot) return null;
-    if (!hasSavedNavel) return null;
-    const savedNavel = raw.navel as Partial<Joint> | undefined;
-    if (!savedNavel) return null;
+    if (hasSavedWaist) return null;
+    const savedWaist = raw.waist as Partial<Joint> | undefined;
+    if (!savedWaist) return null;
     return {
-      currentOffset: safePoint(savedNavel.currentOffset, INITIAL_JOINTS.navel.currentOffset),
-      targetOffset: safePoint(savedNavel.targetOffset, INITIAL_JOINTS.navel.targetOffset),
-      previewOffset: safePoint(savedNavel.previewOffset ?? savedNavel.targetOffset, INITIAL_JOINTS.navel.previewOffset),
+      currentOffset: safePoint(savedWaist.currentOffset, INITIAL_JOINTS.waist.currentOffset),
+      targetOffset: safePoint(savedWaist.targetOffset, INITIAL_JOINTS.waist.targetOffset),
+      previewOffset: safePoint(savedWaist.previewOffset ?? savedWaist.targetOffset, INITIAL_JOINTS.waist.previewOffset),
     };
   })();
 
@@ -488,7 +580,7 @@ export const sanitizeJoints = (rawJoints: unknown): Record<string, Joint> => {
       };
       continue;
     }
-    if (id === 'navel' && legacyWorldOffsets) {
+    if (id === 'waist' && legacyWorldOffsets) {
       next[id] = {
         ...base,
         currentOffset: { ...base.currentOffset },
@@ -521,26 +613,56 @@ export const makeDefaultState = (): SkeletonState => {
     defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), fkFollowDeg };
   };
 
+  const setSocketEasing = (a: string, b: string, enabled: boolean, strength: number, radius: number, easeInTime: number) => {
+    const key = canonicalConnKey(a, b);
+    defaultConnectionOverrides[key] = { 
+      ...(defaultConnectionOverrides[key] ?? {}), 
+      socketEasing: { enabled, strength, radius, easeInTime }
+    };
+  };
+
   const setHidden = (a: string, b: string) => {
     const key = canonicalConnKey(a, b);
     defaultConnectionOverrides[key] = { ...(defaultConnectionOverrides[key] ?? {}), hidden: true };
   };
 
   // Hide skull connections by default for clean head shape
+  setHidden('torso', 'head');
 
-  // Default FK follow: collar acts as shoulder socket. Rotating collar rotates neck/head and both arms.
-  // Simplified shoulder mechanics - direct connections for accordion compression
-  const COLLAR_SOCKET_FOLLOW_DEG = 90;
-  setFkFollowDeg('collar', 'l_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_clavicle', 'l_bicep', COLLAR_SOCKET_FOLLOW_DEG); // Direct: left clavicle -> left bicep
-  setFkFollowDeg('l_bicep', 'l_elbow', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('collar', 'r_clavicle', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_clavicle', 'r_bicep', COLLAR_SOCKET_FOLLOW_DEG); // Direct: right clavicle -> right bicep
-  setFkFollowDeg('r_bicep', 'r_elbow', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_elbow', 'l_wrist', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_elbow', 'r_wrist', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('l_wrist', 'l_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
-  setFkFollowDeg('r_wrist', 'r_fingertip', COLLAR_SOCKET_FOLLOW_DEG);
+  // Pyxl Puppet DragonBones-style calibration with collar as direct socket parent
+  // Core spine chain with calibrated FK follow degrees
+  const SPINE_FOLLOW_DEG = 75; // Moderate spine flexibility for natural movement
+  setFkFollowDeg('waist', 'torso', SPINE_FOLLOW_DEG);
+  setFkFollowDeg('torso', 'collar', SPINE_FOLLOW_DEG);
+  setFkFollowDeg('collar', 'head', SPINE_FOLLOW_DEG);
+  
+  // Socket easing for arm sliding - gradual magnetic force effect
+  const SOCKET_EASING_STRENGTH = 0.7; // Moderate magnetic pull (0-1)
+  const SOCKET_EASING_RADIUS = 1.5; // Distance within which magnetic force applies
+  const SOCKET_EASING_TIME = 0.8; // Seconds for smooth ease-in animation
+  
+  // Enable socket easing for collar → bicep connections (collar as direct socket parent)
+  setSocketEasing('collar', 'bicep_l', true, SOCKET_EASING_STRENGTH, SOCKET_EASING_RADIUS, SOCKET_EASING_TIME);
+  setSocketEasing('collar', 'bicep_r', true, SOCKET_EASING_STRENGTH, SOCKET_EASING_RADIUS, SOCKET_EASING_TIME);
+  
+  // Arm chains - calibrated for natural arm movement with collar as socket parent
+  const ARM_FOLLOW_DEG = 85; // High arm flexibility for expressive posing
+  setFkFollowDeg('collar', 'bicep_l', ARM_FOLLOW_DEG);
+  setFkFollowDeg('bicep_l', 'forearm_l', ARM_FOLLOW_DEG);
+  setFkFollowDeg('forearm_l', 'hand_l', ARM_FOLLOW_DEG);
+  setFkFollowDeg('collar', 'bicep_r', ARM_FOLLOW_DEG);
+  setFkFollowDeg('bicep_r', 'forearm_r', ARM_FOLLOW_DEG);
+  setFkFollowDeg('forearm_r', 'hand_r', ARM_FOLLOW_DEG);
+  
+  // Leg chains - calibrated for stable lower body movement
+  const HIP_FOLLOW_DEG = 60; // Moderate hip stability
+  const LEG_FOLLOW_DEG = 80; // High leg flexibility for dynamic poses
+  setFkFollowDeg('waist', 'thigh_l', HIP_FOLLOW_DEG);
+  setFkFollowDeg('thigh_l', 'shin_l', LEG_FOLLOW_DEG);
+  setFkFollowDeg('shin_l', 'foot_l', LEG_FOLLOW_DEG);
+  setFkFollowDeg('waist', 'thigh_r', HIP_FOLLOW_DEG);
+  setFkFollowDeg('thigh_r', 'shin_r', LEG_FOLLOW_DEG);
+  setFkFollowDeg('shin_r', 'foot_r', LEG_FOLLOW_DEG);
   
   // Create default views (Front, Side, Back, 3/4)
   const defaultViews = [
@@ -577,6 +699,17 @@ export const makeDefaultState = (): SkeletonState => {
   return {
     joints,
     activeModel: 'humanoid',
+    boneBuilder: {
+      overlayDismissed: false,
+      activeStep: 'Head',
+      plateReadyByStep: {},
+      plates: [],
+      penChainJointId: null,
+      snapRadiusPx: 18,
+      headLenPx: 80,
+      specialPoints: {},
+      settings: { stance: 'single', species: 'humanoid', height: 170, torsoRatio: 50 },
+    },
     mirroring: true,
     bendEnabled: false, // Default: no auto-bend (rigid)
     stretchEnabled: false, // Ensure stretching is disabled by default
@@ -588,7 +721,7 @@ export const makeDefaultState = (): SkeletonState => {
       torsoNavelScale: 1.0,
 	    physicsRigidity: 0, // 0..1 macro slider (0=rigid)
 	    // Default: FK-first with a single planted foot for stability.
-	    activeRoots: ['r_ankle'],
+	    activeRoots: ['waist'],
 	    deactivatedJoints: new Set<string>(),
 	    groundRootTarget,
 	    footPlungerEnabled: false,
@@ -800,7 +933,7 @@ const migrateLegacyMasksToCutouts = (rawScene: any, base: SkeletonState): { asse
 
         // Find parent joint for bone attachment
         const joint = INITIAL_JOINTS[jointId];
-        const fromJointId = joint?.parent || 'navel';
+        const fromJointId = joint?.parent || 'torso';
         
         cutoutSlots[jointId] = {
           id: jointId,
@@ -1378,8 +1511,8 @@ export const sanitizeStateWithReport = (rawState: unknown): TransitionResult<Ske
     collarLock,
     balancedNeck,
     connectionOverrides: sanitizeConnectionOverrides((raw as any).connectionOverrides),
-    cutoutEditor: (raw as any).cutoutEditor ?? base.cutoutEditor,
-    cutoutSheets: (raw as any).cutoutSheets ?? base.cutoutSheets,
+    cutoutEditor: sanitizeCutoutEditor((raw as any).cutoutEditor, base.cutoutEditor),
+    cutoutSheets: sanitizeCutoutSheets((raw as any).cutoutSheets, base.cutoutSheets),
     viewScale,
     viewOffset,
   };

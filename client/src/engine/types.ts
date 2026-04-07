@@ -504,6 +504,36 @@ export type SkeletonState = {
   boneStyle: BoneStyle;
   // Model system
   activeModel: RigModel;
+  boneBuilder?: {
+    overlayDismissed: boolean;
+    activeStep: 'Head' | 'Shoulders' | 'Arms' | 'Torso' | 'Pelvis' | 'Leg' | 'Foot' | 'Extras';
+    plateReadyByStep: Partial<Record<'Head' | 'Shoulders' | 'Arms' | 'Torso' | 'Pelvis' | 'Leg' | 'Foot' | 'Extras', boolean>>;
+    plates: Array<{
+      id: string;
+      jointIds: string[];
+      step: 'Head' | 'Shoulders' | 'Arms' | 'Torso' | 'Pelvis' | 'Leg' | 'Foot' | 'Extras';
+      hardness?: number;
+      mirroredFrom?: string | null;
+      origin?: 'shared' | 'separate';
+    }>;
+    penChainJointId: string | null;
+    snapRadiusPx: number;
+    headLenPx: number;
+    specialPoints?: Record<
+      string,
+      {
+        x: number;
+        y: number;
+        kind: 'joint' | 'dash';
+      }
+    >;
+    settings: {
+      stance: 'single' | 'dual';
+      species: 'humanoid' | 'quadruped' | 'winged' | 'serpentine' | 'custom';
+      height: number;
+      torsoRatio: number;
+    };
+  };
   hipLock: {
     enabled: boolean;
     extendCompressEnabled: boolean;
@@ -538,6 +568,15 @@ export type SkeletonState = {
       shapeScale?: number;
       fkMode?: ManikinFkMode;
       fkFollowDeg?: number;
+      /**
+       * Socket easing for arm sliding - creates gradual magnetic force effect
+       */
+      socketEasing?: {
+        enabled: boolean;
+        strength: number; // 0-1, how strong the magnetic pull is
+        radius: number; // distance within which magnetic force applies
+        easeInTime: number; // seconds for ease-in animation
+      };
       /**
        * Render-only: if set, draw this connection from `from` to `mergeToJointId` instead of `to`.
        * Does not affect physics or hierarchy.

@@ -6,6 +6,11 @@ export type SheetParserOptions = {
   padding?: number;
   featherRadius?: number;
   edgeTolerance?: number;
+  /**
+   * Applies sepia/age normalization for early 20th century printed sheets.
+   * Uses grayscale/white balance, Otsu-style thresholding, and gutter suppression.
+   */
+  penInkCleanup?: boolean;
 };
 
 type SheetParserResult = {
@@ -23,6 +28,92 @@ const getId = () =>
     : `segment-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 const thresholdLuminance = (r: number, g: number, b: number) => (0.2126 * r + 0.7152 * g + 0.0722 * b);
+
+const clampByte = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+
+const percentile = (values: number[], p: number) => {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)));
+  return sorted[idx];
+};
+
+export const computeOtsuThreshold = (data: Uint8ClampedArray) => {
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = Math.round(thresholdLuminance(data[i], data[i + 1], data[i + 2]));
+    hist[lum] += 1;
+  }
+  const total = data.length / 4;
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+  let sumB = 0;
+  let wB = 0;
+  let max = 0;
+  let threshold = 127;
+
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > max) {
+      max = between;
+      threshold = t;
+    }
+  }
+  return threshold;
+};
+
+const applyPenInkCleanup = (imageData: ImageData) => {
+  const data = imageData.data;
+  const lums: number[] = [];
+  // De-sepia + grayscale and collect luminance
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i];
+    let g = data[i + 1];
+    let b = data[i + 2];
+    // Suppress sepia bias: bleed red into green/blue
+    const neutral = (r * 0.6 + g * 0.25 + b * 0.15);
+    r = neutral;
+    g = neutral * 0.98;
+    b = neutral * 1.02;
+    const lum = thresholdLuminance(r, g, b);
+    lums.push(lum);
+    data[i] = data[i + 1] = data[i + 2] = clampByte(lum);
+  }
+
+  const low = percentile(lums, 0.05);
+  const high = percentile(lums, 0.9) || 255;
+  const scale = high - low <= 1 ? 1 : 255 / (high - low);
+
+  // White balance stretch + light gutter suppression at edges
+  const { width, height } = imageData;
+  for (let y = 0; y < height; y++) {
+    let darkCount = 0;
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const lum = data[idx];
+      if (lum < 180) darkCount++;
+      const stretched = clampByte((lum - low) * scale);
+      data[idx] = data[idx + 1] = data[idx + 2] = stretched;
+    }
+    // Remove rows that are almost entirely paper (e.g., text gutters at page edges)
+    if (darkCount < width * 0.015 && (y < height * 0.08 || y > height * 0.92)) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        data[idx + 3] = 0;
+      }
+    }
+  }
+
+  return imageData;
+};
 
 // Enhanced edge detection using Sobel operator
 const detectEdges = (
@@ -450,6 +541,7 @@ const extractSegments = (
         bounds,
         area: pixels.length,
         thumbnail,
+        originalCoordinates: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
       });
     }
   }
@@ -463,6 +555,7 @@ const normalizeOptions = (opts?: SheetParserOptions): Required<SheetParserOption
   padding: opts?.padding ?? 3,
   featherRadius: opts?.featherRadius ?? 2,
   edgeTolerance: opts?.edgeTolerance ?? 20,
+  penInkCleanup: opts?.penInkCleanup ?? false,
 });
 
 const segmentFromImage = (image: HTMLImageElement, options: Required<SheetParserOptions>): SheetParserResult => {
@@ -476,8 +569,18 @@ const segmentFromImage = (image: HTMLImageElement, options: Required<SheetParser
     ctx.drawImage(image, 0, 0);
   }
   
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const segments = extractSegments(ctx, canvas.width, canvas.height, imageData.data, options);
+  let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  if (options.penInkCleanup) {
+    imageData = applyPenInkCleanup(imageData);
+  }
+
+  const workingOptions = { ...options } as Required<SheetParserOptions>;
+  if (options.penInkCleanup) {
+    const auto = computeOtsuThreshold(imageData.data);
+    workingOptions.threshold = clamp(auto, 90, 210);
+  }
+
+  const segments = extractSegments(ctx, canvas.width, canvas.height, imageData.data, workingOptions);
   return {
     src: canvas.toDataURL('image/png'),
     width: canvas.width,
@@ -485,6 +588,9 @@ const segmentFromImage = (image: HTMLImageElement, options: Required<SheetParser
     segments,
   };
 };
+
+// Expose cleanup helper for tests
+export const runPenInkCleanup = (imageData: ImageData) => applyPenInkCleanup(imageData);
 
 export const segmentSheetFromDataUrl = async (src: string, options?: SheetParserOptions) => {
   const image = await loadImage(src);

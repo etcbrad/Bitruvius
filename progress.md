@@ -142,6 +142,11 @@ Original prompt: get the joint tinkering from these files and add it to our curr
 - Typecheck/tests: `npm run check` + `npm test` pass.
 - Playwright capture: `output/web-game/backlight-humanoid-2026-03-06-v6/shot-0.png` shows Backlight ON with the new primitives.
 
+2026-03-10
+- Grid overlay now fades to transparent outside a centered 4:3 frame and blends into the black backdrop (radial mask) so the pattern feels endless without hard edges.
+- Added a side “Rotation Console” skin to the Right Console (sticky header, dark gradient, rotation-oriented copy).
+- Left console Scene widget is now collapsible by cluster (Guides, Background, Foreground) to reduce clutter and keep like modes under dropdown toggles.
+
 2026-03-05
 - COORD HUD: double-clicking the coordinate readout copies the current pose snapshot as code to clipboard (`client/src/App.tsx`).
 - Sidebar footer: added a persistent Export panel at the bottom of the side console with buttons for Code, File (state .json), PNG, SVG, Video (WebM), and GIF (PNG-frames ZIP) (`client/src/App.tsx`).
@@ -193,6 +198,13 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 - Playwright smoke (server on `:5055`): `output/web-game/masks-simplify-2026-03-05/shot-0.png`, `output/web-game/masks-simplify-2026-03-05/state-0.json`.
 - Moved core physics controls onto the on-canvas bottom bar: `Rig Feel` (physicsRigidity dial) + `Root Drag` (rigid vs physics) live on-canvas now; removed the redundant sidebar toggle and removed duplicate Rig Feel/Bone Color/rigidity/control-mode blocks from the legacy Rig Controls widget (`client/src/App.tsx`).
 - Bone color controls moved under `Look` so they stay accessible without a Physics tab (`client/src/App.tsx`).
+
+2026-03-10
+- Added "Pen & Ink 1918" look mode: warm paper grain, muted ink strokes, serif typography, and inkier joint rendering; toggled via Look selector (body class + canvas styling).
+- Re-skinned Right Console + Cutout Rig Builder for the pen-and-ink aesthetic and added a Pen & Ink cleanup toggle plus auto-assign button for detected pieces.
+- Sheet parser now has pen-ink cleanup (desepia, Otsu threshold, gutter suppression) and stores original coordinates; auto-slot heuristic now respects left/right, aspect, and area when picking slots.
+- Added parser/unit coverage for pen-ink cleanup + adaptive threshold; adjusted CutoutRigBuilder test expectations for the new options.
+- Bone Builder: moved bone-pen status/actions (End chain, Save plate) into the left console; removed on-canvas overlays so the timeline/canvas stays clean.
 - Procgen artifact fix: while procgen is actively driving the preview pose, the pose-physics solver no longer runs on top (prevents “double physics” fighting locomotion/grounding) (`client/src/App.tsx`).
 - Mask placement no longer “floats” under camera zoom: mask offsets are now stored in canvas-space pixels (pre-zoom), and drag deltas convert from screen px → canvas px via `/ viewScale` (`client/src/App.tsx`).
   - Project export/import: bumped engine state schema to `state@2` and migrated `state@1` mask offsets on import so existing projects preserve placement (`client/src/engine/serialization.ts`).
@@ -236,3 +248,6 @@ Original prompt (this session): replace the shoulder-spanning bone with thin gre
 - Tests: updated model simplify expectations for the new `neck_base → skull → head` chain (`script/tests/modelSimplify.test.ts`).
 - Build/test: `npm run check` + `npm test` pass.
 - Saved standalone cutout-rigger prototype HTML for later engine integration (`docs/prototypes/pyxl.puppt-cutout-rigger.html`).
+
+2026-03-10
+- Added `docs/bone-builder-roadmap.md` documenting the landing→builder flow, hover-copy strings for pen/mirror/origin toggles, and the stepwise implementation order so the new bone-as-rigid-plate onboarding can be wired without re-reading prior chat notes.

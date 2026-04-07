@@ -50,8 +50,8 @@ export const runRigidityTests = () => {
   // Rigid cardboard hard limit: when a root ancestor is pinned, dragging beyond reach should clamp
   // to the fully-extended position instead of creating "tension flicker" from impossible constraints.
   {
-    const anchorId = 'root';
-    const effectorId = 'l_wrist';
+    const anchorId = 'waist'; // Use waist as root in Pyxl puppet structure
+    const effectorId = 'hand_l'; // Use hand_l instead of left_hand
     const anchor = INITIAL_JOINTS[anchorId];
     const eff = INITIAL_JOINTS[effectorId];
     assert.ok(anchor && !anchor.parent, `expected ${anchorId} to be a root joint`);

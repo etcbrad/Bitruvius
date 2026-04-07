@@ -15,6 +15,8 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/skeleton" component={SkeletonEditorPage} />
         <Route path="/skeleton-suite" component={SkeletonSuitePage} />
         <Route path="/puppt-fk" component={PupptFkCreatorPage} />
+        <Route path="/studio" component={App} />
+        <Route path="/" component={App} />
         <Route component={App} />
       </Switch>
     </ErrorBoundary>
